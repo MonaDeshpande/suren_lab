@@ -1,0 +1,298 @@
+PAGES: 2
+PDF metadata: {'/Author': 'om', '/Creator': 'Microsoft® Word 2016', '/CreationDate': "D:20260604072916+00'00'", '/Producer': 'www.ilovepdf.com', '/ModDate': 'D:20260604072916Z'}
+--- pypdf page 1 ---
+XObjects: none
+annots: 0
+--- pypdf page 2 ---
+XObjects: none
+annots: 0
+pdfplumber pages: 2
+pdfplumber metadata: {'Author': 'om', 'Creator': 'Microsoft® Word 2016', 'CreationDate': "D:20260604072916+00'00'", 'Producer': 'www.ilovepdf.com', 'ModDate': 'D:20260604072916Z'}
+================================================================================
+PAGE 1
+size: 595.32 x 841.92
+chars: 2378
+images count: 0
+rects: 355
+curves: 0
+lines: 0
+---FULL TEXT---
+TEST REPORT QSF No -7.8.2
+ULR No:
+Date:--/--/---- Report No: ---/26/---/--/--
+Customer Name &
+Address
+Customer Sample ID Batch No.
+Mfg Date Exp Date
+Lab Code Date of Sample Receipt
+Sample Name Sample Drawn By
+Condition Of Sample Test Performance Date
+Tests processed Sample quantity
+Appearance
+Date of Sampling -- Sampling Done by
+Location of sampling -- Sampling Method --
+CHEMICAL TEST REPORT
+Specifications
+FSSAI 2006, Rules
+Sr. & Regulations, Method of
+Name of Test Result
+No Latest Analysis
+Amendments Up to
+12/08/2025
+1 Moisture Not more than 7 % IS 15279:2003
+2 Ash Insoluble in dilute HCL on dry Not more than 0.5 % IS 12923:1990
+basis on dry wt. basis
+3 Added Color Shall be Absent FSSAI Manual , for fiood
+Additives 2016
+4 Extraneous matter Insoluble in Not more than 2.0 % Clause 9.2 of FSSAI
+Manual of Beverages
+water on dry basis on dry wt. basis
+,Sugar & confectionary
+products:2015
+5 Total sugar expressed as Invert Not less than 90 % IS :15279:2003
+sugar on dry weight basis on dry wt. basis
+6 Total sugar expressed as Reducing Not more than 20 % IS:15279:2003
+sugar on dry basis.
+7 Sucrose % on dry basis Not less than 70 % IS:15279:2003
+on dry wt. basis
+8 Sulphated ash on dry basis Not more than 4.0 % IS:15279:2003
+Remark: The sample given for analysis confirm to the specifications of FSSAI 2006, Rules and
+Regulations Latest Amendments Up to 12/08/2025 as per the above tests processed. The Results are
+pertaining to the sample sent for analysis only. The Specifications mentioned are for whole Jaggery.
+Dr. Surendra Nashikkar Checked by:
+Director
+Authorized signatory
+For, SLS
+Disclaimer
+• Sample submitted by the customer in their own container.
+• Above analysis result is valid only for specific sample as stated above, without any bias to its source.
+• We claim no responsibility for changes made in the report after dispatch e.g. Use of whitener or eraser.
+• Above test report cannot be produced as legal evidence without our prior written permission.
+• Sample stored for one week and test Report for one year from the date received.
+Duplicate copies of Report or Invoice will be charged extra.
+End of Report
+Page 1 of 1
+---END FULL TEXT---
+---WORDS (372) by Y---
+Y132: TEST@231 | REPORT@273 | QSF@470 | No@489 | -7.8.2@503
+Y165: ULR@72 | No:@92
+Y177: Date:--/--/----@72 | Report@370 | No:@401 | ---/26/---/--/--@418
+Y189: Customer@66 | Name@109 | &@136
+Y201: Address@66
+Y213: Customer@66 | Sample@109 | ID@143 | Batch@306 | No.@333
+Y231: Mfg@66 | Date@84 | Exp@306 | Date@325
+Y246: Lab@66 | Code@84 | Date@306 | of@328 | Sample@339 | Receipt@372
+Y258: Sample@66 | Name@99 | Sample@306 | Drawn@340 | By@371
+Y273: Condition@66 | Of@110 | Sample@121 | Test@306 | Performance@327 | Date@384
+Y285: Tests@66 | processed@91 | Sample@306 | quantity@340
+Y297: Appearance@66
+Y309: Date@66 | of@87 | Sampling@98 | --@172 | Sampling@306 | Done@348 | by@373
+Y324: Location@66 | of@105 | sampling@115 | --@172 | Sampling@306 | Method@348 | --@422
+Y336: CHEMICAL@234 | TEST@290 | REPORT@318
+Y354: Specifications@355
+Y366: FSSAI@355 | 2006,@383 | Rules@411
+Y375: Sr.@65 | &@355 | Regulations,@364 | Method@454 | of@491
+Y381: Name@88 | of@116 | Test@127 | Result@256
+Y387: No@64 | Latest@355 | Analysis@454
+Y399: Amendments@355 | Up@418 | to@433
+Y411: 12/08/2025@355
+Y423: 1@68 | Moisture@88 | Not@355 | more@373 | than@397 | 7@419 | %@427 | IS@454 | 15279:2003@461
+Y435: 2@68 | Ash@88 | Insoluble@106 | in@148 | dilute@158 | HCL@185 | on@206 | dry@219 | Not@355 | more@373 | than@397 | 0.5@419 | %@434 | IS@454 | 12923:1990@461
+Y447: basis@88 | on@355 | dry@368 | wt.@385 | basis@400
+Y459: 3@68 | Added@88 | Color@118 | Shall@355 | be@378 | Absent@390 | FSSAI@454 | Manual@473 | ,@497 | for@500 | fiood@510
+Y468: Additives@454 | 2016@484
+Y477: 4@68 | Extraneous@88 | matter@141 | Insoluble@172 | in@214 | Not@355 | more@373 | than@397 | 2.0@419 | %@434 | Clause@454 | 9.2@475 | of@486 | FSSAI@493
+Y483: Manual@454 | of@478 | Beverages@485
+Y489: water@88 | on@117 | dry@130 | basis@147 | on@355 | dry@370 | wt.@387 | basis@402
+Y492: ,Sugar@454 | &@474 | confectionary@481
+Y501: products:2015@454
+Y510: 5@68 | Total@88 | sugar@112 | expressed@138 | as@184 | Invert@195 | Not@355 | less@373 | than@391 | 90@412 | %@426 | IS@454 | :15279:2003@461
+Y522: sugar@88 | on@114 | dry@127 | weight@144 | basis@175 | on@355 | dry@368 | wt.@385 | basis@400
+Y534: 6@68 | Total@88 | sugar@112 | expressed@138 | as@184 | Reducing@195 | Not@355 | more@373 | than@397 | 20@419 | %@432 | IS:15279:2003@454
+Y546: sugar@88 | on@114 | dry@127 | basis.@144
+Y558: 7@68 | Sucrose@88 | %@123 | on@135 | dry@148 | basis@165 | Not@355 | less@373 | than@391 | 70@412 | %@426 | IS:15279:2003@454
+Y570: on@355 | dry@368 | wt.@385 | basis@400
+Y582: 8@68 | Sulphated@88 | ash@133 | on@150 | dry@163 | basis@180 | Not@355 | more@373 | than@397 | 4.0@419 | %@434 | IS:15279:2003@454
+Y603: Remark:@88 | The@129 | sample@148 | given@181 | for@206 | analysis@221 | confirm@258 | to@293 | the@304 | specifications@320 | of@381 | FSSAI@391 | 2006,@418 | Rules@445 | and@471
+Y615: Regulations@88 | Latest@140 | Amendments@169 | Up@228 | to@242 | 12/08/2025@253 | as@310 | per@321 | the@338 | above@354 | tests@381 | processed.@404 | The@451 | Results@470 | are@503
+Y627: pertaining@88 | to@134 | the@145 | sample@161 | sent@194 | for@214 | analysis@229 | only.@266 | The@289 | Specifications@307 | mentioned@368 | are@417 | for@433 | whole@448 | Jaggery.@476
+Y651: Dr.@72 | Surendra@88 | Nashikkar@133 | Checked@385 | by:@424
+Y663: Director@72
+Y675: Authorized@72 | signatory@121
+Y687: For,@72 | SLS@90
+Y705: Disclaimer@91
+Y714: @84 | Sample@102 | submitted@123 | by@151 | the@159 | customer@169 | in@195 | their@202 | own@216 | container.@229
+Y723: @84 | Above@102 | analysis@121 | result@143 | is@160 | valid@166 | only@181 | for@194 | specific@203 | sample@225 | as@245 | stated@252 | above,@270 | without@289 | any@311 | bias@323 | to@335 | its@341 | source.@349
+Y732: @84 | We@102 | claim@112 | no@128 | responsibility@136 | for@174 | changes@183 | made@206 | in@222 | the@229 | report@239 | after@257 | dispatch@270 | e.g.@295 | Use@305 | of@317 | whitener@324 | or@349 | eraser.@356
+Y738: @84 | Above@102 | test@121 | report@131 | cannot@149 | be@169 | produced@176 | as@204 | legal@211 | evidence@225 | without@250 | our@273 | prior@283 | written@298 | permission.@319
+Y747: @84 | Sample@102 | stored@123 | for@141 | one@150 | week@161 | and@177 | test@189 | Report@199 | for@219 | one@228 | year@239 | from@252 | the@267 | date@277 | received.@289
+Y753: Duplicate@102 | copies@129 | of@147 | Report@154 | or@173 | Invoice@181 | will@202 | be@213 | charged@221 | extra.@244
+Y762: End@282 | of@294 | Report@301
+Y786: Page@470 | 1@494 | of@505 | 1@517
+---TABLES (3)---
+=== TABLE 0 bbox=(60.01199999999999, 130.21999499999993, 535.1527309090909, 149.53999999999996) ===
+R0|  || TEST REPORT || QSF No -7.8.2
+=== TABLE 1 bbox=(60.01199999999999, 186.8599999999999, 535.1527309090909, 332.80999499999996) ===
+R0| Customer Name & / Address ||  ||  || 
+R1| Customer Sample ID ||  || Batch No. || 
+R2| Mfg Date ||  || Exp Date || 
+R3| Lab Code ||  || Date of Sample Receipt || 
+R4| Sample Name ||  || Sample Drawn By || 
+R5| Condition Of Sample ||  || Test Performance Date || 
+R6| Tests processed ||  || Sample quantity || 
+R7| Appearance ||  ||  || 
+R8| Date of Sampling || -- || Sampling Done by || 
+R9| Location of sampling || -- || Sampling Method || --
+=== TABLE 2 bbox=(60.01199999999999, 350.92999499999996, 535.1527309090909, 635.74001) ===
+R0| Sr. / No || Name of Test || Result || Specifications / FSSAI 2006, Rules / & Regulations, / Latest / Amendments Up to / 12/08/2025 || Method of / Analysis
+R1| 1 || Moisture ||  || Not more than 7 % || IS 15279:2003
+R2| 2 || Ash Insoluble in dilute HCL on dry / basis ||  || Not more than 0.5 % / on dry wt. basis || IS 12923:1990
+R3| 3 || Added Color ||  || Shall be Absent || FSSAI Manual , for fiood / Additives 2016
+R4| 4 || Extraneous matter Insoluble in / water on dry basis ||  || Not more than 2.0 % / on dry wt. basis || Clause 9.2 of FSSAI / Manual of Beverages / ,Sugar & confectionary / products:2015
+R5| 5 || Total sugar expressed as Invert / sugar on dry weight basis ||  || Not less than 90 % / on dry wt. basis || IS :15279:2003
+R6| 6 || Total sugar expressed as Reducing / sugar on dry basis. ||  || Not more than 20 % || IS:15279:2003
+R7| 7 || Sucrose % on dry basis ||  || Not less than 70 % / on dry wt. basis || IS:15279:2003
+R8| 8 || Sulphated ash on dry basis ||  || Not more than 4.0 % || IS:15279:2003
+R9|  || Remark: The sample given for analysis confirm to the specifications of FSSAI 2006, Rules and / Regulations Latest Amendments Up to 12/08/2025 as per the above tests processed. The Results are / pertaining to the sample sent for analysis only. The Specifications mentioned are for whole Jaggery. ||  ||  || 
+---FONTS (count)---
+  ABCDEE+Cambria 10.0pt: 1233
+  ABCDEE+Book Antiqua 6.0pt: 502
+  ABCDEE+Cambria,Bold 10.0pt: 262
+  ABCDEE+Cambria 7.0pt: 202
+  ABCDEE+Book Antiqua,Bold 6.0pt: 45
+  ABCDEE+Cambria 11.0pt: 38
+  ABCDEE+Cambria,Bold 11.0pt: 21
+  ABCDEE+Calibri 11.0pt: 20
+  ABCDEE+Calibri 8.0pt: 12
+  ABCDEE+Cambria,Bold 16.0pt: 11
+  ABCDEE+Book Antiqua,Bold 8.0pt: 11
+  Symbol 6.0pt: 5
+  Helvetica 6.0pt: 5
+  ABCDEE+Calibri,Bold 12.0pt: 3
+  ABCDEE+Cambria 2.0pt: 1
+  ABCDEE+Cambria,Bold 2.0pt: 1
+  ABCDEE+Cambria 9.0pt: 1
+  ABCDEE+Cambria 1.0pt: 1
+  ABCDEE+Cambria 8.0pt: 1
+  ABCDEE+Cambria,Bold 3.0pt: 1
+================================================================================
+PAGE 2
+size: 595.32 x 841.92
+chars: 1698
+images count: 0
+rects: 224
+curves: 0
+lines: 0
+---FULL TEXT---
+TEST REPORT QSF No -7.8.2
+Date:--/--/---- Report No: ---/26/---/--/--
+Customer Name &
+Address
+Customer Sample ID Batch No.
+Mfg Date Exp Date
+Lab Code Date of Sample Receipt
+Sample Name Sample Drawn By
+Condition Of Sample Test Performance Date
+Tests processed Sample quantity
+Appearance
+Date of Sampling -- Sampling Done by
+Location of sampling -- Sampling Method --
+CHEMICAL TEST REPORT
+Specifications
+FSSAI 2006, Rules &
+Sr. No Name of Test Result Regulations, Latest Method of Analysis
+Amendments Up to
+12/08/2025
+1 Sulphur dioxide Not more than 50 mg/kg IS :15279:2003
+Remark: The sample given for analysis confirm to the specifications of FSSAI 2006, Rules and
+Regulations Latest Amendments Up to 12/08/2025 as per the above tests processed. The Results
+are pertaining to the sample sent for analysis only. The Specifications mentioned are for whole
+Jaggery.
+Dr. Surendra Nashikkar Checked by:
+Director
+Authorized signatory
+For, SLS
+Disclaimer
+• Sample submitted by the customer in their own container.
+• Above analysis result is valid only for specific sample as stated above, without any bias to its source.
+• We claim no responsibility for changes made in the report after dispatch e.g. Use of whitener or eraser.
+• Above test report cannot be produced as legal evidence without our prior written permission.
+• Sample stored for one week and test Report for one year from the date received.
+• Duplicate copies of Report or Invoice will be charged extra.
+End of Report
+Page 1 of 1
+---END FULL TEXT---
+---WORDS (244) by Y---
+Y132: TEST@231 | REPORT@273 | QSF@470 | No@489 | -7.8.2@503
+Y171: Date:--/--/----@72 | Report@370 | No:@401 | ---/26/---/--/--@418
+Y195: Customer@66 | Name@109 | &@136
+Y207: Address@66
+Y222: Customer@66 | Sample@109 | ID@143 | Batch@306 | No.@333
+Y237: Mfg@66 | Date@84 | Exp@306 | Date@325
+Y252: Lab@66 | Code@84 | Date@306 | of@328 | Sample@339 | Receipt@372
+Y267: Sample@66 | Name@99 | Sample@306 | Drawn@340 | By@371
+Y279: Condition@66 | Of@110 | Sample@121 | Test@306 | Performance@327 | Date@384
+Y294: Tests@66 | processed@91 | Sample@306 | quantity@340
+Y306: Appearance@66
+Y318: Date@66 | of@87 | Sampling@98 | --@172 | Sampling@306 | Done@348 | by@373
+Y330: Location@66 | of@105 | sampling@115 | --@172 | Sampling@306 | Method@348 | --@422
+Y369: CHEMICAL@217 | TEST@288 | REPORT@324
+Y396: Specifications@303
+Y408: FSSAI@303 | 2006,@331 | Rules@359 | &@387
+Y420: Sr.@70 | No@84 | Name@113 | of@142 | Test@153 | Result@231 | Regulations,@303 | Latest@362 | Method@425 | of@462 | Analysis@473
+Y432: Amendments@303 | Up@366 | to@381
+Y441: 12/08/2025@303
+Y453: IS@425 | :15279:2003@432
+Y456: 1@81 | Sulphur@113 | dioxide@149 | Not@303 | more@321 | than@345 | 50@367 | mg/kg@380
+Y474: Remark:@113 | The@155 | sample@173 | given@206 | for@232 | analysis@246 | confirm@283 | to@319 | the@330 | specifications@346 | of@406 | FSSAI@417 | 2006,@444 | Rules@470 | and@496
+Y486: Regulations@113 | Latest@166 | Amendments@194 | Up@253 | to@268 | 12/08/2025@278 | as@335 | per@346 | the@363 | above@379 | tests@407 | processed.@429 | The@477 | Results@495
+Y495: are@113 | pertaining@129 | to@176 | the@187 | sample@203 | sent@236 | for@256 | analysis@270 | only.@307 | The@330 | Specifications@349 | mentioned@410 | are@458 | for@474 | whole@489
+Y507: Jaggery.@113
+Y576: Dr.@72 | Surendra@88 | Nashikkar@133 | Checked@385 | by:@424
+Y588: Director@72
+Y600: Authorized@72 | signatory@121
+Y612: For,@72 | SLS@90
+Y678: Disclaimer@91
+Y687: @84 | Sample@102 | submitted@123 | by@151 | the@159 | customer@169 | in@195 | their@202 | own@216 | container.@229
+Y696: @84 | Above@102 | analysis@121 | result@143 | is@160 | valid@166 | only@181 | for@194 | specific@203 | sample@225 | as@245 | stated@252 | above,@270 | without@289 | any@311 | bias@322 | to@335 | its@341 | source.@349
+Y702: @84 | We@102 | claim@112 | no@128 | responsibility@136 | for@174 | changes@183 | made@206 | in@222 | the@229 | report@239 | after@257 | dispatch@270 | e.g.@295 | Use@305 | of@317 | whitener@324 | or@349 | eraser.@356
+Y711: @84 | Above@102 | test@121 | report@131 | cannot@149 | be@169 | produced@176 | as@204 | legal@211 | evidence@225 | without@250 | our@273 | prior@283 | written@298 | permission.@319
+Y717: @84 | Sample@102 | stored@123 | for@141 | one@150 | week@161 | and@177 | test@189 | Report@199 | for@219 | one@228 | year@239 | from@252 | the@267 | date@277 | received.@289
+Y726: @84 | Duplicate@102 | copies@129 | of@147 | Report@154 | or@173 | Invoice@181 | will@202 | be@213 | charged@221 | extra.@244
+Y741: End@293 | of@306 | Report@313
+Y786: Page@470 | 1@494 | of@505 | 1@517
+---TABLES (3)---
+=== TABLE 0 bbox=(60.305142857142854, 130.21999499999993, 534.8200114285714, 149.53999999999996) ===
+R0|  || TEST REPORT || QSF No -7.8.2
+=== TABLE 1 bbox=(60.305142857142854, 194.17999999999995, 534.8200114285714, 340.00999499999995) ===
+R0| Customer Name & / Address ||  ||  || 
+R1| Customer Sample ID ||  || Batch No. || 
+R2| Mfg Date ||  || Exp Date || 
+R3| Lab Code ||  || Date of Sample Receipt || 
+R4| Sample Name ||  || Sample Drawn By || 
+R5| Condition Of Sample ||  || Test Performance Date || 
+R6| Tests processed ||  || Sample quantity || 
+R7| Appearance ||  ||  || 
+R8| Date of Sampling || -- || Sampling Done by || 
+R9| Location of sampling || -- || Sampling Method || --
+=== TABLE 2 bbox=(60.305142857142854, 393.529995, 534.8200114285714, 518.1100099999999) ===
+R0| Sr. No || Name of Test || Result || Specifications / FSSAI 2006, Rules & / Regulations, Latest / Amendments Up to / 12/08/2025 || Method of Analysis
+R1| 1 || Sulphur dioxide ||  || Not more than 50 mg/kg || IS :15279:2003
+R2|  || Remark: The sample given for analysis confirm to the specifications of FSSAI 2006, Rules and / Regulations Latest Amendments Up to 12/08/2025 as per the above tests processed. The Results / are pertaining to the sample sent for analysis only. The Specifications mentioned are for whole / Jaggery. ||  ||  || 
+---FONTS (count)---
+  ABCDEE+Cambria 10.0pt: 755
+  ABCDEE+Book Antiqua 6.0pt: 504
+  ABCDEE+Cambria,Bold 10.0pt: 262
+  ABCDEE+Cambria 11.0pt: 38
+  ABCDEE+Cambria,Bold 14.0pt: 21
+  ABCDEE+Calibri 11.0pt: 20
+  ABCDEE+Book Antiqua,Bold 6.0pt: 18
+  ABCDEE+Cambria 8.0pt: 15
+  ABCDEE+Cambria 7.0pt: 15
+  ABCDEE+Calibri 8.0pt: 12
+  ABCDEE+Cambria,Bold 16.0pt: 11
+  ABCDEE+Book Antiqua,Bold 8.0pt: 11
+  Symbol 6.0pt: 6
+  Helvetica 6.0pt: 6
+  ABCDEE+Calibri,Bold 12.0pt: 3
+  ABCDEE+Cambria 1.0pt: 1

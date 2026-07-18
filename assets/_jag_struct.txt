@@ -1,0 +1,100 @@
+===TABLE 0 1x6===
+R0| Protocol No ||  || Sample Issued to ||  || Sample Issued by || 
+===TABLE 1 2x4===
+R0| Sample Name: ||  || Sample Received On: || 
+R1| Lab Code No ||  || Date of Analysis: || 
+===TABLE 2 12x5===
+R0| Sr. no || Name of Test || Method of Analysis || Result || Unit
+R1| 1 || Appearance || 
+R2| 2 || Moisture || IS 15279:2003 ||  || %
+R3| 3 || Total ash on dry basis || Clause 9.3 of FSSAI Manual for sugar and sugar products and / confectionary products :2015 ||  || %
+R4| 4 || Ash Insoluble in dilute HCL on dry basis || IS 12923:1990 ||  || %
+R5| 5 || Added Color || FSSAI Manual for Food Additives : 2016 || 
+R6| 6 || Extraneous matter Insoluble in water on dry basis || Clause 9.2 of FSSAI Manual of Beverages, Sugar and Confectionary products :2015 ||  || %
+R7| 7 || Total sugar expressed as Invert sugar on dry weight basis || IS:15279 : 2003 ||  || %
+R8| 8 || Total sugar expressed as Reduced sugar (on dry basis ) || IS:15279 : 2003 ||  || %
+R9| 9 || Sucrose % on dry basis || IS:15279 : 2018 ||  || %
+R10| 10 || Sulphated ash on dry basis || IS:15279 : 2003 ||  || %
+R11| 11 || Sulphur dioxide || IS:15279 : 2003 ||  || ppm
+===TABLE 3 1x6===
+R0| Protocol No ||  || Sample Issued to ||  || Sample Issued by || 
+===TABLE 4 1x1===
+R0| APPEARANCE: /
+===TABLE 5 7x3===
+R0| Description || Readings
+R1| Weight of empty stainless steel dish (gms) || g
+R2| Weight of dish + Sample (Before drying) (W1) || g
+R3| Weight of sample taken in (gms) (W) || g
+R4| Weight of dish + Sample (After drying) || g
+R5| Weight of dish + Sample (After drying) (W2) || g
+R6| / Moisture w/w (%):  W1 – W2 X 100 / W || /                                        % || / %
+===TABLE 6 8x3===
+R0| Description || Readings
+R1| Weight of empty Crucible (gms) (W1) || g
+R2| Weight of Crucible + Sample (Before Ignition) || g
+R3| Weight of sample taken in (gms) (W) || g
+R4| Weight of Crucible + Sample (After Ignition) || g
+R5| Weight of dish + Sample (After Ignition) (W2) || g
+R6| Ash w/w (%):   W2 – W1 x100  /                                             W || %
+R7| Ash On dry basis % =		Ash x 100      /                                 100-moisture || %
+===TABLE 7 1x6===
+R0| Protocol No ||  || Sample Issued to ||  || Sample Issued by || 
+===TABLE 8 8x3===
+R0| Description || Readings
+R1| Weight of empty Crucible (gms) (W1) || g
+R2| Weight of Crucible + Insoluble ash (Before Ignition) || g
+R3| Weight of sample taken in (gms) (W) || g
+R4| Weight of Crucible + Insoluble ash (After Ignition) || g
+R5| Weight of dish + Insoluble ash (After Ignition) (W2) || g
+R6| Ash Insoluble in Dil. HCl (%)w/w: W2 – W1 X 100 / 			W || / %
+R7| Insoluble  /  Ash On dry basis	: Insoluble Ash x 100  /                                             100 - moisture || / %
+===TABLE 9 2x3===
+R0| Description || Result || 
+R1| ADDED COLOR: ||  || Present / Absent
+===TABLE 10 6x3===
+R0| Description || Readings
+R1| Weight of sample taken in (gms) (W) || g
+R2| Weight of Filter Paper (W2) || g
+R3| Weight of Filter Paper +Dry Extraneous matter(W1) || g
+R4| / Extraneous matter (%):	W1 – W2 X 100 / W || / %
+R5| Extraneous matter / ( On dry basis) =	     Extraneous matter x 100	 / 100- moisture || / %
+===TABLE 11 1x6===
+R0| Protocol No ||  || Sample Issued to ||  || Sample Issued by || 
+===TABLE 12 7x3===
+R0| Sr. No. || Parameter || Reading
+R1| 1 || Amount of sample Taken in ( gms ) || g
+R2| 2 || Fehling solution taken in ml for Reducing sugar || ml
+R3| 3 || B. R. reading for reducing sugar in ml || ml
+R4| 4 || Fehling solution taken in ml for Total Invert sugar || ml
+R5| 5 || B. R. reading for invert sugar in ml || ml
+R6| Total Invert sugar(On dry basis)% =	Concentration of sugar in g X 250 X 100 / Wt. of sample taken in g X B.R. of Fehling || Total Invert sugar(On dry basis)% =	Concentration of sugar in g X 250 X 100 / Wt. of sample taken in g X B.R. of Fehling || Total Invert sugar(On dry basis)% =	Concentration of sugar in g X 250 X 100 / Wt. of sample taken in g X B.R. of Fehling
+===TABLE 13 1x6===
+R0| Protocol No ||  || Sample Issued to ||  || Sample Issued by || 
+===TABLE 14 9x3===
+R0| Description || Readings
+R1| Weight of empty Crucible (gms) (W1) || g
+R2| Weight of Crucible + Sample (Before Ignition) || g
+R3| Weight of sample taken in (gms) (W) || g
+R4| Weight of Crucible + Sample (After Ignition) || g
+R5| Weight of dish + Sample (After Ignition) || g
+R6| Weight of dish + Sample (After Ignition) (W2) || g
+R7| Sulphated Ash w/w (%) :	W2 – W1 X 100 / W || /  / %
+R8| Sulphated Ash On dry basis :  /         Sulphated Ash x 100 /            100 - moisture || / %
+===TABLE 15 3x3===
+R0| Description || Readings
+R1| Wt. of Sample (gm) || g
+R2| / Mg SO 4 = µg SO4 from graph x 10 /                      Wt of sample || / ppm
+P| Result Table:
+P| Analyzed By:	Checked By:
+P| Name	Technical Manager:
+P| Dated signature:	Dated Signature:
+P| MOISTURE:
+P| TOTAL ASH (on dry basis):
+P| ASH INSOLUBLE IN DIL HCL (on dry basis) :
+P| EXTRANEOUS MATTER (On dry basis):
+P| SUGAR:
+P| SULPHATED ASH (On dry basis):
+P| SULPHUR DIOXIDE :
+P| Analyzed By:	Checked By:
+P| Name	Technical Manager:
+P| Dated signature:	Dated Signature:

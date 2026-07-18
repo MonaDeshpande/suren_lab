@@ -1,0 +1,4 @@
+# Generated validation Word documents (.docx) appear here when you run:
+#   run_validation.bat
+# or:
+#   python -m validation.generate_all

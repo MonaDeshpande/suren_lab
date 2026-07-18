@@ -1,0 +1,10 @@
+# SLS Customer Test Request App — Python dependencies
+streamlit>=1.32.0
+psycopg2-binary>=2.9.9
+python-dotenv>=1.0.0
+reportlab>=4.1.0
+python-docx>=1.1.0
+docx2pdf>=0.1.8
+pandas>=2.1.0
+bcrypt>=4.1.0
+pytest>=8.0.0
