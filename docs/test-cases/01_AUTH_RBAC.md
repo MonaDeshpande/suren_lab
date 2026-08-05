@@ -13,8 +13,8 @@
 | **Type** | Positive |
 | **Preconditions** | DB up; default admin seeded (`admin` / `Admin@123`) |
 | **Steps** | 1. Open app home. 2. Enter username `admin`, password `Admin@123`. 3. Click **Sign in**. |
-| **Expected** | Login succeeds; home shows workspace links for all four roles; sidebar shows signed-in user. |
-| **Postconditions** | Session holds `user_id`, `username`, `role=admin`. |
+| **Expected** | Login succeeds; home shows workspace links for all roles held; sidebar shows signed-in user and role list. |
+| **Postconditions** | Session holds `user_id`, `username`, `roles`. |
 
 ---
 
@@ -47,7 +47,7 @@
 |-------|-------|
 | **Priority** | P0 |
 | **Type** | Negative |
-| **Preconditions** | Admin has deactivated a staff user (TC-ADM-006). |
+| **Preconditions** | Admin has deactivated a staff user (TC-ADM-010). |
 | **Steps** | Attempt login with that user's credentials. |
 | **Expected** | Login rejected with invalid/inactive message. |
 
@@ -159,6 +159,8 @@
 | Reviewer | Allow | Deny | Deny | Allow |
 | Admin | Allow | Deny | Deny | Deny |
 
+Users with **multiple roles** may open any workspace allowed for **any** of their roles (e.g. reception + analyst sees both Reception and Analyst links on home).
+
 ---
 
 ## TC-RBAC-001 — Reception role: allow Reception, deny others
@@ -193,7 +195,7 @@
 | **Type** | RBAC |
 | **Preconditions** | Logged in as `reviewer` |
 | **Steps** | Open Reviewer (OK). Open Reception, Analyst, Admin. |
-| **Expected** | Only Reviewer allowed among workspaces. |
+| **Expected** | Only Reviewer allowed among workspaces. Reception shows access denied. |
 
 ---
 
@@ -216,4 +218,70 @@
 | **Priority** | P1 |
 | **Type** | RBAC |
 | **Steps** | Login as each role; inspect home workspace links. |
-| **Expected** | `admin` sees all four; other roles see only their workspace (+ home). |
+| **Expected** | `admin` sees all four; single-role staff see only their workspace(s); dual-role staff see union of allowed workspaces. |
+
+---
+
+## TC-RBAC-006 — Dual-role user (reception + analyst)
+
+| Field | Value |
+|-------|-------|
+| **Priority** | P0 |
+| **Type** | RBAC |
+| **Preconditions** | Admin assigned user `dual_qa` roles `reception` and `analyst` |
+| **Steps** | Login as `dual_qa`. Open Reception and Analyst. Attempt Reviewer and Admin. |
+| **Expected** | Reception and Analyst allowed; Reviewer and Admin denied. Home shows both workspace links. |
+
+---
+
+## Multi-user concurrent login
+
+These cases verify that multiple staff can work at the same time on different browsers or PCs. Session state is per browser; all users share one PostgreSQL database.
+
+---
+
+## TC-AUTH-013 — Concurrent login (different users)
+
+| Field | Value |
+|-------|-------|
+| **Priority** | P0 |
+| **Type** | Multi-user |
+| **Preconditions** | Two active users exist (e.g. `reception1` and `analyst1`) |
+| **Steps** | 1. On PC A, sign in as reception user. 2. On PC B (or another browser), sign in as analyst user. 3. Both open their allowed workspaces. |
+| **Expected** | Both sessions stay active. Each sidebar shows the correct signed-in user. Reception can open Reception; analyst can open Analyst. |
+
+---
+
+## TC-AUTH-014 — Same user, two browsers (no duplicate-login block)
+
+| Field | Value |
+|-------|-------|
+| **Priority** | P1 |
+| **Type** | Multi-user |
+| **Preconditions** | Active analyst account |
+| **Steps** | Sign in as the same analyst in Chrome and Edge (or two PCs). |
+| **Expected** | Both logins succeed. No “already logged in elsewhere” message. |
+
+---
+
+## TC-AUTH-015 — Deactivated user session ends on next page load
+
+| Field | Value |
+|-------|-------|
+| **Priority** | P0 |
+| **Type** | Multi-user |
+| **Preconditions** | User logged in on PC A; admin deactivates that account |
+| **Steps** | 1. Admin deactivates the user (TC-ADM-010). 2. On PC A, refresh or navigate to any workspace. |
+| **Expected** | Login form shown; session cleared. User cannot continue without re-login (which fails while inactive). |
+
+---
+
+## TC-AUTH-016 — LAN access from another PC
+
+| Field | Value |
+|-------|-------|
+| **Priority** | P1 |
+| **Type** | Multi-user |
+| **Preconditions** | Host runs `run_app.bat`; `.streamlit/config.toml` binds `0.0.0.0` |
+| **Steps** | From another PC on the LAN, open `http://<host-ip>:8501` and sign in. |
+| **Expected** | App loads and login works. Only the host needs Docker Postgres; client uses browser only. |

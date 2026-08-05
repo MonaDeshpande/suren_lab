@@ -1,25 +1,19 @@
 """
 services/pdf_generator.py
 -------------------------
-Generate a filled Customer Test Request PDF that matches the reference Word form.
+Generate a filled Customer Test Request PDF via ReportLab.
 
-Primary path (exact layout):
-  1. Fill reference/Customer Test Request form LLP.docx
-  2. Convert to PDF with docx2pdf (Microsoft Word on Windows)
+Layout mirrors reference/Customer Test Request form LLP.docx:
+  Page 1 — request header table, notes, signature lines
+  Page 2 — sample description heading and 17-row sample grid
 
-Fallback (if Word conversion fails):
-  ReportLab recreation on Letter size, 1" margins, no custom branding,
-  same section order and 17 sample rows as the Word template.
+Word (.docx) download is handled separately by services/docx_filler.py.
 """
 
 from __future__ import annotations
 
 import io
-import logging
-import os
-import tempfile
 from datetime import date
-from pathlib import Path
 from typing import Optional
 
 from reportlab.lib import colors
@@ -28,6 +22,7 @@ from reportlab.lib.pagesizes import letter
 from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import inch
 from reportlab.platypus import (
+    PageBreak,
     Paragraph,
     SimpleDocTemplate,
     Spacer,
@@ -35,26 +30,27 @@ from reportlab.platypus import (
     TableStyle,
 )
 
-from services.docx_filler import fill_docx_bytes
-from services.requests import SampleRow, TestRequestData
-from services.audit import generator_stamp_lines
+from services.customers import format_contacts_for_display
+from services.requests import SampleRow, TestRequestData, ctr_parameters_display
 
-logger = logging.getLogger(__name__)
-
-# Visual constants — plain form look (fallback only)
+# Visual constants — plain form look matching LLP template
 BORDER = colors.black
 FONT = "Helvetica"
 FONT_BOLD = "Helvetica-Bold"
-FONT_SIZE = 11  # close to Word ~12 pt
+FONT_SIZE = 11  # Word template labels ~12 pt
 SMALL = 9
+FOOTER_TEXT = "[Control copy]"
+SAMPLE_DATA_ROWS = 17
+SAMPLE_HEADER_HEIGHT = 0.35 * inch
+SAMPLE_ROW_HEIGHT = 0.30 * inch
 
 
 def _yes_no(value: Optional[bool]) -> str:
     if value is True:
-        return "Yes  [X]                    No  [ ]"
+        return "Yes  [X]                                   No  [ ]"
     if value is False:
-        return "Yes  [ ]                    No  [X]"
-    return "Yes  [ ]                    No  [ ]"
+        return "Yes  [ ]                                   No  [X]"
+    return "Yes  [ ]                                   No  [ ]"
 
 
 def _service_marks(service_type: str) -> str:
@@ -77,64 +73,122 @@ def _fmt_date(d: Optional[date]) -> str:
     return d.strftime("%d/%m/%Y")
 
 
-def _p(text: str, style: ParagraphStyle) -> Paragraph:
-    safe = (
+def _escape(text: str) -> str:
+    return (
         (text or "")
         .replace("&", "&amp;")
         .replace("<", "&lt;")
         .replace(">", "&gt;")
     )
-    return Paragraph(safe.replace("\n", "<br/>"), style)
 
 
-def _convert_docx_to_pdf_bytes(docx_bytes: bytes) -> bytes:
-    """
-    Write filled .docx to a temp file, convert with docx2pdf, return PDF bytes.
-
-    Requires Microsoft Word installed on Windows.
-    """
-    from docx2pdf import convert  # imported here so ReportLab fallback still works
-
-    tmp_dir = tempfile.mkdtemp(prefix="sls_ctr_")
-    docx_path = Path(tmp_dir) / "filled_ctr.docx"
-    pdf_path = Path(tmp_dir) / "filled_ctr.pdf"
-
-    try:
-        docx_path.write_bytes(docx_bytes)
-        # docx2pdf uses Word COM; convert(input, output)
-        convert(str(docx_path), str(pdf_path))
-        if not pdf_path.exists():
-            raise RuntimeError("docx2pdf finished but PDF file was not created.")
-        return pdf_path.read_bytes()
-    finally:
-        # Clean temp files best-effort
-        for p in (docx_path, pdf_path):
-            try:
-                if p.exists():
-                    p.unlink()
-            except OSError:
-                pass
-        try:
-            os.rmdir(tmp_dir)
-        except OSError:
-            pass
+def _p(text: str, style: ParagraphStyle) -> Paragraph:
+    """Plain user text — escape HTML metacharacters."""
+    return Paragraph(_escape(text).replace("\n", "<br/>"), style)
 
 
-def _generate_reportlab_fallback(
+def _lv(label: str, value: str, style: ParagraphStyle) -> Paragraph:
+    """Bold label plus escaped value on the same line."""
+    body = f"<b>{_escape(label)}</b>"
+    if value:
+        body = f"{body} {_escape(value)}"
+    return Paragraph(body, style)
+
+
+def _lv_br(label: str, value: str, style: ParagraphStyle) -> Paragraph:
+    """Bold label, line break, then escaped value (may contain newlines)."""
+    val = _escape(value).replace("\n", "<br/>")
+    return Paragraph(f"<b>{_escape(label)}</b><br/>{val}", style)
+
+
+def _draw_footer(canvas, doc) -> None:
+    """Match LLP.docx footer on every page."""
+    canvas.saveState()
+    canvas.setFont(FONT, 10)
+    canvas.drawString(doc.leftMargin, 0.45 * inch, FOOTER_TEXT)
+    canvas.restoreState()
+
+
+def _build_sample_table(
+    data: TestRequestData,
+    usable: float,
+    th_style: ParagraphStyle,
+    td_style: ParagraphStyle,
+) -> Table:
+    header = [
+        _p("Sr. No", th_style),
+        _p("Name of sample", th_style),
+        _p("Code/batch no.", th_style),
+        _p("Sample qty.", th_style),
+        _p("Parameters", th_style),
+    ]
+
+    filled = [s for s in data.samples if not s.is_empty()]
+    display_rows: list[SampleRow] = list(filled)
+    while len(display_rows) < SAMPLE_DATA_ROWS:
+        display_rows.append(SampleRow(sr_no=len(display_rows) + 1))
+
+    body = []
+    for i, s in enumerate(display_rows, start=1):
+        sr = str(i) if not s.is_empty() else ""
+        body.append(
+            [
+                _p(sr, td_style),
+                _p(s.sample_name or "", td_style),
+                _p(s.batch_code or "", td_style),
+                _p(s.quantity or "", td_style),
+                _p(ctr_parameters_display(s), td_style),
+            ]
+        )
+
+    col_widths = [
+        0.55 * inch,
+        1.7 * inch,
+        1.35 * inch,
+        1.0 * inch,
+        usable - (0.55 + 1.7 + 1.35 + 1.0) * inch,
+    ]
+    row_heights = [SAMPLE_HEADER_HEIGHT] + [SAMPLE_ROW_HEIGHT] * SAMPLE_DATA_ROWS
+
+    sample_table = Table(
+        [header] + body,
+        colWidths=col_widths,
+        rowHeights=row_heights,
+        hAlign="LEFT",
+        repeatRows=1,
+    )
+    sample_table.setStyle(
+        TableStyle(
+            [
+                ("BOX", (0, 0), (-1, -1), 1, BORDER),
+                ("INNERGRID", (0, 0), (-1, -1), 0.5, BORDER),
+                ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                ("LEFTPADDING", (0, 0), (-1, -1), 3),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 3),
+                ("TOPPADDING", (0, 0), (-1, -1), 3),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+            ]
+        )
+    )
+    return sample_table
+
+
+def _generate_ctr_pdf(
     data: TestRequestData,
     generated_by: str = "",
     generated_at: str = "",
 ) -> bytes:
     """
-    Letter-size plain form twin of the Word template (no custom branding/footer).
+    Letter-size form matching the LLP Word template layout (2 pages).
 
-    Used only when Microsoft Word / docx2pdf conversion is unavailable.
+    generated_by / generated_at are accepted for API compatibility but are
+    not printed on the CTR form (pen signatures stay on template blanks).
     """
     buffer = io.BytesIO()
 
     doc = SimpleDocTemplate(
         buffer,
-        pagesize=letter,  # Word template is 8.5 x 11
+        pagesize=letter,
         leftMargin=1.0 * inch,
         rightMargin=1.0 * inch,
         topMargin=1.0 * inch,
@@ -194,73 +248,75 @@ def _generate_reportlab_fallback(
     )
 
     c = data.customer
+    contact_names, contact_emails = format_contacts_for_display(c.resolved_contacts())
     story: list = []
-    usable = 6.5 * inch  # letter width minus 1"+1" margins
+    usable = 6.5 * inch
     col_w = [usable / 2, usable / 2]
 
-    # ----- Main details table (Word Table 0) — plain borders, no tint -----
+    # ----- Page 1: main details table (Word Table 0) -----
     main_data = [
         [
-            _p(f"<b>Date:</b> {_fmt_date(data.request_date)}", value),
-            _p(f"<b>Lab Code:</b> {data.lab_code or ''}", value),
+            _lv("Date:", _fmt_date(data.request_date), value),
+            _lv("Lab Code:", data.lab_code or "", value),
         ],
         [
-            _p(f"<b>Customer Details:</b><br/>{c.customer_name or ''}", value),
-            _p(
-                f"<b>Address:</b><br/>{(c.address or '').replace(chr(10), '<br/>')}",
+            _lv_br("Customer Details:", c.customer_name or "", value),
+            _lv_br("Address:", c.address or "", value),
+        ],
+        [
+            _lv(
+                "Name of Contact Person:",
+                contact_names or c.contact_person or "",
                 value,
             ),
+            _lv("Contact Number:", c.contact_number or "", value),
         ],
         [
-            _p(f"<b>Name of Contact Person:</b> {c.contact_person or ''}", value),
-            _p(f"<b>Contact Number:</b> {c.contact_number or ''}", value),
+            _lv("Email:", contact_emails or c.email or "", value),
+            _lv("GST Number of Customer:", c.gst_number or "", value),
         ],
         [
-            _p(f"<b>Email:</b> {c.email or ''}", value),
-            _p(f"<b>GST Number of Customer:</b> {c.gst_number or ''}", value),
-        ],
-        [
-            _p(
-                f"<b>Number of Samples</b> "
-                f"{'' if data.number_of_samples is None else data.number_of_samples}",
+            _lv(
+                "Number of Samples",
+                "" if data.number_of_samples is None else str(data.number_of_samples),
                 value,
             ),
             _p("", value),
         ],
         [
-            _p("<b>Sampling Done by Laboratory:</b>", value),
+            _lv("Sampling Done by Laboratory:", "", value),
             _p(_yes_no(data.sampling_by_lab), value),
         ],
         [
-            _p(
-                f"<b>Storage Temperature of sample required:</b> "
-                f"{data.storage_temperature or ''}",
+            _lv(
+                "Storage Temperature of sample required:",
+                data.storage_temperature or "",
                 value,
             ),
             _p("", value),
         ],
         [
-            _p(
-                f"<b>Specific test method/ Specification to be followed:</b><br/>"
-                f"{data.test_method_spec or ''}",
+            _lv_br(
+                "Specific test method/ Specification to be followed:",
+                data.test_method_spec or "",
                 value,
             ),
             _p("", value),
         ],
         [
-            _p("<b>Decision Rule required:</b>", value),
+            _lv("Decision Rule required:", "", value),
             _p(_yes_no(data.decision_rule), value),
         ],
         [
-            _p("<b>Service required:</b>", value),
+            _lv("Service required:", "", value),
             _p(_service_marks(data.service_type), value),
         ],
         [
-            _p("<b>Mode of report delivery:</b>", value),
+            _lv("Mode of report delivery:", "", value),
             _p(_delivery_marks(data.delivery_mode), value),
         ],
         [
-            _p("<b>Payment Details:</b>", value),
+            _lv("Payment Details:", "", value),
             _p(data.payment_details or "", value),
         ],
     ]
@@ -285,14 +341,15 @@ def _generate_reportlab_fallback(
     story.append(main_table)
     story.append(Spacer(1, 6))
 
-    # ----- Notes (Word Table 1) -----
-    notes = (
+    # ----- Page 1: notes (Word Table 1) -----
+    notes = Paragraph(
         "<b>Note:</b> "
         "1) The samples will be processed only after receiving the advance payment. "
         "2) Kindly pay entire amount if report has to be sent by courier/ email/Whatsapp. "
-        "3) Samples will be stored for 7 Days after Report dispatch."
+        "3) Samples will be stored for 7 Days after Report dispatch.",
+        note_style,
     )
-    note_table = Table([[_p(notes, note_style)]], colWidths=[usable])
+    note_table = Table([[notes]], colWidths=[usable])
     note_table.setStyle(
         TableStyle(
             [
@@ -307,93 +364,26 @@ def _generate_reportlab_fallback(
     story.append(note_table)
     story.append(Spacer(1, 14))
 
-    # ----- Signatures (Word body paragraph) -----
+    # ----- Page 1: signatures (Word body paragraph) -----
     sign_table = Table(
         [
             [
-                _p("Receiver's Sign &amp; date", sign_style),
-                _p("Customer Signature &amp; date:", sign_style),
+                _p("Receiver's Sign & date", sign_style),
+                _p("Customer Signature & date:", sign_style),
             ]
         ],
         colWidths=col_w,
     )
     story.append(sign_table)
-    story.append(Spacer(1, 12))
 
-    # ----- Sample section -----
+    # ----- Page 2: sample section (matches LLP.docx page break) -----
+    story.append(PageBreak())
     story.append(
-        Paragraph("Sample Description &amp; tests to be performed:", section_style)
+        Paragraph("Sample Description & tests to be performed:", section_style)
     )
+    story.append(_build_sample_table(data, usable, th_style, td_style))
 
-    header = [
-        _p("Sr. No", th_style),
-        _p("Name of sample", th_style),
-        _p("Code/batch no.", th_style),
-        _p("Sample qty.", th_style),
-        _p("Parameters", th_style),
-    ]
-
-    filled = [s for s in data.samples if not s.is_empty()]
-    display_rows: list[SampleRow] = list(filled)
-    # Word template has 17 data rows
-    while len(display_rows) < 17:
-        display_rows.append(SampleRow(sr_no=len(display_rows) + 1))
-
-    body = []
-    for i, s in enumerate(display_rows, start=1):
-        # Show serial number only on rows that contain sample data
-        sr = str(i) if not s.is_empty() else ""
-        body.append(
-            [
-                _p(sr, td_style),
-                _p(s.sample_name or "", td_style),
-                _p(s.batch_code or "", td_style),
-                _p(s.quantity or "", td_style),
-                _p(s.parameters or "", td_style),
-            ]
-        )
-
-    sample_table = Table(
-        [header] + body,
-        colWidths=[
-            0.55 * inch,
-            1.7 * inch,
-            1.35 * inch,
-            1.0 * inch,
-            usable - (0.55 + 1.7 + 1.35 + 1.0) * inch,
-        ],
-        hAlign="LEFT",
-        repeatRows=1,
-    )
-    sample_table.setStyle(
-        TableStyle(
-            [
-                ("BOX", (0, 0), (-1, -1), 1, BORDER),
-                ("INNERGRID", (0, 0), (-1, -1), 0.5, BORDER),
-                ("VALIGN", (0, 0), (-1, -1), "TOP"),
-                ("LEFTPADDING", (0, 0), (-1, -1), 3),
-                ("RIGHTPADDING", (0, 0), (-1, -1), 3),
-                ("TOPPADDING", (0, 0), (-1, -1), 3),
-                ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
-            ]
-        )
-    )
-    story.append(sample_table)
-
-    # Generator stamp (receiver / customer signs stay blank for pen)
-    story.append(Spacer(1, 14))
-    stamp_style = ParagraphStyle(
-        "Stamp",
-        parent=styles["Normal"],
-        fontName=FONT,
-        fontSize=SMALL,
-        leading=12,
-        alignment=TA_LEFT,
-    )
-    for line in generator_stamp_lines(generated_by, generated_at):
-        story.append(Paragraph(line.replace("&", "&amp;"), stamp_style))
-
-    doc.build(story)
+    doc.build(story, onFirstPage=_draw_footer, onLaterPages=_draw_footer)
     return buffer.getvalue()
 
 
@@ -402,28 +392,10 @@ def generate_pdf_bytes(
     generated_by: str = "",
     generated_at: str = "",
 ) -> bytes:
-    """
-    Build the filled Customer Test Request PDF.
-
-    Prefers Word-template → PDF (exact match). Falls back to ReportLab twin.
-    """
-    docx_bytes = fill_docx_bytes(
+    """Build the filled Customer Test Request PDF via ReportLab."""
+    return _generate_ctr_pdf(
         data, generated_by=generated_by, generated_at=generated_at
     )
-
-    try:
-        pdf_bytes = _convert_docx_to_pdf_bytes(docx_bytes)
-        if pdf_bytes and pdf_bytes[:4] == b"%PDF":
-            return pdf_bytes
-        raise RuntimeError("Converted file does not look like a PDF.")
-    except Exception as exc:  # noqa: BLE001
-        logger.warning(
-            "Word→PDF conversion failed (%s); using ReportLab fallback.",
-            exc,
-        )
-        return _generate_reportlab_fallback(
-            data, generated_by=generated_by, generated_at=generated_at
-        )
 
 
 def suggest_pdf_filename(data: TestRequestData) -> str:

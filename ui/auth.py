@@ -10,6 +10,7 @@ from typing import Optional
 
 import streamlit as st
 
+from db.migrate import ensure_schema
 from services.auth import (
     AuthUser,
     authenticate,
@@ -19,8 +20,25 @@ from services.auth import (
     get_session_user,
     is_logged_in,
     refresh_session_from_db,
+    roles_display,
     set_session_user,
 )
+
+# Single source of truth for workspace page access.
+PAGE_ACCESS: dict[str, tuple[str, ...]] = {
+    "reception": ("admin", "reception"),
+    "analyst": ("admin", "analyst"),
+    "reviewer": ("admin", "reviewer"),
+    "admin": ("admin",),
+}
+
+
+def user_can_access_page(user: AuthUser, page: str) -> bool:
+    """True when the user's role(s) include access to the workspace page."""
+    allowed = PAGE_ACCESS.get(page)
+    if not allowed:
+        return False
+    return user.has_any_role(*allowed)
 
 
 def render_logout_sidebar() -> None:
@@ -31,7 +49,8 @@ def render_logout_sidebar() -> None:
     with st.sidebar:
         st.markdown("---")
         label = user.full_name or user.username
-        st.caption(f"Signed in as **{label}** ({user.role})")
+        st.caption(f"Signed in as **{label}** ({roles_display(user.roles)})")
+        st.page_link("app.py", label="Home", icon="🏠")
         if st.button("Log out", key="sidebar_logout", use_container_width=True):
             clear_session_user()
             st.rerun()
@@ -43,6 +62,7 @@ def render_login_form() -> None:
     st.caption("Use the credentials provided by your administrator.")
 
     try:
+        ensure_schema()
         ensure_default_admin()
     except Exception:  # noqa: BLE001
         # DB may be down — login will fail with a clear error below
@@ -131,9 +151,9 @@ def require_login() -> Optional[AuthUser]:
         st.stop()
         return None
 
-    user = get_session_user()
+    # Re-validate against DB so deactivated users or role changes apply immediately.
+    user = refresh_session_from_db()
     if user is None:
-        clear_session_user()
         render_login_form()
         st.stop()
         return None
@@ -144,6 +164,25 @@ def require_login() -> Optional[AuthUser]:
         return None
 
     render_logout_sidebar()
+    return user
+
+
+def require_page_access(page: str) -> Optional[AuthUser]:
+    """
+    require_login() then ensure the user may open the workspace page.
+
+    Wrong role → access denied (no page content).
+    """
+    user = require_login()
+    if user is None:
+        return None
+
+    if not user_can_access_page(user, page):
+        st.error("Access denied — your role cannot open this page.")
+        st.page_link("app.py", label="Back to Home", icon="🏠")
+        st.stop()
+        return None
+
     return user
 
 
@@ -158,7 +197,7 @@ def require_role(*roles: str) -> Optional[AuthUser]:
         return None
 
     allowed = {r.lower() for r in roles}
-    if user.role.lower() not in allowed:
+    if not user.roles or not ({r.lower() for r in user.roles} & allowed):
         st.error("Access denied — your role cannot open this page.")
         st.page_link("app.py", label="Back to Home", icon="🏠")
         st.stop()

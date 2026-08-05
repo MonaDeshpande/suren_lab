@@ -31,6 +31,21 @@ CREATE INDEX IF NOT EXISTS idx_customers_gst
 CREATE INDEX IF NOT EXISTS idx_customers_name
     ON customers (customer_name);
 
+-- Up to 5 contact persons per customer (name + email each)
+CREATE TABLE IF NOT EXISTS customer_contacts (
+    id              SERIAL PRIMARY KEY,
+    customer_id     INTEGER     NOT NULL REFERENCES customers(id) ON DELETE CASCADE,
+    position        INTEGER     NOT NULL CHECK (position BETWEEN 1 AND 5),
+    contact_name    TEXT        NOT NULL DEFAULT '',
+    email           TEXT,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE (customer_id, position)
+);
+
+CREATE INDEX IF NOT EXISTS idx_customer_contacts_customer
+    ON customer_contacts (customer_id);
+
 -- ---------------------------------------------------------------------------
 -- test_requests  (one row per Customer Test Request form)
 -- ---------------------------------------------------------------------------
@@ -61,6 +76,105 @@ CREATE INDEX IF NOT EXISTS idx_test_requests_date
     ON test_requests (request_date);
 
 -- ---------------------------------------------------------------------------
+-- sample_test_packages  (versioned test sets per product name + package type)
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS sample_test_packages (
+    id                  SERIAL PRIMARY KEY,
+    sample_product_name TEXT        NOT NULL,
+    package_type        TEXT        NOT NULL
+                        CHECK (package_type IN (
+                            'fssai', 'nutrition_only', 'basic_nutrition', 'detailed_nutrition'
+                        )),
+    category            TEXT        NOT NULL DEFAULT 'food'
+                        CHECK (category IN ('food', 'water', 'cattle_feed_fertilizer', 'micro')),
+    current_version_no  INTEGER     NOT NULL DEFAULT 1
+                        CHECK (current_version_no >= 1),
+    is_active           BOOLEAN     NOT NULL DEFAULT TRUE,
+    created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at          TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_sample_test_packages_unique
+    ON sample_test_packages (
+        lower(trim(sample_product_name)),
+        package_type,
+        category
+    );
+
+CREATE INDEX IF NOT EXISTS idx_sample_test_packages_active
+    ON sample_test_packages (is_active, lower(trim(sample_product_name)));
+
+CREATE TABLE IF NOT EXISTS sample_test_package_tests (
+    package_id  INTEGER NOT NULL
+                REFERENCES sample_test_packages(id) ON DELETE CASCADE,
+    test_key    TEXT    NOT NULL,
+    sort_order  INTEGER NOT NULL DEFAULT 0,
+    logo_scope  TEXT    NOT NULL DEFAULT 'with_logo'
+                CHECK (logo_scope IN ('with_logo', 'without_logo')),
+    PRIMARY KEY (package_id, test_key)
+);
+
+CREATE INDEX IF NOT EXISTS idx_sample_test_package_tests_order
+    ON sample_test_package_tests (package_id, sort_order);
+
+-- ---------------------------------------------------------------------------
+-- custom_formulas  (Admin-defined tests merged into runtime catalog)
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS custom_formulas (
+    id                  SERIAL PRIMARY KEY,
+    test_key            TEXT        NOT NULL UNIQUE,
+    name                TEXT        NOT NULL,
+    method              TEXT        NOT NULL DEFAULT '',
+    unit                TEXT        NOT NULL DEFAULT '',
+    category            TEXT        NOT NULL
+                        CHECK (category IN ('food', 'water', 'cattle_feed_fertilizer', 'micro')),
+    package_type        TEXT
+                        CHECK (
+                            package_type IS NULL
+                            OR package_type IN (
+                                'fssai', 'nutrition_only', 'basic_nutrition', 'detailed_nutrition'
+                            )
+                        ),
+    formula_display     TEXT        NOT NULL,
+    expression          TEXT        NOT NULL,
+    use_dry_basis       BOOLEAN     NOT NULL DEFAULT FALSE,
+    moisture_input_key  TEXT,
+    protocol_family     TEXT        NOT NULL DEFAULT 'jaggery'
+                        CHECK (protocol_family IN ('jaggery', 'nutrition')),
+    current_version_no  INTEGER     NOT NULL DEFAULT 1
+                        CHECK (current_version_no >= 1),
+    is_active           BOOLEAN     NOT NULL DEFAULT FALSE,
+    is_validated        BOOLEAN     NOT NULL DEFAULT FALSE,
+    validation_trials_json TEXT     NOT NULL DEFAULT '[]',
+    created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at          TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_custom_formulas_scope
+    ON custom_formulas (category, package_type, is_active);
+
+CREATE INDEX IF NOT EXISTS idx_custom_formulas_active
+    ON custom_formulas (is_active, category);
+
+CREATE TABLE IF NOT EXISTS custom_formula_inputs (
+    id              SERIAL PRIMARY KEY,
+    formula_id      INTEGER     NOT NULL
+                    REFERENCES custom_formulas(id) ON DELETE CASCADE,
+    field_key       TEXT        NOT NULL,
+    label           TEXT        NOT NULL,
+    unit            TEXT        NOT NULL DEFAULT '',
+    required        BOOLEAN     NOT NULL DEFAULT TRUE,
+    field_type      TEXT        NOT NULL DEFAULT 'number'
+                    CHECK (field_type IN ('number', 'text', 'choice')),
+    choices_json    TEXT        NOT NULL DEFAULT '[]',
+    sort_order      INTEGER     NOT NULL DEFAULT 0,
+    UNIQUE (formula_id, field_key)
+);
+
+CREATE INDEX IF NOT EXISTS idx_custom_formula_inputs_order
+    ON custom_formula_inputs (formula_id, sort_order);
+
+-- ---------------------------------------------------------------------------
 -- request_samples  (rows in the "Sample Description" table)
 -- Each sample gets a unique sample_code for analyst handoff.
 -- Rows are retained for 10 days (expires_at); cleanup script deletes expired.
@@ -77,12 +191,27 @@ CREATE TABLE IF NOT EXISTS request_samples (
     -- Analyst workflow fields
     sample_code         TEXT        NOT NULL UNIQUE,   -- e.g. SLS-260717-0001
     category            TEXT        NOT NULL DEFAULT 'food'
-                        CHECK (category IN ('food', 'water', 'cattle_feed_fertilizer')),
+                        CHECK (category IN ('food', 'water', 'cattle_feed_fertilizer', 'micro')),
     tests_to_perform    TEXT,                          -- Display names of selected tests
     tests_json          TEXT,                          -- JSON list of catalog test_keys
     status              TEXT        NOT NULL DEFAULT 'pending'
                         CHECK (status IN ('pending', 'in_progress', 'completed', 'reported')),
     analyst_remarks     TEXT,
+    assigned_analyst_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    protocol_no         TEXT,                          -- Reception-entered; synced to sample_protocols
+    report_format       TEXT        NOT NULL DEFAULT 'with_logo'
+                        CHECK (report_format IN ('with_logo', 'without_logo', 'both')),
+    tests_with_logo_json TEXT,
+    tests_without_logo_json TEXT,
+    package_id          INTEGER REFERENCES sample_test_packages(id) ON DELETE SET NULL,
+    package_version_no  INTEGER,
+    package_type        TEXT
+                        CHECK (
+                            package_type IS NULL
+                            OR package_type IN (
+                                'fssai', 'nutrition_only', 'basic_nutrition', 'detailed_nutrition'
+                            )
+                        ),
     created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     expires_at          TIMESTAMPTZ NOT NULL DEFAULT (NOW() + INTERVAL '10 days')
@@ -102,6 +231,12 @@ CREATE INDEX IF NOT EXISTS idx_request_samples_expires
 
 CREATE INDEX IF NOT EXISTS idx_request_samples_category
     ON request_samples (category);
+
+CREATE INDEX IF NOT EXISTS idx_request_samples_assigned_analyst
+    ON request_samples (assigned_analyst_id, status, expires_at);
+
+CREATE INDEX IF NOT EXISTS idx_request_samples_package
+    ON request_samples (package_id);
 
 -- JSON array of shared catalog test_keys, e.g. ["moisture","total_ash"]
 -- Category filters which catalog tests Reception can assign.
@@ -147,7 +282,7 @@ CREATE INDEX IF NOT EXISTS idx_sample_test_results_sample
     ON sample_test_results (sample_id);
 
 -- ---------------------------------------------------------------------------
--- users  (login credentials + single role per account)
+-- users  (login credentials; roles via user_roles junction — up to 2 per user)
 -- ---------------------------------------------------------------------------
 -- Seeded default admin (username admin / Admin@123) via scripts/seed_admin.py.
 -- New staff: must_change_password = TRUE until they change it at the desk.
@@ -157,8 +292,6 @@ CREATE TABLE IF NOT EXISTS users (
     username             TEXT        NOT NULL UNIQUE,
     password_hash        TEXT        NOT NULL,
     full_name            TEXT,
-    role                 TEXT        NOT NULL
-                         CHECK (role IN ('admin', 'reception', 'analyst', 'reviewer')),
     is_active            BOOLEAN     NOT NULL DEFAULT TRUE,
     must_change_password BOOLEAN     NOT NULL DEFAULT TRUE,
     created_at           TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -168,8 +301,15 @@ CREATE TABLE IF NOT EXISTS users (
 CREATE INDEX IF NOT EXISTS idx_users_username
     ON users (username);
 
-CREATE INDEX IF NOT EXISTS idx_users_role
-    ON users (role);
+CREATE TABLE IF NOT EXISTS user_roles (
+    user_id     INTEGER     NOT NULL REFERENCES users (id) ON DELETE CASCADE,
+    role        TEXT        NOT NULL
+                CHECK (role IN ('admin', 'reception', 'analyst', 'reviewer')),
+    PRIMARY KEY (user_id, role)
+);
+
+CREATE INDEX IF NOT EXISTS idx_user_roles_role
+    ON user_roles (role);
 
 -- ---------------------------------------------------------------------------
 -- audit_log  (who / when / what for every meaningful write)
@@ -182,11 +322,34 @@ CREATE TABLE IF NOT EXISTS audit_log (
     action       TEXT NOT NULL,
     entity_table TEXT NOT NULL,
     entity_id    TEXT,
-    details      TEXT
+    details      TEXT,
+    edit_reason  TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_audit_log_occurred_at
     ON audit_log (occurred_at DESC);
+
+-- ---------------------------------------------------------------------------
+-- entity_versions  (immutable snapshot before each edit)
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS entity_versions (
+    id              BIGSERIAL PRIMARY KEY,
+    entity_table    TEXT        NOT NULL,
+    entity_id       TEXT        NOT NULL,
+    version_no      INTEGER     NOT NULL,
+    snapshot_json   TEXT        NOT NULL,
+    edit_reason     TEXT        NOT NULL,
+    user_id         INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    user_name       TEXT        NOT NULL,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE (entity_table, entity_id, version_no)
+);
+
+CREATE INDEX IF NOT EXISTS idx_entity_versions_entity
+    ON entity_versions (entity_table, entity_id, version_no DESC);
+
+CREATE INDEX IF NOT EXISTS idx_entity_versions_created_at
+    ON entity_versions (created_at DESC);
 
 -- ---------------------------------------------------------------------------
 -- Auto-update customers.updated_at / users.updated_at on any change

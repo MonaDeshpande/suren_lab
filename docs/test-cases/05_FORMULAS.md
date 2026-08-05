@@ -1,10 +1,12 @@
-# Formulas — Test Cases (11 shared catalog tests)
+# Formulas — Test Cases (Jaggery / Water / Basic Nutrition)
 
-**Module:** Lab calculation library  
+**Module:** Lab calculation library (32 catalog tests)  
 **Related code:** `services/protocols/test_catalog.py`  
-**Rounding:** 2 decimal places unless noted (SO₂ → 1 decimal)
+**Rounding:** 2 decimal places unless noted (SO₂, water mg/L, conductivity → 1 decimal)
 
 Use Analyst UI **or** automated `tests/unit/test_formulas.py`.
+
+**Families:** 11 Jaggery (food) · 11 Water · 11 Basic Nutrition (`bn_*`, shares `appearance` with Jaggery)
 
 ---
 
@@ -19,6 +21,8 @@ Unless testing override path, save moisture first with:
 | w2 | 10.2 |
 
 **Moisture %** = `(10.5 − 10.2) × 100 / 5` = **6.0**
+
+For Basic Nutrition dry-basis tests, save **bn_moisture** first (same inputs → **6.0%**) or use ctx `bn_moisture=6.0`.
 
 ---
 
@@ -198,20 +202,22 @@ Unless testing override path, save moisture first with:
 |-------|-------|
 | **Priority** | P0 |
 | **Type** | Positive |
+| **Formula** | `Conc×250×10/(Wt×B.R.)` then dry (Jaggery protocol) |
 | **Inputs** | sugar_conc=0.5, sample_wt=5.0, br_reducing=50.0; moisture=6.0 |
-| **Calc** | Wet=`50`; Dry=`50×100/94≈53.19` |
-| **Expected** | `53.19` |
+| **Calc** | Wet=`0.5×250×10/(5×50)=5`; Dry=`5×100/94≈5.32` |
+| **Expected** | `5.32` |
 
 ---
 
-## TC-FOR-017 — Sucrose = invert − reducing
+## TC-FOR-017 — Sucrose = (invert − reducing) × 0.95
 
 | Field | Value |
 |-------|-------|
 | **Priority** | P0 |
 | **Type** | Positive |
 | **Inputs** | ctx invert_sugar=106.38, reducing_sugar=53.19 |
-| **Expected** | `53.19` |
+| **Calc** | `(106.38 − 53.19) × 0.95 ≈ 50.53` |
+| **Expected** | `50.53` |
 
 ---
 
@@ -233,7 +239,8 @@ Unless testing override path, save moisture first with:
 | **Priority** | P1 |
 | **Type** | Positive |
 | **Inputs** | invert_dry=80, reducing_dry=30 |
-| **Expected** | `50.0` / `50` |
+| **Calc** | `(80 − 30) × 0.95 = 47.5` |
+| **Expected** | `47.5` / `47.5` |
 
 ---
 
@@ -290,3 +297,165 @@ Unless testing override path, save moisture first with:
 | **Type** | Negative |
 | **Inputs** | w1=`abc` for moisture |
 | **Expected** | Calculation fails (float parse / ValueError surfaced to user). |
+
+---
+
+## Water — TC-FOR-025…029
+
+## TC-FOR-025 — Water conductivity (direct reading)
+
+| Field | Value |
+|-------|-------|
+| **Priority** | P0 |
+| **Type** | Positive |
+| **Formula** | Record conductivity reading (µS/cm) |
+| **Inputs** | conductivity=450 |
+| **Expected** | `450.0` |
+
+---
+
+## TC-FOR-026 — Water turbidity (direct reading)
+
+| Field | Value |
+|-------|-------|
+| **Priority** | P0 |
+| **Type** | Positive |
+| **Formula** | Record turbidity (NTU) |
+| **Inputs** | turbidity=1.2 |
+| **Expected** | `1.2` |
+
+---
+
+## TC-FOR-027 — Calcium as Ca
+
+| Field | Value |
+|-------|-------|
+| **Priority** | P0 |
+| **Type** | Positive |
+| **Formula** | `A × B × 1000 / volume` |
+| **Inputs** | a=10.0, b=1.0, volume=50.0 |
+| **Calc** | `10000/50=200.0` |
+| **Expected** | `200.0` mg/L |
+
+---
+
+## TC-FOR-028 — Calcium as CaCO₃
+
+| Field | Value |
+|-------|-------|
+| **Priority** | P0 |
+| **Type** | Positive |
+| **Formula** | `A × C × 1000 / volume` |
+| **Inputs** | a=10.0, c=2.0, volume=50.0 |
+| **Calc** | `20000/50=400.0` |
+| **Expected** | `400.0` mg/L |
+
+---
+
+## TC-FOR-029 — Calcium volume=0
+
+| Field | Value |
+|-------|-------|
+| **Priority** | P0 |
+| **Type** | Boundary |
+| **Inputs** | volume=0 for calcium_ca |
+| **Expected** | Sample volume cannot be zero |
+
+---
+
+## Basic Nutrition — TC-FOR-030…037
+
+## TC-FOR-030 — bn_total_ash (wet basis)
+
+| Field | Value |
+|-------|-------|
+| **Priority** | P0 |
+| **Type** | Positive |
+| **Formula** | `(W2 − W1) × 100 / W` |
+| **Inputs** | w1=20.0, w2=20.15, w=5.0 |
+| **Calc** | `0.15×100/5=3.0` |
+| **Expected** | `3.0` |
+
+---
+
+## TC-FOR-031 — bn_ash_insoluble_hcl (dry basis)
+
+| Field | Value |
+|-------|-------|
+| **Priority** | P0 |
+| **Type** | Positive |
+| **Formula** | Insol=`(W2−W1)×100/W`; Dry=`Insol×100/(100−bn_moisture)` |
+| **Inputs** | w1=20.0, w2=20.05, w=5.0; ctx bn_moisture=6.0 |
+| **Calc** | Insol=1.0; Dry≈1.06 |
+| **Expected** | `1.06` |
+
+---
+
+## TC-FOR-032 — bn_ash_insoluble missing moisture
+
+| Field | Value |
+|-------|-------|
+| **Priority** | P0 |
+| **Type** | Negative |
+| **Inputs** | Valid w1/w2/w; no bn_moisture saved |
+| **Expected** | bn_moisture result required for dry-basis |
+
+---
+
+## TC-FOR-033 — bn_crude_fibre
+
+| Field | Value |
+|-------|-------|
+| **Priority** | P0 |
+| **Type** | Positive |
+| **Formula** | `(W2 − W1) × 100 / W` |
+| **Inputs** | w=10.0, w1=20.0, w2=21.5 |
+| **Expected** | `15.0` |
+
+---
+
+## TC-FOR-034 — bn_added_sugar (dry basis)
+
+| Field | Value |
+|-------|-------|
+| **Priority** | P0 |
+| **Type** | Positive |
+| **Formula** | Wet=`Conc×250×10/(Wt×B.R.)`; Dry=`Wet×100/(100−bn_moisture)` |
+| **Inputs** | sugar_conc=0.5, sample_wt=5.0, br=50.0; ctx bn_moisture=6.0 |
+| **Calc** | Wet=5.0; Dry≈5.32 |
+| **Expected** | `5.32` |
+
+---
+
+## TC-FOR-035 — bn_total_sugar (dry basis)
+
+| Field | Value |
+|-------|-------|
+| **Priority** | P0 |
+| **Type** | Positive |
+| **Formula** | Wet=`Conc×250×100/(Wt×B.R.)`; Dry=`Wet×100/(100−bn_moisture)` |
+| **Inputs** | sugar_conc=0.5, sample_wt=5.0, br=25.0; ctx bn_moisture=6.0 |
+| **Calc** | Wet=100; Dry≈106.38 |
+| **Expected** | `106.38` |
+
+---
+
+## TC-FOR-036 — Reducing sugar B.R.=0
+
+| Field | Value |
+|-------|-------|
+| **Priority** | P0 |
+| **Type** | Boundary |
+| **Inputs** | br_reducing=0 with valid conc/sample_wt |
+| **Expected** | Sample weight and B.R. must be non-zero |
+
+---
+
+## TC-FOR-037 — bn_total_ash W=0
+
+| Field | Value |
+|-------|-------|
+| **Priority** | P0 |
+| **Type** | Boundary |
+| **Inputs** | w=0 for bn_total_ash |
+| **Expected** | Sample weight W cannot be zero |

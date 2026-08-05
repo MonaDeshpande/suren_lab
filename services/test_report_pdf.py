@@ -22,6 +22,7 @@ from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import mm
 from reportlab.platypus import (
     Image as RLImage,
+    PageBreak,
     Paragraph,
     SimpleDocTemplate,
     Spacer,
@@ -37,8 +38,24 @@ from services.branding import (
     TEST_REPORT_LETTERHEAD_PT,
 )
 from services.protocol_store import ProtocolHeader, TestResultRow
-from services.protocols.test_catalog import TEST_CATALOG, get_test
-from services.samples import SampleRecord
+from services.protocols.test_catalog import (
+    CATEGORY_MICRO,
+    CATEGORY_WATER,
+    TEST_CATALOG,
+    catalog_keys_for_category,
+    get_test,
+    normalize_category,
+    uses_nutrition_template,
+)
+from services.samples import (
+    REPORT_FORMAT_BOTH,
+    REPORT_FORMAT_WITH_LOGO,
+    SampleRecord,
+    logo_test_keys,
+    no_logo_test_keys,
+    normalize_report_format,
+    report_keys_for_sample,
+)
 from services.audit import format_stamp_datetime, generator_stamp_lines
 
 BORDER = colors.black
@@ -70,6 +87,21 @@ REMARK_TEXT = (
     "the above tests processed. The Results are pertaining to the sample sent "
     "for analysis only. The Specifications mentioned are for whole Jaggery."
 )
+
+WATER_REMARK_TEXT = (
+    "Remark: The results pertain to the water sample sent for analysis as stated "
+    "above. Specifications are not listed unless provided by the customer."
+)
+
+NUTRITION_REMARK_TEXT = (
+    "Remark: The results pertain to the food sample sent for analysis as stated "
+    "above. Nutrition specifications are not listed unless provided by the customer."
+)
+
+WATER_SPECS_HEADER = "Specifications (as applicable)"
+NUTRITION_SPECS_HEADER = "Specifications (as applicable)"
+
+DEFAULT_TESTS_PROCESSED = "As per customer request"
 
 DISCLAIMER_BULLETS = [
     "Sample submitted by the customer in their own container.",
@@ -121,6 +153,10 @@ class TestReportData:
     generated_by: str = ""
     generated_at: str = ""
     rows: list[TestReportRow] = field(default_factory=list)
+    remark_text: str = REMARK_TEXT
+    specs_header: str = SPECS_HEADER
+    is_water: bool = False
+    is_nutrition: bool = False
 
 
 def _fmt_date(d: Optional[date]) -> str:
@@ -142,10 +178,15 @@ def _p(text: str, style: ParagraphStyle) -> Paragraph:
     return Paragraph(_escape(text).replace("\n", "<br/>"), style)
 
 
-def _chemical_keys(sample: SampleRecord) -> list[str]:
-    """Selected catalog keys excluding appearance, in catalog order."""
-    selected = set(sample.selected_test_keys())
-    return [k for k in TEST_CATALOG if k in selected and k != "appearance"]
+def _report_keys(
+    sample: SampleRecord,
+    row_filter: Optional[set[str]] = None,
+) -> list[str]:
+    """Selected catalog keys in category order (food excludes appearance)."""
+    chem_keys = report_keys_for_sample(sample)
+    if row_filter is not None:
+        chem_keys = [k for k in chem_keys if k in row_filter]
+    return chem_keys
 
 
 def build_test_report_data(
@@ -155,22 +196,22 @@ def build_test_report_data(
     report_date: Optional[date] = None,
     generated_by: str = "",
     generated_at: str = "",
+    row_filter: Optional[set[str]] = None,
+    condition_of_sample: str | None = None,
+    tests_processed: str | None = None,
+    specification_by_test_name: dict[str, str] | None = None,
 ) -> TestReportData:
     """Collate client + protocol into Test Report fields."""
     results_by_key = {r.test_key: r for r in results}
-    chem_keys = _chemical_keys(sample)
+    cat = normalize_category(sample.category)
+    is_water = cat == CATEGORY_WATER
+    is_nutrition = not is_water and uses_nutrition_template(sample.selected_test_keys())
+    chem_keys = _report_keys(sample, row_filter=row_filter)
 
     name_addr_parts = [sample.customer_name or ""]
     if (sample.customer_address or "").strip():
         name_addr_parts.append(sample.customer_address.strip())
     name_address = "\n".join(p for p in name_addr_parts if p)
-
-    test_names = []
-    for key in chem_keys:
-        try:
-            test_names.append(get_test(key).name)
-        except KeyError:
-            continue
 
     if sample.sampling_by_lab is True:
         sampling_done = "Laboratory"
@@ -190,33 +231,62 @@ def build_test_report_data(
             if saved.unit and saved.unit not in result_val:
                 result_val = f"{result_val} {saved.unit}".strip()
         method = (saved.method if saved and saved.method else lab_test.method) or ""
+        if is_water or key.startswith("bn_"):
+            spec = ""
+        else:
+            spec = FSSAI_SPECS.get(key, "")
         rows.append(
             TestReportRow(
                 sr_no=i,
                 test_name=lab_test.name,
                 result=result_val,
-                specification=FSSAI_SPECS.get(key, ""),
+                specification=spec,
                 method=method,
             )
         )
 
+    if specification_by_test_name:
+        for row in rows:
+            if row.test_name in specification_by_test_name:
+                row.specification = specification_by_test_name[row.test_name]
+
     rd = report_date or date.today()
     stamp_at = (generated_at or "").strip() or format_stamp_datetime()
+    if is_water:
+        remark = WATER_REMARK_TEXT
+        specs_hdr = WATER_SPECS_HEADER
+    elif is_nutrition:
+        remark = NUTRITION_REMARK_TEXT
+        specs_hdr = NUTRITION_SPECS_HEADER
+    else:
+        remark = REMARK_TEXT
+        specs_hdr = SPECS_HEADER
     return TestReportData(
         customer_name_address=name_address,
         batch_no=sample.batch_code or "",
-        lab_code=sample.lab_code or "",
+        lab_code=sample.sample_code or sample.lab_code or "",
         date_of_sample_receipt=_fmt_date(header.sample_received_on),
         sample_name=sample.sample_name or "",
         test_performance_date=_fmt_date(header.date_of_analysis),
-        tests_processed=", ".join(test_names),
+        condition_of_sample=(
+            condition_of_sample if condition_of_sample is not None else ""
+        ),
+        tests_processed=(
+            tests_processed
+            if tests_processed is not None
+            else DEFAULT_TESTS_PROCESSED
+        ),
         sample_quantity=sample.quantity or "",
-        appearance=(header.appearance_text or "").strip(),
+        appearance=(header.appearance_text or "").strip() if not is_water else "",
         sampling_done_by=sampling_done,
         report_date=_fmt_date(rd),
         generated_by=(generated_by or "").strip(),
         generated_at=stamp_at,
         rows=rows,
+        remark_text=remark,
+        specs_header=specs_hdr,
+        is_water=is_water,
+        is_nutrition=is_nutrition,
     )
 
 
@@ -246,133 +316,74 @@ def generate_test_report_pdf_bytes(
     report_date: Optional[date] = None,
     generated_by: str = "",
     generated_at: str = "",
+    condition_of_sample: str | None = None,
+    tests_processed: str | None = None,
+    specification_by_test_name: dict[str, str] | None = None,
 ) -> bytes:
     """Build the filled Test Report PDF bytes."""
+    report_kwargs = {
+        "report_date": report_date,
+        "generated_by": generated_by,
+        "generated_at": generated_at,
+        "condition_of_sample": condition_of_sample,
+        "tests_processed": tests_processed,
+        "specification_by_test_name": specification_by_test_name,
+    }
+    fmt = normalize_report_format(sample.report_format)
+    if fmt == REPORT_FORMAT_BOTH:
+        sections: list[tuple[TestReportData, bool]] = []
+        if logo_test_keys(sample):
+            sections.append(
+                (
+                    build_test_report_data(
+                        sample,
+                        header,
+                        results,
+                        row_filter=logo_test_keys(sample),
+                        **report_kwargs,
+                    ),
+                    True,
+                )
+            )
+        if no_logo_test_keys(sample):
+            sections.append(
+                (
+                    build_test_report_data(
+                        sample,
+                        header,
+                        results,
+                        row_filter=no_logo_test_keys(sample),
+                        **report_kwargs,
+                    ),
+                    False,
+                )
+            )
+        if not sections:
+            data = build_test_report_data(
+                sample,
+                header,
+                results,
+                **report_kwargs,
+            )
+            return _render_pdf(data, include_logo=True)
+        return _render_pdf_sections(sections)
+
+    include_logo = fmt == REPORT_FORMAT_WITH_LOGO
     data = build_test_report_data(
         sample,
         header,
         results,
-        report_date=report_date,
-        generated_by=generated_by,
-        generated_at=generated_at,
+        **report_kwargs,
     )
-    return _render_pdf(data)
+    return _render_pdf(data, include_logo=include_logo)
 
 
-def _render_pdf(data: TestReportData) -> bytes:
-    buffer = io.BytesIO()
-    page_w, page_h = A4
-    left = 18 * mm
-    right = 18 * mm
-    usable = page_w - left - right
-
-    doc = SimpleDocTemplate(
-        buffer,
-        pagesize=A4,
-        leftMargin=left,
-        rightMargin=right,
-        # Small edge pad; letterhead band below fills ~130 pt like the reference
-        topMargin=8 * mm,
-        bottomMargin=12 * mm,
-        title="Test Report",
-        author=ORGANIZATION_NAME,
-    )
-
-    styles = getSampleStyleSheet()
-    title_style = ParagraphStyle(
-        "TRTitle",
-        parent=styles["Normal"],
-        fontName=FONT_BOLD,
-        fontSize=14,
-        alignment=TA_CENTER,
-        leading=16,
-    )
-    qsf_style = ParagraphStyle(
-        "TRQsf",
-        parent=styles["Normal"],
-        fontName=FONT_BOLD,
-        fontSize=9,
-        alignment=TA_CENTER,
-        leading=11,
-    )
-    label_style = ParagraphStyle(
-        "TRLabel",
-        parent=styles["Normal"],
-        fontName=FONT_BOLD,
-        fontSize=8,
-        leading=10,
-        alignment=TA_LEFT,
-    )
-    value_style = ParagraphStyle(
-        "TRValue",
-        parent=styles["Normal"],
-        fontName=FONT,
-        fontSize=8,
-        leading=10,
-        alignment=TA_LEFT,
-    )
-    section_style = ParagraphStyle(
-        "TRSection",
-        parent=styles["Normal"],
-        fontName=FONT_BOLD,
-        fontSize=11,
-        alignment=TA_CENTER,
-        leading=13,
-        spaceBefore=6,
-        spaceAfter=4,
-    )
-    th_style = ParagraphStyle(
-        "TRTh",
-        parent=styles["Normal"],
-        fontName=FONT_BOLD,
-        fontSize=7,
-        leading=9,
-        alignment=TA_CENTER,
-    )
-    td_style = ParagraphStyle(
-        "TRTd",
-        parent=styles["Normal"],
-        fontName=FONT,
-        fontSize=7,
-        leading=9,
-        alignment=TA_LEFT,
-    )
-    td_center = ParagraphStyle(
-        "TRTdC",
-        parent=td_style,
-        alignment=TA_CENTER,
-    )
-    small = ParagraphStyle(
-        "TRSmall",
-        parent=styles["Normal"],
-        fontName=FONT,
-        fontSize=8,
-        leading=10,
-        alignment=TA_LEFT,
-    )
-    sign_style = ParagraphStyle(
-        "TRSign",
-        parent=styles["Normal"],
-        fontName=FONT,
-        fontSize=9,
-        leading=12,
-        alignment=TA_LEFT,
-    )
-    end_style = ParagraphStyle(
-        "TREnd",
-        parent=styles["Normal"],
-        fontName=FONT_BOLD,
-        fontSize=9,
-        alignment=TA_CENTER,
-        leading=11,
-    )
-
+def _letterhead_story(usable: float, include_logo: bool) -> list:
+    """Top letterhead band — logo or blank spacer matching reference layout."""
     story: list = []
-
-    # ----- Letterhead band (matches reference ~130 pt top blank) -----
-    logo_h = usable * (LOGO_HEIGHT_IN / LOGO_WIDTH_IN)
     band = float(TEST_REPORT_LETTERHEAD_PT)
-    if LOGO_PATH.exists():
+    if include_logo and LOGO_PATH.exists():
+        logo_h = usable * (LOGO_HEIGHT_IN / LOGO_WIDTH_IN)
         logo = RLImage(str(LOGO_PATH), width=usable, height=logo_h)
         story.append(logo)
         pad = band - logo_h
@@ -380,6 +391,165 @@ def _render_pdf(data: TestReportData) -> bytes:
             story.append(Spacer(1, pad))
     else:
         story.append(Spacer(1, band))
+    return story
+
+
+def _render_pdf_sections(sections: list[tuple[TestReportData, bool]]) -> bytes:
+    """Render one PDF with multiple report sections (e.g. logo + no-logo)."""
+    if len(sections) == 1:
+        return _render_pdf(sections[0][0], include_logo=sections[0][1])
+    buffer = io.BytesIO()
+    page_w, page_h = A4
+    left = 18 * mm
+    right = 18 * mm
+    usable = page_w - left - right
+    doc = SimpleDocTemplate(
+        buffer,
+        pagesize=A4,
+        leftMargin=left,
+        rightMargin=right,
+        topMargin=8 * mm,
+        bottomMargin=12 * mm,
+        title="Test Report",
+        author=ORGANIZATION_NAME,
+    )
+    styles = _report_styles()
+    story: list = []
+    for idx, (data, include_logo) in enumerate(sections):
+        if idx > 0:
+            story.append(PageBreak())
+        story.extend(_build_report_story(data, styles, usable, include_logo))
+
+    def _footer(canvas, _doc):
+        canvas.saveState()
+        canvas.setFont(FONT, 8)
+        canvas.drawRightString(
+            page_w - right,
+            8 * mm,
+            f"Page {canvas.getPageNumber()}",
+        )
+        canvas.restoreState()
+
+    doc.build(story, onFirstPage=_footer, onLaterPages=_footer)
+    return buffer.getvalue()
+
+
+def _report_styles() -> dict:
+    styles = getSampleStyleSheet()
+    return {
+        "title": ParagraphStyle(
+            "TRTitle",
+            parent=styles["Normal"],
+            fontName=FONT_BOLD,
+            fontSize=14,
+            alignment=TA_CENTER,
+            leading=16,
+        ),
+        "qsf": ParagraphStyle(
+            "TRQsf",
+            parent=styles["Normal"],
+            fontName=FONT_BOLD,
+            fontSize=9,
+            alignment=TA_CENTER,
+            leading=11,
+        ),
+        "label": ParagraphStyle(
+            "TRLabel",
+            parent=styles["Normal"],
+            fontName=FONT_BOLD,
+            fontSize=8,
+            leading=10,
+            alignment=TA_LEFT,
+        ),
+        "value": ParagraphStyle(
+            "TRValue",
+            parent=styles["Normal"],
+            fontName=FONT,
+            fontSize=8,
+            leading=10,
+            alignment=TA_LEFT,
+        ),
+        "section": ParagraphStyle(
+            "TRSection",
+            parent=styles["Normal"],
+            fontName=FONT_BOLD,
+            fontSize=11,
+            alignment=TA_CENTER,
+            leading=13,
+            spaceBefore=6,
+            spaceAfter=4,
+        ),
+        "th": ParagraphStyle(
+            "TRTh",
+            parent=styles["Normal"],
+            fontName=FONT_BOLD,
+            fontSize=7,
+            leading=9,
+            alignment=TA_CENTER,
+        ),
+        "td": ParagraphStyle(
+            "TRTd",
+            parent=styles["Normal"],
+            fontName=FONT,
+            fontSize=7,
+            leading=9,
+            alignment=TA_LEFT,
+        ),
+        "td_center": ParagraphStyle(
+            "TRTdC",
+            parent=styles["Normal"],
+            fontName=FONT,
+            fontSize=7,
+            leading=9,
+            alignment=TA_CENTER,
+        ),
+        "small": ParagraphStyle(
+            "TRSmall",
+            parent=styles["Normal"],
+            fontName=FONT,
+            fontSize=8,
+            leading=10,
+            alignment=TA_LEFT,
+        ),
+        "sign": ParagraphStyle(
+            "TRSign",
+            parent=styles["Normal"],
+            fontName=FONT,
+            fontSize=9,
+            leading=12,
+            alignment=TA_LEFT,
+        ),
+        "end": ParagraphStyle(
+            "TREnd",
+            parent=styles["Normal"],
+            fontName=FONT_BOLD,
+            fontSize=9,
+            alignment=TA_CENTER,
+            leading=11,
+        ),
+    }
+
+
+def _build_report_story(
+    data: TestReportData,
+    styles: dict,
+    usable: float,
+    include_logo: bool,
+) -> list:
+    title_style = styles["title"]
+    qsf_style = styles["qsf"]
+    label_style = styles["label"]
+    value_style = styles["value"]
+    section_style = styles["section"]
+    th_style = styles["th"]
+    td_style = styles["td"]
+    td_center = styles["td_center"]
+    small = styles["small"]
+    sign_style = styles["sign"]
+    end_style = styles["end"]
+
+    story: list = []
+    story.extend(_letterhead_story(usable, include_logo))
 
     # ----- Header bar -----
     header_tbl = Table(
@@ -534,7 +704,7 @@ def _render_pdf(data: TestReportData) -> bytes:
         _p("Sr. No", th_style),
         _p("Name of Test", th_style),
         _p("Result", th_style),
-        _p(SPECS_HEADER, th_style),
+        _p(data.specs_header, th_style),
         _p("Method of Analysis", th_style),
     ]
     body = [result_header]
@@ -552,7 +722,7 @@ def _render_pdf(data: TestReportData) -> bytes:
     # Remark as final merged row
     body.append(
         [
-            _p(REMARK_TEXT, small),
+            _p(data.remark_text, small),
             _p("", small),
             _p("", small),
             _p("", small),
@@ -587,11 +757,11 @@ def _render_pdf(data: TestReportData) -> bytes:
     story.append(Spacer(1, 14))
 
     # ----- Signature block -----
-    # Checked by left blank for manual pen signature
+    # Left (authorized signatory) and Checked by left blank for pen at client
     sign_left = (
-        "<b>Dr. Surendra Nashikkar</b><br/>"
-        "Director<br/>"
-        "Authorized signatory<br/>"
+        "________________________<br/>"
+        "<br/>"
+        "<br/>"
         f"For, {ORGANIZATION_NAME}"
     )
     sign_tbl = Table(
@@ -627,6 +797,27 @@ def _render_pdf(data: TestReportData) -> bytes:
         story.append(_p(line, small))
     story.append(Spacer(1, 6))
     story.append(Paragraph("End of Report", end_style))
+    return story
+
+
+def _render_pdf(data: TestReportData, *, include_logo: bool = True) -> bytes:
+    buffer = io.BytesIO()
+    page_w, _page_h = A4
+    left = 18 * mm
+    right = 18 * mm
+    usable = page_w - left - right
+    doc = SimpleDocTemplate(
+        buffer,
+        pagesize=A4,
+        leftMargin=left,
+        rightMargin=right,
+        topMargin=8 * mm,
+        bottomMargin=12 * mm,
+        title="Test Report",
+        author=ORGANIZATION_NAME,
+    )
+    styles = _report_styles()
+    story = _build_report_story(data, styles, usable, include_logo)
 
     def _footer(canvas, _doc):
         canvas.saveState()
@@ -636,3 +827,115 @@ def _render_pdf(data: TestReportData) -> bytes:
 
     doc.build(story, onFirstPage=_footer, onLaterPages=_footer)
     return buffer.getvalue()
+
+
+@dataclass
+class FinalReportOutput:
+    """Generated final report artifacts (food = PDF; water/micro = DOCX + optional PDF)."""
+
+    docx_bytes: bytes | None = None
+    pdf_bytes: bytes | None = None
+    docx_filename: str = ""
+    pdf_filename: str = ""
+    is_water: bool = False
+    is_micro: bool = False
+
+
+def generate_final_report(
+    sample: SampleRecord,
+    header: ProtocolHeader,
+    results: list[TestResultRow],
+    report_date: Optional[date] = None,
+    generated_by: str = "",
+    generated_at: str = "",
+    condition_of_sample: str | None = None,
+    tests_processed: str | None = None,
+    specification_by_test_name: dict[str, str] | None = None,
+    *,
+    water_opts: object | None = None,
+    micro_opts: object | None = None,
+) -> FinalReportOutput:
+    """
+    Route final report generation by sample category.
+
+    Food samples use ReportLab PDF. Water and Micro samples use Word fillers.
+    """
+    cat = normalize_category(sample.category)
+    if cat == CATEGORY_WATER:
+        from services.test_report_water_docx import (
+            WaterReportFillOptions,
+            generate_water_test_report_pdf_bytes,
+            suggest_water_test_report_filename,
+        )
+
+        opts = (
+            water_opts
+            if isinstance(water_opts, WaterReportFillOptions)
+            else WaterReportFillOptions()
+        )
+        if generated_by:
+            opts.generated_by = generated_by
+        if generated_at:
+            opts.generated_at = generated_at
+        if condition_of_sample is not None:
+            opts.condition_of_sample = condition_of_sample
+        if report_date is not None:
+            opts.report_date = report_date
+        docx_bytes, pdf_bytes = generate_water_test_report_pdf_bytes(
+            sample, header, results, opts=opts
+        )
+        return FinalReportOutput(
+            docx_bytes=docx_bytes,
+            pdf_bytes=pdf_bytes,
+            docx_filename=suggest_water_test_report_filename(sample, extension="docx"),
+            pdf_filename=suggest_water_test_report_filename(sample, extension="pdf"),
+            is_water=True,
+        )
+
+    if cat == CATEGORY_MICRO:
+        from services.test_report_micro_docx import (
+            MicroReportFillOptions,
+            generate_micro_test_report_pdf_bytes,
+            suggest_micro_test_report_filename,
+        )
+
+        opts = (
+            micro_opts
+            if isinstance(micro_opts, MicroReportFillOptions)
+            else MicroReportFillOptions()
+        )
+        if generated_by:
+            opts.generated_by = generated_by
+        if generated_at:
+            opts.generated_at = generated_at
+        if condition_of_sample is not None:
+            opts.condition_of_sample = condition_of_sample
+        if report_date is not None:
+            opts.report_date = report_date
+        docx_bytes, pdf_bytes = generate_micro_test_report_pdf_bytes(
+            sample, header, results, opts=opts
+        )
+        return FinalReportOutput(
+            docx_bytes=docx_bytes,
+            pdf_bytes=pdf_bytes,
+            docx_filename=suggest_micro_test_report_filename(sample, extension="docx"),
+            pdf_filename=suggest_micro_test_report_filename(sample, extension="pdf"),
+            is_micro=True,
+        )
+
+    pdf_bytes = generate_test_report_pdf_bytes(
+        sample,
+        header,
+        results,
+        report_date=report_date,
+        generated_by=generated_by,
+        generated_at=generated_at,
+        condition_of_sample=condition_of_sample,
+        tests_processed=tests_processed,
+        specification_by_test_name=specification_by_test_name,
+    )
+    return FinalReportOutput(
+        pdf_bytes=pdf_bytes,
+        pdf_filename=suggest_test_report_filename(sample),
+        is_water=False,
+    )

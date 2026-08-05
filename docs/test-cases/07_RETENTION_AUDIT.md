@@ -125,7 +125,7 @@
 | Action | entity_table | Trigger | TC |
 |--------|--------------|---------|-----|
 | `user.create` | users | Admin create user | TC-AUD-001 |
-| `user.set_role` | users | Admin change role | TC-AUD-002 |
+| `user.set_roles` | users | Admin change roles | TC-AUD-002 |
 | `user.set_active` | users | Activate/deactivate | TC-AUD-003 |
 | `user.reset_password` | users | Reset password | TC-AUD-004 |
 | `customer.upsert` | customers | CTR save | TC-AUD-005 |

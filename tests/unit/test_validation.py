@@ -6,9 +6,12 @@ from __future__ import annotations
 
 from datetime import date
 
-from services.customers import Customer
+from services.customers import Customer, ContactPerson, format_contacts_for_display
 from services.protocols.test_catalog import get_test, missing_required_inputs
-from services.requests import SampleRow, TestRequestData, validate_request
+from services.requests import SampleRow, TestRequestData, validate_request, validation_warnings
+
+_VALID_ANALYST_ID = 1
+_VALID_PROTOCOL_NO = "P-2026-001"
 
 
 def _customer(**overrides) -> Customer:
@@ -28,11 +31,16 @@ def _valid_request(**overrides) -> TestRequestData:
     data = TestRequestData(
         customer=_customer(),
         request_date=date(2026, 7, 17),
+        lab_code="SLS/26/306",
         samples=[
             SampleRow(
                 sr_no=1,
                 sample_name="Jaggery",
                 test_keys=["moisture"],
+                assigned_analyst_id=_VALID_ANALYST_ID,
+                protocol_no="P-001",
+                report_format="with_logo",
+                package_type="fssai",
             )
         ],
     )
@@ -44,6 +52,11 @@ def _valid_request(**overrides) -> TestRequestData:
 class TestValidateRequest:
     def test_valid_ok(self):
         assert validate_request(_valid_request()) == []
+
+    def test_derives_sample_code_from_lab_code(self):
+        data = _valid_request()
+        validate_request(data)
+        assert data.samples[0].sample_code == "SLS/26/306/01"
 
     def test_missing_customer_name(self):
         data = _valid_request()
@@ -76,28 +89,114 @@ class TestValidateRequest:
         data = _valid_request(request_date=None)
         assert any("Date" in e for e in validate_request(data))
 
-    def test_no_samples(self):
-        data = _valid_request(samples=[SampleRow(sr_no=1)])
+    def test_missing_lab_code(self):
+        data = _valid_request(lab_code="")
+        assert any("Lab code" in e for e in validate_request(data))
+
+    def test_missing_analyst_assignment(self):
+        data = _valid_request(
+            samples=[
+                SampleRow(
+                    sr_no=1,
+                    sample_name="Jaggery",
+                    test_keys=["moisture"],
+                )
+            ]
+        )
+        errors = validate_request(data)
+        assert any("assign an analyst" in e.lower() for e in errors)
+
+    def test_missing_protocol_number(self):
+        data = _valid_request(
+            samples=[
+                SampleRow(
+                    sr_no=1,
+                    sample_name="Jaggery",
+                    test_keys=["moisture"],
+                    assigned_analyst_id=_VALID_ANALYST_ID,
+                    package_type="fssai",
+                )
+            ]
+        )
+        errors = validate_request(data)
+        assert any("protocol number" in e.lower() for e in errors)
+
+    def test_batch_only_row_treated_as_empty(self):
+        data = _valid_request(
+            samples=[
+                SampleRow(
+                    sr_no=1,
+                    batch_code="05",
+                )
+            ]
+        )
         assert any("at least one sample" in e.lower() for e in validate_request(data))
 
     def test_sample_name_required(self):
         data = _valid_request(
             samples=[
-                SampleRow(sr_no=1, sample_name="", test_keys=["moisture"], batch_code="B1")
+                SampleRow(
+                    sr_no=1,
+                    sample_name="",
+                    test_keys=["moisture"],
+                    batch_code="B1",
+                    assigned_analyst_id=_VALID_ANALYST_ID,
+                    package_type="fssai",
+                )
             ]
         )
-        # Row is not empty (batch_code + keys) but name missing
         errors = validate_request(data)
         assert any("name of sample" in e.lower() for e in errors)
 
     def test_tests_or_parameters_required(self):
         data = _valid_request(
-            samples=[SampleRow(sr_no=1, sample_name="Jaggery", test_keys=[], parameters="")]
+            samples=[
+                SampleRow(
+                    sr_no=1,
+                    sample_name="Jaggery",
+                    test_keys=[],
+                    parameters="",
+                    assigned_analyst_id=_VALID_ANALYST_ID,
+                )
+            ]
         )
         errors = validate_request(data)
-        assert any("catalog test" in e.lower() for e in errors)
+        assert any("parameters" in e.lower() for e in errors)
 
-    def test_water_category_no_tests_yet(self):
+    def test_missing_package_blocks_save(self):
+        data = _valid_request(
+            samples=[
+                SampleRow(
+                    sr_no=1,
+                    sample_name="MissingPackage",
+                    package_type="fssai",
+                    test_keys=[],
+                    assigned_analyst_id=_VALID_ANALYST_ID,
+                )
+            ]
+        )
+        errors = validate_request(data)
+        assert any("no active test package" in e.lower() for e in errors)
+
+    def test_water_category_with_bundle_ok(self):
+        from services.protocols.test_catalog import WATER_TEST_KEYS
+
+        data = _valid_request(
+            samples=[
+                SampleRow(
+                    sr_no=1,
+                    sample_name="Borewell",
+                    category="water",
+                    test_keys=list(WATER_TEST_KEYS),
+                    parameters="",
+                    assigned_analyst_id=_VALID_ANALYST_ID,
+                    protocol_no="P-001",
+                )
+            ]
+        )
+        assert validate_request(data) == []
+
+    def test_water_category_invalid_food_key(self):
         data = _valid_request(
             samples=[
                 SampleRow(
@@ -110,9 +209,27 @@ class TestValidateRequest:
             ]
         )
         errors = validate_request(data)
-        assert any("no catalog tests" in e.lower() for e in errors)
+        assert any("catalog test" in e.lower() for e in errors)
 
-    def test_parameters_alone_ok(self):
+    def test_micro_category_with_bundle_ok(self):
+        from services.protocols.test_catalog import MICRO_TEST_KEYS
+
+        data = _valid_request(
+            samples=[
+                SampleRow(
+                    sr_no=1,
+                    sample_name="Paneer Gravy",
+                    category="micro",
+                    test_keys=list(MICRO_TEST_KEYS),
+                    parameters="",
+                    assigned_analyst_id=_VALID_ANALYST_ID,
+                    protocol_no="P-001",
+                )
+            ]
+        )
+        assert validate_request(data) == []
+
+    def test_parameters_alone_not_sufficient_for_food(self):
         data = _valid_request(
             samples=[
                 SampleRow(
@@ -120,16 +237,54 @@ class TestValidateRequest:
                     sample_name="Jaggery",
                     test_keys=[],
                     parameters="Moisture",
+                    assigned_analyst_id=_VALID_ANALYST_ID,
                 )
             ]
         )
-        assert validate_request(data) == []
+        errors = validate_request(data)
+        assert any("parameters" in e.lower() for e in errors)
 
     def test_empty_trailing_row_ignored(self):
         data = _valid_request(
             samples=[
-                SampleRow(sr_no=1, sample_name="Jaggery", test_keys=["moisture"]),
+                SampleRow(
+                    sr_no=1,
+                    sample_name="Jaggery",
+                    test_keys=["moisture"],
+                    assigned_analyst_id=_VALID_ANALYST_ID,
+                    protocol_no="P-001",
+                    package_type="fssai",
+                ),
                 SampleRow(sr_no=2),
+            ]
+        )
+        assert validate_request(data) == []
+
+    def test_is_empty_ignores_auto_assigned_tests(self):
+        row = SampleRow(
+            sr_no=2,
+            test_keys=["moisture"],
+            parameters="Moisture",
+        )
+        assert row.is_empty()
+
+    def test_catalog_keys_alone_do_not_count_as_filled_row(self):
+        data = _valid_request(
+            samples=[
+                SampleRow(
+                    sr_no=1,
+                    sample_name="Jaggery",
+                    test_keys=["moisture"],
+                    sample_code="SLS-260717-0103",
+                    assigned_analyst_id=_VALID_ANALYST_ID,
+                    protocol_no="P-001",
+                    package_type="fssai",
+                ),
+                SampleRow(
+                    sr_no=2,
+                    test_keys=["moisture"],
+                    parameters="Moisture",
+                ),
             ]
         )
         assert validate_request(data) == []
@@ -139,6 +294,67 @@ class TestValidateRequest:
         data = _valid_request()
         data.customer.address = ""
         assert validate_request(data) == []
+
+    def test_mixed_food_families_warning(self):
+        data = _valid_request(
+            samples=[
+                SampleRow(
+                    sr_no=1,
+                    sample_name="Mixed",
+                    test_keys=["moisture", "bn_protein"],
+                    sample_code="SLS-260717-0104",
+                    assigned_analyst_id=_VALID_ANALYST_ID,
+                    protocol_no="P-001",
+                )
+            ]
+        )
+        assert validate_request(data) == []
+        warnings = validation_warnings(data)
+        assert len(warnings) == 1
+        assert "protocol templates" in warnings[0].lower()
+
+    def test_contact_two_requires_email_when_named(self):
+        data = _valid_request()
+        data.customer.contacts = [
+            ContactPerson(position=1, contact_name="Ravi", email="ravi@example.com"),
+            ContactPerson(position=2, contact_name="Priya", email=""),
+        ]
+        errors = validate_request(data)
+        assert any("Contact 2" in e and "email" in e.lower() for e in errors)
+
+    def test_duplicate_sample_codes_rejected(self):
+        data = _valid_request(
+            samples=[
+                SampleRow(
+                    sr_no=1,
+                    sample_name="A",
+                    test_keys=["moisture"],
+                    sample_code="SLS-260721-0099",
+                ),
+                SampleRow(
+                    sr_no=2,
+                    sample_name="B",
+                    test_keys=["moisture"],
+                    sample_code="SLS-260721-0099",
+                ),
+            ]
+        )
+        errors = validate_request(data)
+        assert any("duplicate sample code" in e.lower() for e in errors)
+
+    def test_invalid_sample_code_format(self):
+        data = _valid_request(
+            samples=[
+                SampleRow(
+                    sr_no=1,
+                    sample_name="A",
+                    test_keys=["moisture"],
+                    sample_code="bad code!",
+                )
+            ]
+        )
+        errors = validate_request(data)
+        assert any("invalid" in e.lower() for e in errors)
 
 
 class TestMissingRequiredInputs:

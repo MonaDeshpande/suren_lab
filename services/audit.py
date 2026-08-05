@@ -27,6 +27,7 @@ class AuditRow:
     entity_table: str
     entity_id: Optional[str]
     details: Optional[str]
+    edit_reason: Optional[str] = None
 
 
 def actor_display_name(user: Any) -> str:
@@ -79,6 +80,7 @@ def log_action(
     entity_table: str,
     entity_id: Optional[Union[int, str]] = None,
     details: Optional[str] = None,
+    edit_reason: Optional[str] = None,
 ) -> None:
     """
     Insert one audit_log row. Never raises to callers — audit must not
@@ -86,6 +88,7 @@ def log_action(
     """
     name = (user_name or "").strip() or "system"
     eid = None if entity_id is None else str(entity_id)
+    reason = (edit_reason or "").strip() or None
     try:
         with get_db() as conn:
             with conn.cursor() as cur:
@@ -93,8 +96,8 @@ def log_action(
                     """
                     INSERT INTO audit_log (
                         user_id, user_name, action,
-                        entity_table, entity_id, details
-                    ) VALUES (%s, %s, %s, %s, %s, %s)
+                        entity_table, entity_id, details, edit_reason
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s)
                     """,
                     (
                         user_id,
@@ -103,6 +106,7 @@ def log_action(
                         (entity_table or "").strip(),
                         eid,
                         (details or "").strip() or None,
+                        reason,
                     ),
                 )
     except Exception:  # noqa: BLE001
@@ -116,6 +120,7 @@ def log_from_user(
     entity_table: str,
     entity_id: Optional[Union[int, str]] = None,
     details: Optional[str] = None,
+    edit_reason: Optional[str] = None,
 ) -> None:
     """Convenience: pull id/name from AuthUser / session-like object."""
     uid = getattr(user, "id", None) if user is not None else None
@@ -126,6 +131,7 @@ def log_from_user(
         entity_table=entity_table,
         entity_id=entity_id,
         details=details,
+        edit_reason=edit_reason,
     )
 
 
@@ -134,7 +140,7 @@ def list_recent(limit: int = 100) -> list[AuditRow]:
     lim = max(1, min(int(limit), 500))
     sql = """
         SELECT id, occurred_at, user_id, user_name, action,
-               entity_table, entity_id, details
+               entity_table, entity_id, details, edit_reason
           FROM audit_log
          ORDER BY occurred_at DESC
          LIMIT %s
@@ -157,6 +163,7 @@ def list_recent(limit: int = 100) -> list[AuditRow]:
             entity_table=r[5] or "",
             entity_id=r[6],
             details=r[7],
+            edit_reason=r[8] if len(r) > 8 else None,
         )
         for r in rows
     ]

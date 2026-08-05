@@ -16,8 +16,37 @@ from typing import Optional
 
 from db.connection import get_db
 from services.audit import log_from_user
+from services.protocols.test_catalog import (
+    CATEGORY_WATER,
+    catalog_keys_for_category,
+    normalize_category,
+)
+from services.water_report_catalog import (
+    WATER_REPORT_EXCLUDED_KEYS,
+    water_report_keys_ordered,
+)
+
+import json
+import re
 
 ALLOWED_STATUSES = ("pending", "in_progress", "completed", "reported")
+
+REPORT_FORMAT_WITH_LOGO = "with_logo"
+REPORT_FORMAT_WITHOUT_LOGO = "without_logo"
+REPORT_FORMAT_BOTH = "both"
+REPORT_FORMATS = (
+    REPORT_FORMAT_WITH_LOGO,
+    REPORT_FORMAT_WITHOUT_LOGO,
+    REPORT_FORMAT_BOTH,
+)
+
+REPORT_FORMAT_LABELS: dict[str, str] = {
+    REPORT_FORMAT_WITH_LOGO: "A — With Logo",
+    REPORT_FORMAT_WITHOUT_LOGO: "B — Without Logo",
+    REPORT_FORMAT_BOTH: "Both",
+}
+
+LABEL_TO_REPORT_FORMAT = {v: k for k, v in REPORT_FORMAT_LABELS.items()}
 
 # Analyst find modes for search_open (lab code / sample / client name)
 SEARCH_BY = ("lab_code", "sample", "client")
@@ -36,11 +65,35 @@ _SAMPLE_SELECT = """
             COALESCE(c.address, ''), COALESCE(c.email, ''),
             COALESCE(c.gst_number, ''), COALESCE(c.contact_number, ''),
             tr.sampling_by_lab,
-            COALESCE(s.category, 'food')
+            COALESCE(s.category, 'food'),
+            s.assigned_analyst_id,
+            COALESCE(ua.full_name, ua.username, ''),
+            COALESCE(s.report_format, 'with_logo'),
+            COALESCE(s.tests_with_logo_json, ''),
+            COALESCE(s.tests_without_logo_json, ''),
+            COALESCE(s.protocol_no, ''),
+            COALESCE(s.package_type, '')
           FROM request_samples s
           JOIN test_requests tr ON tr.id = s.request_id
           JOIN customers c ON c.id = tr.customer_id
+          LEFT JOIN users ua ON ua.id = s.assigned_analyst_id
 """
+
+
+def sample_scope_for_user(user) -> tuple[Optional[int], bool]:
+    """
+    Return (assigned_analyst_id filter, scoped) for sample queries.
+
+    Pure analyst users are scoped to their assignments. Admin, reception,
+    and reviewer roles bypass the filter.
+    """
+    if user is None:
+        return None, False
+    if user.has_any_role("admin", "reception", "reviewer"):
+        return None, False
+    if user.has_role("analyst"):
+        return user.id, True
+    return None, False
 
 
 @dataclass
@@ -73,11 +126,16 @@ class SampleRecord:
     contact_number: str = ""
     sampling_by_lab: Optional[bool] = None
     category: str = "food"  # food | water | cattle_feed_fertilizer
+    assigned_analyst_id: Optional[int] = None
+    assigned_analyst_name: str = ""
+    protocol_no: str = ""
+    report_format: str = REPORT_FORMAT_WITH_LOGO
+    tests_with_logo_json: str = ""
+    tests_without_logo_json: str = ""
+    package_type: str = ""  # fssai | basic_nutrition | detailed_nutrition (Food packages)
 
     def selected_test_keys(self) -> list[str]:
         """Parse catalog keys assigned by reception."""
-        import json
-
         if not (self.tests_json or "").strip():
             return []
         try:
@@ -85,6 +143,109 @@ class SampleRecord:
             return [str(x) for x in data] if isinstance(data, list) else []
         except json.JSONDecodeError:
             return []
+
+    def tests_with_logo_keys(self) -> list[str]:
+        """Catalog keys marked for with-logo section when format is both."""
+        if not (self.tests_with_logo_json or "").strip():
+            return []
+        try:
+            data = json.loads(self.tests_with_logo_json)
+            return [str(x) for x in data] if isinstance(data, list) else []
+        except json.JSONDecodeError:
+            return []
+
+
+    def tests_without_logo_keys(self) -> list[str]:
+        """Catalog keys marked for without-logo section."""
+        if not (self.tests_without_logo_json or "").strip():
+            return []
+        try:
+            data = json.loads(self.tests_without_logo_json)
+            return [str(x) for x in data] if isinstance(data, list) else []
+        except json.JSONDecodeError:
+            return []
+
+
+def normalize_report_format(value: str) -> str:
+    """Normalize UI/storage value to a known report format key."""
+    key = (value or "").strip().lower()
+    if key in REPORT_FORMAT_LABELS:
+        return key
+    if key in LABEL_TO_REPORT_FORMAT:
+        return LABEL_TO_REPORT_FORMAT[key]
+    return REPORT_FORMAT_WITH_LOGO
+
+
+def report_format_label(value: str) -> str:
+    """Human label for a stored report_format value."""
+    return REPORT_FORMAT_LABELS.get(normalize_report_format(value), value)
+
+
+def water_report_keys(sample: SampleRecord) -> list[str]:
+    """Water customer-report keys in IS 10500 section order (excl. calcium_caco3)."""
+    fmt = normalize_report_format(sample.report_format)
+    if fmt == REPORT_FORMAT_WITH_LOGO:
+        selected = set(sample.tests_with_logo_keys()) or set(sample.selected_test_keys())
+    elif fmt == REPORT_FORMAT_WITHOUT_LOGO:
+        selected = set(sample.tests_without_logo_keys()) or set(
+            sample.selected_test_keys()
+        )
+    else:
+        selected = set(sample.tests_with_logo_keys()) | set(
+            sample.tests_without_logo_keys()
+        )
+        if not selected:
+            selected = set(sample.selected_test_keys())
+    selected -= WATER_REPORT_EXCLUDED_KEYS
+    return water_report_keys_ordered(selected)
+
+
+def report_keys_for_sample(sample: SampleRecord) -> list[str]:
+    """Catalog keys included on the final test report (food excludes appearance)."""
+    cat = normalize_category(sample.category)
+    if cat == CATEGORY_WATER:
+        return water_report_keys(sample)
+    fmt = normalize_report_format(sample.report_format)
+    if fmt == REPORT_FORMAT_WITH_LOGO:
+        selected = set(sample.tests_with_logo_keys()) or set(sample.selected_test_keys())
+    elif fmt == REPORT_FORMAT_WITHOUT_LOGO:
+        selected = set(sample.tests_without_logo_keys()) or set(
+            sample.selected_test_keys()
+        )
+    else:
+        selected = set(sample.tests_with_logo_keys()) | set(
+            sample.tests_without_logo_keys()
+        )
+        if not selected:
+            selected = set(sample.selected_test_keys())
+    ordered = catalog_keys_for_category(cat)
+    return [k for k in ordered if k in selected and k != "appearance"]
+
+
+def logo_test_keys(sample: SampleRecord) -> set[str]:
+    """Catalog keys that render in the with-logo final report section."""
+    fmt = normalize_report_format(sample.report_format)
+    if fmt == REPORT_FORMAT_WITHOUT_LOGO:
+        return set()
+    stored = set(sample.tests_with_logo_keys())
+    if stored:
+        return stored
+    if fmt == REPORT_FORMAT_WITH_LOGO:
+        return set(report_keys_for_sample(sample))
+    return set()
+
+
+def no_logo_test_keys(sample: SampleRecord) -> set[str]:
+    """Catalog keys that render in the without-logo final report section."""
+    fmt = normalize_report_format(sample.report_format)
+    if fmt == REPORT_FORMAT_WITH_LOGO:
+        return set()
+    stored = set(sample.tests_without_logo_keys())
+    if stored:
+        return stored
+    if fmt == REPORT_FORMAT_WITHOUT_LOGO:
+        return set(report_keys_for_sample(sample))
+    return set()
 
 
 def generate_sample_code(cur, on_date: Optional[date] = None) -> str:
@@ -116,7 +277,95 @@ def generate_sample_code(cur, on_date: Optional[date] = None) -> str:
     return f"{prefix}{seq:04d}"
 
 
-def get_by_code(sample_code: str) -> Optional[SampleRecord]:
+_SAMPLE_CODE_PATTERN = re.compile(r"^[A-Z0-9][A-Z0-9\-_/]{2,31}$")
+
+
+def normalize_lab_code(code: str) -> str:
+    """Uppercase and trim the CTR lab code."""
+    return (code or "").strip().upper()
+
+
+def derive_sample_code(lab_code: str, *, index: int, total: int) -> str:
+    """
+    Build sample_code from lab code and position among non-empty rows.
+
+    Always append /01, /02, … by enumeration order (index is 1-based).
+    E.g. GLG/26/306 → GLG/26/306/01 for the first sample.
+    """
+    _ = total  # kept for call-site compatibility
+    base = normalize_lab_code(lab_code)
+    return f"{base}/{index:02d}"
+
+
+def derive_sample_codes(lab_code: str, count: int) -> list[str]:
+    """Return sample codes for count non-empty sample rows."""
+    return [
+        derive_sample_code(lab_code, index=i, total=count)
+        for i in range(1, count + 1)
+    ]
+
+
+def normalize_sample_code(code: str) -> str:
+    """Uppercase and trim a user-entered sample code."""
+    return (code or "").strip().upper()
+
+
+def is_valid_sample_code_format(code: str) -> bool:
+    """True when code looks like a safe unique sample identifier."""
+    normalized = normalize_sample_code(code)
+    return bool(normalized and _SAMPLE_CODE_PATTERN.match(normalized))
+
+
+def sample_code_exists(cur, code: str, exclude_sample_id: int | None = None) -> bool:
+    """True when another row already uses this sample_code."""
+    normalized = normalize_sample_code(code)
+    if not normalized:
+        return False
+    if exclude_sample_id is not None:
+        cur.execute(
+            """
+            SELECT 1 FROM request_samples
+             WHERE UPPER(sample_code) = %s AND id != %s
+             LIMIT 1
+            """,
+            (normalized, exclude_sample_id),
+        )
+    else:
+        cur.execute(
+            "SELECT 1 FROM request_samples WHERE UPPER(sample_code) = %s LIMIT 1",
+            (normalized,),
+        )
+    return cur.fetchone() is not None
+
+
+def allocate_sample_code(
+    cur,
+    requested: str = "",
+    exclude_sample_id: int | None = None,
+) -> str:
+    """
+    Validate and return a sample code (derived from lab code or legacy input).
+
+    Raises ValueError when blank, invalid format, or already taken.
+    """
+    normalized = normalize_sample_code(requested)
+    if not normalized:
+        raise ValueError("Sample code is required.")
+    if not is_valid_sample_code_format(normalized):
+        raise ValueError(
+            f"Sample code '{normalized}' is invalid — use 3–32 letters, "
+            "numbers, dashes, underscores, or slashes."
+        )
+    if sample_code_exists(cur, normalized, exclude_sample_id=exclude_sample_id):
+        raise ValueError(f"Sample code '{normalized}' is already in use.")
+    return normalized
+
+
+def get_by_code(
+    sample_code: str,
+    *,
+    assigned_analyst_id: Optional[int] = None,
+) -> Optional[SampleRecord]:
     """Fetch one non-expired sample by exact sample_code (case-insensitive)."""
     code = (sample_code or "").strip().upper()
     if not code:
@@ -126,9 +375,13 @@ def get_by_code(sample_code: str) -> Optional[SampleRecord]:
          WHERE UPPER(s.sample_code) = %s
            AND s.expires_at > NOW()
     """
+    params: list = [code]
+    if assigned_analyst_id is not None:
+        sql += "           AND s.assigned_analyst_id = %s\n"
+        params.append(assigned_analyst_id)
     with get_db() as conn:
         with conn.cursor() as cur:
-            cur.execute(sql, (code,))
+            cur.execute(sql, params)
             row = cur.fetchone()
 
     return _row_to_record(row) if row else None
@@ -138,6 +391,8 @@ def search_open(
     query: str,
     by: str = "sample",
     limit: int = 50,
+    *,
+    assigned_analyst_id: Optional[int] = None,
 ) -> list[SampleRecord]:
     """
     Find non-expired samples by lab code, sample code/name, or client name.
@@ -175,6 +430,10 @@ def search_open(
         sql += "           AND c.customer_name ILIKE %s\n"
         params.append(pattern)
 
+    if assigned_analyst_id is not None:
+        sql += "           AND s.assigned_analyst_id = %s\n"
+        params.append(assigned_analyst_id)
+
     sql += "         ORDER BY s.created_at DESC LIMIT %s"
     params.append(limit)
 
@@ -186,7 +445,12 @@ def search_open(
     return [_row_to_record(r) for r in rows]
 
 
-def list_open(limit: int = 50, status: Optional[str] = None) -> list[SampleRecord]:
+def list_open(
+    limit: int = 50,
+    status: Optional[str] = None,
+    *,
+    assigned_analyst_id: Optional[int] = None,
+) -> list[SampleRecord]:
     """
     List non-expired samples for the analyst queue (newest first).
 
@@ -199,6 +463,10 @@ def list_open(limit: int = 50, status: Optional[str] = None) -> list[SampleRecor
     if status and status in ALLOWED_STATUSES:
         sql += "           AND s.status = %s\n"
         params.append(status)
+
+    if assigned_analyst_id is not None:
+        sql += "           AND s.assigned_analyst_id = %s\n"
+        params.append(assigned_analyst_id)
 
     sql += "         ORDER BY s.created_at DESC LIMIT %s"
     params.append(limit)
@@ -318,4 +586,11 @@ def _row_to_record(row: tuple) -> SampleRecord:
         contact_number=row[21] if len(row) > 21 else "",
         sampling_by_lab=row[22] if len(row) > 22 else None,
         category=row[23] if len(row) > 23 else "food",
+        assigned_analyst_id=row[24] if len(row) > 24 else None,
+        assigned_analyst_name=row[25] if len(row) > 25 else "",
+        report_format=row[26] if len(row) > 26 else REPORT_FORMAT_WITH_LOGO,
+        tests_with_logo_json=row[27] if len(row) > 27 else "",
+        tests_without_logo_json=row[28] if len(row) > 28 else "",
+        protocol_no=row[29] if len(row) > 29 else "",
+        package_type=row[30] if len(row) > 30 else "",
     )

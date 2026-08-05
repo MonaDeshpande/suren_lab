@@ -6,8 +6,8 @@ Fill the reference Word template with form data and return .docx bytes.
 Template:
   reference/Customer Test Request form LLP.docx
 
-This filled .docx is the layout source of truth. The PDF generator converts
-it to PDF (via Microsoft Word / docx2pdf) so the download matches the form.
+PDF is generated separately via ReportLab (services/pdf_generator.py).
+This module serves the Word (.docx) download only.
 """
 
 from __future__ import annotations
@@ -20,8 +20,8 @@ from typing import Optional
 from docx import Document
 from docx.table import Table
 
-from services.audit import generator_stamp_lines
-from services.requests import TestRequestData
+from services.customers import format_contacts_for_display
+from services.requests import TestRequestData, ctr_parameters_display
 
 # Project root = parent of /services
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -131,10 +131,13 @@ def fill_docx_bytes(
         )
 
         # Row 2: Contact person | Contact number
+        contact_names, contact_emails = format_contacts_for_display(
+            c.resolved_contacts()
+        )
         _append_to_label(
             t0.rows[2].cells[0],
             "Name of Contact Person:",
-            c.contact_person or "",
+            contact_names or c.contact_person or "",
         )
         _append_to_label(
             t0.rows[2].cells[1],
@@ -143,7 +146,11 @@ def fill_docx_bytes(
         )
 
         # Row 3: Email | GST
-        _append_to_label(t0.rows[3].cells[0], "Email:", c.email or "")
+        _append_to_label(
+            t0.rows[3].cells[0],
+            "Email:",
+            contact_emails or c.email or "",
+        )
         _append_to_label(
             t0.rows[3].cells[1],
             "GST Number of Customer:",
@@ -207,12 +214,7 @@ def fill_docx_bytes(
                 _set_cell_text(cells[1], sample.sample_name or "")
                 _set_cell_text(cells[2], sample.batch_code or "")
                 _set_cell_text(cells[3], sample.quantity or "")
-                _set_cell_text(cells[4], sample.parameters or "")
-
-    # Generator stamp at end (pen signatures stay on template blanks)
-    doc.add_paragraph("")
-    for line in generator_stamp_lines(generated_by, generated_at):
-        doc.add_paragraph(line)
+                _set_cell_text(cells[4], ctr_parameters_display(sample))
 
     out = io.BytesIO()
     doc.save(out)

@@ -1,0 +1,13 @@
+# Streamlit server settings for lab multi-user access.
+# Staff on other PCs open http://<host-ip>:8510 in a browser.
+
+[server]
+address = "0.0.0.0"
+port = 8510
+headless = true
+enableCORS = false
+enableXsrfProtection = true
+
+[browser]
+serverAddress = "localhost"
+gatherUsageStats = false

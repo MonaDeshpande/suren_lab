@@ -4,9 +4,9 @@ Streamlit + PostgreSQL application for **S Testing Laboratory**.
 
 ## Features
 
-- **Login & roles** — admin, reception, analyst, reviewer (one role per user)
+- **Login & roles** — admin, reception, analyst, reviewer (up to **2 roles** per user; admin is exclusive)
 - **Reception** — Customer Test Request form, permanent customer master (GST), filled PDF/Word
-- **Auto sample codes** — each sample gets `SLS-YYMMDD-NNNN` for analyst handoff
+- **Manual sample codes** — reception enters date, lab code, and unique sample code per sample
 - **Analyst** — protocol worksheets, calculations, protocol PDF/DOCX, status updates
 - **Reviewer** — review reception + analyst data, generate **Final Test Report** PDF (QSF 7.8.2)
 - **Admin** — register users, assign/change roles, reset temporary passwords; view audit log
@@ -17,8 +17,8 @@ Streamlit + PostgreSQL application for **S Testing Laboratory**.
 ## Letterhead logo
 
 Replace [`assets/logo.png`](assets/logo.png) with the client letterhead (keep a similar
-**7.25 × 1.42 in** aspect ratio). The Streamlit header, Test Report PDF, and protocol
-Word export all load this file at runtime.
+**7.25 × 1.42 in** aspect ratio). The Test Report PDF and protocol Word export load this
+file in document headers at runtime. It is not shown in the Streamlit UI.
 ## Quick start
 
 ```bash
@@ -28,21 +28,18 @@ copy .env.example .env
 # 2. Start PostgreSQL in Docker
 docker compose up -d
 
-# 3. If the DB volume already existed, apply migrations as needed:
-docker exec -i sls_lab_db psql -U sls_user -d sls_lab < scripts/migrate_samples.sql
-docker exec -i sls_lab_db psql -U sls_user -d sls_lab < scripts/migrate_auth.sql
-docker exec -i sls_lab_db psql -U sls_user -d sls_lab < scripts/migrate_protocol.sql
-docker exec -i sls_lab_db psql -U sls_user -d sls_lab < scripts/migrate_audit.sql
-
-# 4. Install deps, seed default admin, run
+# 3. Install deps, apply migrations + seed default admin, run
 pip install -r requirements.txt
 python scripts/seed_admin.py
 streamlit run app.py
 ```
 
+The app also runs idempotent migrations on startup/login (`db/migrate.py`), so an
+older Docker volume is brought up to date automatically (e.g. `user_roles`).
+
 Or double-click `run_app.bat` (after `seed_admin.py` once).
 
-Open http://localhost:8501 and sign in.
+Open http://localhost:8510 and sign in.
 
 ### Default admin
 
@@ -54,19 +51,55 @@ Admin registers other users with a temporary password. Those users **must change
 
 ### Roles
 
+Each staff account may have **1 or 2 roles** (e.g. reception + analyst). The **admin** role cannot be combined with other roles.
+
 | Role | Access |
 |------|--------|
 | **admin** | All pages + user management |
-| **reception** | Reception (CTR + sample codes) |
+| **reception** | Reception (CTR + sample codes + customer master) |
 | **analyst** | Analyst (protocol + calculations) |
-| **reviewer** | Reviewer (review both + final PDF) |
+| **reviewer** | Reviewer (review both + final PDF); may also open Reception to edit customer master |
 
 **Credentials** (Docker DB): host `127.0.0.1`, port `5433`, user `sls_user`, password `sls_secure_password`, db `sls_lab`.
+
+## Multi-user login and operation
+
+Multiple staff can use the app **at the same time** on different machines or browsers. Each browser gets its own login session; all users share one PostgreSQL database.
+
+### Recommended lab setup
+
+1. **One host PC** runs Docker Postgres + Streamlit (`run_app.bat` or `docker compose up -d` then `streamlit run app.py`).
+2. **Other PCs** open a browser to `http://<host-ip>:8510` (the host IP is printed when `run_app.bat` starts).
+3. Each person signs in with their own username. There is no limit on simultaneous logins.
+
+`.streamlit/config.toml` binds Streamlit to `0.0.0.0` so other machines on the LAN can connect. Only the host needs database access; client PCs use the browser only.
+
+### How sessions work
+
+- Login state lives in **Streamlit session state** per browser — not in a global server variable or database session table.
+- **Logout** clears only that browser's session.
+- **Admin deactivates a user** or changes roles → that user's next page load re-checks the database and shows the login form if the account is inactive.
+- **Same user, two browsers** — allowed (no duplicate-login block).
+
+### Role-based data access
+
+| Role | Workspace | Sample visibility |
+|------|-----------|-------------------|
+| reception | CTR + customer master | All samples |
+| analyst | Protocol + calculations | Only samples assigned to them |
+| reviewer | Review + final PDF | All samples |
+| admin | User management + all workspaces | All samples |
+
+Users may hold **1–2 roles** (e.g. reception + analyst). Concurrent edits to the same record are last-writer-wins; the **audit log** records who made each change.
+
+### Not implemented
+
+Server-side session registry, blocking duplicate logins for one account, real-time edit warnings, and optimistic locking are not part of the current design.
 
 ## Sample workflow
 
 ```
-Admin creates user accounts (reception / analyst / reviewer)
+Admin creates user accounts (1–2 roles: reception / analyst / reviewer)
     → staff change temp password at desk
 Reception saves CTR
     → one DB row per sample + sample_code + tests_to_perform
@@ -93,13 +126,15 @@ db/                    # schema + connection
 services/              # auth, users, customers, requests, samples, PDF
 scripts/
   migrate_auth.sql     # users table + reported status
+  migrate_user_roles.sql  # multi-role junction table
   migrate_audit.sql    # audit_log (who / when / what)
+  migrate_contacts.sql # up to 5 contact persons per customer
   seed_admin.py        # apply auth migrate + create admin
   migrate_samples.sql
   cleanup_expired_samples.py
 ui/                    # CSS, auth gate, form components
 assets/
-  logo.png             # Letterhead — replace with client logo (7.25 x 1.42 in)
+  logo.png             # Letterhead for PDF/Word headers (not shown in UI)
 reference/             # Word / PDF templates
 ```
 

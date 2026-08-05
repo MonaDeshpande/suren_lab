@@ -62,7 +62,8 @@ def _req_rows(inv: SystemInventory) -> list[tuple[str, str, str, str]]:
     add(
         "RBAC",
         f"The system shall support roles: {', '.join(inv.roles)}. "
-        "Each user shall have exactly one role.",
+        "Each user shall have one or two roles; admin shall not be combined "
+        "with other roles.",
         "services/auth.py ROLES",
     )
     for page in inv.pages:
@@ -119,6 +120,13 @@ def _req_rows(inv: SystemInventory) -> list[tuple[str, str, str, str]]:
         "Admin",
         "Admin shall view the audit log of meaningful write actions.",
         "pages/4_Admin.py, services/audit.py",
+    )
+    add(
+        "Reception",
+        "When admin, reception, or reviewer edits existing customer master data "
+        "or an existing Customer Test Request, the system shall require a written "
+        "edit reason, archive the prior state as a version, and retain version history.",
+        "services/versions.py, pages/1_Reception.py, pages/4_Admin.py",
     )
     for action in inv.audit_actions:
         add(

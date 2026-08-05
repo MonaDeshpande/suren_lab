@@ -384,7 +384,7 @@ def _derive_features(inv: SystemInventory) -> list[str]:
     features = [
         "User authentication with bcrypt password hashing",
         "Forced password change for new staff accounts",
-        "Role-based access control (one role per user)",
+        "Role-based access control (up to two roles per user)",
         "Reception Customer Test Request (CTR) intake",
         "Permanent customer master keyed by GST number",
         "Automatic sample codes in format SLS-YYMMDD-NNNN",

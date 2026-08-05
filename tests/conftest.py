@@ -38,3 +38,48 @@ def db_available() -> bool:
 def require_db(db_available: bool) -> None:
     if not db_available:
         pytest.skip("PostgreSQL not available — start docker compose to run integration tests")
+    from db.migrate import ensure_schema
+
+    ensure_schema()
+
+
+@pytest.fixture(autouse=True)
+def _mock_resolve_package_for_unit_tests(request, monkeypatch):
+    """Fake package resolution in unit tests (integration tests use real DB)."""
+    if request.node.get_closest_marker("integration"):
+        return
+
+    from services.protocols.test_catalog import normalize_category, CATEGORY_FOOD
+    from services.test_packages import (
+        ResolvedPackage,
+        normalize_package_type,
+        package_display_label,
+    )
+
+    def fake_resolve(
+        sample_product_name: str,
+        package_type: str,
+        *,
+        category: str = CATEGORY_FOOD,
+    ):
+        if normalize_category(category) != CATEGORY_FOOD:
+            return None
+        ptype = normalize_package_type(package_type)
+        name = (sample_product_name or "").strip()
+        if not name or not ptype:
+            return None
+        if name.lower() == "missingpackage":
+            return None
+        keys = ["moisture"]
+        if name.lower() == "mixed":
+            keys = ["moisture", "bn_protein"]
+        return ResolvedPackage(
+            package_id=99,
+            package_version_no=1,
+            package_type=ptype,
+            sample_product_name=name,
+            test_keys=keys,
+            display_label=package_display_label(name, ptype),
+        )
+
+    monkeypatch.setattr("services.requests.resolve_package_tests", fake_resolve)

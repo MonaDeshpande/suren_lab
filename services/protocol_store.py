@@ -42,6 +42,37 @@ class TestResultRow:
     calculated_at: Optional[datetime] = None
 
 
+def sync_reception_protocol_header(
+    sample_id: int,
+    *,
+    protocol_no: str,
+    issued_to: str,
+    issued_by: str,
+    sample_received_on: Optional[date] = None,
+    actor=None,
+) -> None:
+    """
+    Set reception-owned protocol header fields.
+
+    Preserves analyst-entered date_of_analysis and appearance_text when present.
+    """
+    existing = get_protocol_header(sample_id)
+    header = ProtocolHeader(
+        sample_id=sample_id,
+        protocol_no=protocol_no,
+        issued_to=issued_to,
+        issued_by=issued_by,
+        sample_received_on=(
+            sample_received_on
+            if sample_received_on is not None
+            else (existing.sample_received_on if existing else None)
+        ),
+        date_of_analysis=existing.date_of_analysis if existing else None,
+        appearance_text=(existing.appearance_text if existing else "") or "",
+    )
+    upsert_protocol_header(header, actor=actor)
+
+
 def upsert_protocol_header(header: ProtocolHeader, actor=None) -> None:
     """Insert or update the 2-row protocol header + appearance for a sample."""
     sql = """

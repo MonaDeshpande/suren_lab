@@ -15,6 +15,7 @@ import streamlit as st
 from db.connection import get_db
 
 ROLES = ("admin", "reception", "analyst", "reviewer")
+MAX_ROLES_PER_USER = 2
 
 DEFAULT_ADMIN_USERNAME = "admin"
 DEFAULT_ADMIN_PASSWORD = "Admin@123"
@@ -22,7 +23,7 @@ DEFAULT_ADMIN_PASSWORD = "Admin@123"
 _SESSION_KEYS = (
     "user_id",
     "username",
-    "role",
+    "roles",
     "full_name",
     "must_change_password",
 )
@@ -33,9 +34,32 @@ class AuthUser:
     id: int
     username: str
     full_name: str
-    role: str
+    roles: tuple[str, ...]
     is_active: bool
     must_change_password: bool
+
+    @property
+    def role(self) -> str:
+        """Primary display role (admin first, else first in ROLES order)."""
+        if not self.roles:
+            return ""
+        order = {name: idx for idx, name in enumerate(ROLES)}
+        return sorted(self.roles, key=lambda r: order.get(r, 99))[0]
+
+    def has_role(self, role: str) -> bool:
+        return role.lower() in {r.lower() for r in self.roles}
+
+    def has_any_role(self, *roles: str) -> bool:
+        allowed = {r.lower() for r in roles}
+        return bool({r.lower() for r in self.roles} & allowed)
+
+
+def roles_display(roles: tuple[str, ...] | list[str]) -> str:
+    """Comma-separated role labels for UI."""
+    if not roles:
+        return "—"
+    order = {name: idx for idx, name in enumerate(ROLES)}
+    return ", ".join(sorted(roles, key=lambda r: order.get(r, 99)))
 
 
 def hash_password(plain: str) -> str:
@@ -59,14 +83,33 @@ def verify_password(plain: str, password_hash: str) -> bool:
         return False
 
 
-def _row_to_user(row: tuple) -> AuthUser:
+def _fetch_roles_for_user_ids(user_ids: list[int]) -> dict[int, tuple[str, ...]]:
+    if not user_ids:
+        return {}
+    sql = """
+        SELECT user_id, role
+          FROM user_roles
+         WHERE user_id = ANY(%s)
+         ORDER BY user_id, role
+    """
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute(sql, (user_ids,))
+            rows = cur.fetchall()
+    by_user: dict[int, list[str]] = {}
+    for uid, role in rows:
+        by_user.setdefault(uid, []).append(role)
+    return {uid: tuple(roles) for uid, roles in by_user.items()}
+
+
+def _row_to_user(row: tuple, roles: tuple[str, ...]) -> AuthUser:
     return AuthUser(
         id=row[0],
         username=row[1],
         full_name=row[2] or "",
-        role=row[3],
-        is_active=bool(row[4]),
-        must_change_password=bool(row[5]),
+        roles=roles,
+        is_active=bool(row[3]),
+        must_change_password=bool(row[4]),
     )
 
 
@@ -75,7 +118,7 @@ def get_user_by_username(username: str) -> Optional[AuthUser]:
     if not name:
         return None
     sql = """
-        SELECT id, username, COALESCE(full_name, ''), role,
+        SELECT id, username, COALESCE(full_name, ''),
                is_active, must_change_password
           FROM users
          WHERE LOWER(username) = %s
@@ -84,12 +127,16 @@ def get_user_by_username(username: str) -> Optional[AuthUser]:
         with conn.cursor() as cur:
             cur.execute(sql, (name,))
             row = cur.fetchone()
-    return _row_to_user(row) if row else None
+    if not row:
+        return None
+    roles_map = _fetch_roles_for_user_ids([row[0]])
+    roles = roles_map.get(row[0], ())
+    return _row_to_user(row, roles)
 
 
 def get_user_by_id(user_id: int) -> Optional[AuthUser]:
     sql = """
-        SELECT id, username, COALESCE(full_name, ''), role,
+        SELECT id, username, COALESCE(full_name, ''),
                is_active, must_change_password
           FROM users
          WHERE id = %s
@@ -98,7 +145,11 @@ def get_user_by_id(user_id: int) -> Optional[AuthUser]:
         with conn.cursor() as cur:
             cur.execute(sql, (user_id,))
             row = cur.fetchone()
-    return _row_to_user(row) if row else None
+    if not row:
+        return None
+    roles_map = _fetch_roles_for_user_ids([row[0]])
+    roles = roles_map.get(row[0], ())
+    return _row_to_user(row, roles)
 
 
 def _password_hash_for(username: str) -> Optional[str]:
@@ -120,6 +171,8 @@ def authenticate(username: str, password: str) -> Optional[AuthUser]:
     user = get_user_by_username(username)
     if user is None or not user.is_active:
         return None
+    if not user.roles:
+        return None
     stored = _password_hash_for(user.username)
     if stored is None or not verify_password(password, stored):
         return None
@@ -129,7 +182,7 @@ def authenticate(username: str, password: str) -> Optional[AuthUser]:
 def set_session_user(user: AuthUser) -> None:
     st.session_state["user_id"] = user.id
     st.session_state["username"] = user.username
-    st.session_state["role"] = user.role
+    st.session_state["roles"] = list(user.roles)
     st.session_state["full_name"] = user.full_name
     st.session_state["must_change_password"] = user.must_change_password
 
@@ -137,6 +190,8 @@ def set_session_user(user: AuthUser) -> None:
 def clear_session_user() -> None:
     for key in _SESSION_KEYS:
         st.session_state.pop(key, None)
+    # Legacy single-role session key from older builds
+    st.session_state.pop("role", None)
 
 
 def is_logged_in() -> bool:
@@ -147,11 +202,20 @@ def get_session_user() -> Optional[AuthUser]:
     uid = st.session_state.get("user_id")
     if not uid:
         return None
+    roles_raw = st.session_state.get("roles")
+    if roles_raw is None:
+        # Legacy session from before multi-role
+        legacy = st.session_state.get("role")
+        roles: tuple[str, ...] = (str(legacy),) if legacy else ()
+    elif isinstance(roles_raw, list):
+        roles = tuple(str(r) for r in roles_raw)
+    else:
+        roles = (str(roles_raw),)
     return AuthUser(
         id=int(uid),
         username=str(st.session_state.get("username") or ""),
         full_name=str(st.session_state.get("full_name") or ""),
-        role=str(st.session_state.get("role") or ""),
+        roles=roles,
         is_active=True,
         must_change_password=bool(
             st.session_state.get("must_change_password", False)
@@ -236,15 +300,21 @@ def ensure_default_admin() -> bool:
             cur.execute(
                 """
                 INSERT INTO users (
-                    username, password_hash, full_name, role,
+                    username, password_hash, full_name,
                     is_active, must_change_password
-                ) VALUES (%s, %s, %s, %s, TRUE, FALSE)
+                ) VALUES (%s, %s, %s, TRUE, FALSE)
+                RETURNING id
                 """,
                 (
                     DEFAULT_ADMIN_USERNAME,
                     hash_password(DEFAULT_ADMIN_PASSWORD),
                     "Administrator",
-                    "admin",
                 ),
+            )
+            row = cur.fetchone()
+            assert row is not None
+            cur.execute(
+                "INSERT INTO user_roles (user_id, role) VALUES (%s, %s)",
+                (row[0], "admin"),
             )
     return True

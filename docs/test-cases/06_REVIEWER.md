@@ -153,3 +153,41 @@
 | **Priority** | P0 |
 | **Type** | RBAC |
 | **Expected** | Access denied. |
+
+---
+
+## TC-REV-014 — Final report respects per-sample format
+
+| Field | Value |
+|-------|-------|
+| **Priority** | P0 |
+| **Type** | Positive |
+| **Preconditions** | Reception saved sample with report format A, B, or Both (with logo split) |
+| **Steps** | Open reviewer preview; generate Final Test Report PDF. |
+| **Expected** | Preview shows read-only **Report format** (and with/without logo test lists for Both). PDF letterhead uses logo for A, blank band for B, two sections for Both. Format not editable on Reviewer page. |
+
+---
+
+## TC-REV-015 — Water final report uses Water test report.docx layout
+
+| Field | Value |
+|-------|-------|
+| **Priority** | P0 |
+| **Type** | Positive |
+| **Preconditions** | Water sample with protocol header + ≥1 saved result |
+| **Steps** | Open Reviewer; enter Condition, Appearance, IS 10500 limits if needed; **Generate Final Report**; download Word (and PDF if Word available). |
+| **Expected** | Output matches `reference/Water test report.docx`: Chemical + Elemental on page 1, Physical on page 2, Microbiological section with **blank results** (T. Coli form, E. coli). `calcium_caco3` not on report. IS 10500 Desirable/Permissible columns populated. Status → `reported`. |
+| **Automated** | `test_water_report_docx.py::TestWaterReportDocx` |
+
+---
+
+## TC-REV-016 — Micro final report matches Micro Test Report.htm
+
+| Field | Value |
+|-------|-------|
+| **Priority** | P0 |
+| **Type** | Positive |
+| **Preconditions** | Micro sample with protocol header + >=1 saved result |
+| **Steps** | Open Reviewer; enter Condition / Customer Sample ID / Report No; preview fixed Limits and Methods; **Generate Final Report**; download Word (and PDF if Word available). |
+| **Expected** | DOCX layout matches `reference/Micro Test Report.htm`: TEST REPORT title, QSF 7.8.2, metadata table, **Microbiological Test** section with 6 rows (Name / Result / Limits / Method). Limits and methods are catalog-fixed; only Results from analyst. Status -> `reported`. |
+| **Automated** | `test_micro_report.py` |

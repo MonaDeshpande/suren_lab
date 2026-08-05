@@ -25,27 +25,6 @@
   box-shadow: 0 10px 28px rgba(11, 61, 74, 0.22);
 }
 
-/* Letterhead slot — matches protocol frame ~7.25 x 1.42 in */
-.sls-letterhead {
-  width: 100%;
-  margin: 0 0 0.85rem 0;
-  background: rgba(255, 255, 255, 0.95);
-  border-radius: 6px;
-  overflow: hidden;
-  aspect-ratio: 725 / 142;
-  max-height: 1.42in;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-
-.sls-letterhead img {
-  width: 100%;
-  height: 100%;
-  object-fit: contain;
-  display: block;
-}
-
 .sls-hero h1 {
   font-family: "Segoe UI", "Trebuchet MS", sans-serif;
   font-size: 1.65rem;
@@ -129,4 +108,47 @@ div[data-testid="stFormSubmitButton"] button {
 /* Download buttons spacing */
 div[data-testid="stDownloadButton"] button {
   border-radius: 8px !important;
+}
+
+/* Hide default multipage nav — workspaces are role-gated on Home */
+[data-testid="stSidebarNav"] {
+  display: none;
+}
+
+/* Test package version diff */
+.pkg-diff-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.9rem;
+  margin: 0.5rem 0 1rem 0;
+}
+
+.pkg-diff-table th,
+.pkg-diff-table td {
+  border: 1px solid #d5e4e9;
+  padding: 0.45rem 0.65rem;
+  text-align: left;
+}
+
+.pkg-diff-table th {
+  background: #e8f1f4;
+  color: #0b3d4a;
+}
+
+.pkg-diff-table tr.pkg-diff-added {
+  background: #e6f6ee;
+}
+
+.pkg-diff-table tr.pkg-diff-removed {
+  background: #fdeeee;
+}
+
+.pkg-diff-added-inline {
+  color: #176b3a;
+  font-weight: 600;
+}
+
+.pkg-diff-removed-inline {
+  color: #8a1f1f;
+  font-weight: 600;
 }

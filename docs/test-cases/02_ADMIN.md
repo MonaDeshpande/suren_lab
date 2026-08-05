@@ -75,15 +75,49 @@
 
 ---
 
-## TC-ADM-007 — Change user role
+## TC-ADM-007 — Change user roles
 
 | Field | Value |
 |-------|-------|
 | **Priority** | P1 |
 | **Type** | Positive |
 | **Preconditions** | Staff user exists; ≥2 active admins OR target is not last admin |
-| **Steps** | Change `recv_qa` from reception → analyst. |
-| **Expected** | Role updated; audit `user.set_role`. User next login has analyst access. |
+| **Steps** | Change `recv_qa` from reception → analyst (or assign reception + analyst). |
+| **Expected** | Roles updated; audit `user.set_roles`. User next login has matching workspace access. |
+
+---
+
+## TC-ADM-007b — Assign two roles to one user
+
+| Field | Value |
+|-------|-------|
+| **Priority** | P0 |
+| **Type** | Positive |
+| **Preconditions** | Logged in as admin |
+| **Steps** | Create or update user with roles `reception` and `analyst`. |
+| **Expected** | Both roles stored; user can open Reception and Analyst. |
+
+---
+
+## TC-ADM-007c — Admin role cannot be combined
+
+| Field | Value |
+|-------|-------|
+| **Priority** | P1 |
+| **Type** | Negative |
+| **Steps** | Attempt to assign `admin` + `reception` to one user. |
+| **Expected** | Error: admin cannot be combined with other roles. |
+
+---
+
+## TC-ADM-007d — More than two roles rejected
+
+| Field | Value |
+|-------|-------|
+| **Priority** | P1 |
+| **Type** | Negative |
+| **Steps** | Attempt to assign three non-admin roles. |
+| **Expected** | Error: at most 2 roles per user. |
 
 ---
 
@@ -120,6 +154,42 @@
 | **Preconditions** | Active non-admin staff exists |
 | **Steps** | Deactivate the user. |
 | **Expected** | `is_active=FALSE`; audit `user.set_active`; login fails (TC-AUTH-004). |
+
+---
+
+## TC-ADM-010a — Deactivate reception user
+
+| Field | Value |
+|-------|-------|
+| **Priority** | P1 |
+| **Type** | Positive |
+| **Preconditions** | Active user with role `reception` exists |
+| **Steps** | 1. Admin deactivates the reception user. 2. Attempt login with that user's credentials. |
+| **Expected** | User list shows inactive; login rejected (TC-AUTH-004); Reception workspace inaccessible. |
+
+---
+
+## TC-ADM-010b — Deactivate analyst user
+
+| Field | Value |
+|-------|-------|
+| **Priority** | P1 |
+| **Type** | Positive |
+| **Preconditions** | Active user with role `analyst` exists |
+| **Steps** | 1. Admin deactivates the analyst user. 2. Attempt login with that user's credentials. |
+| **Expected** | User list shows inactive; login rejected (TC-AUTH-004); Analyst workspace inaccessible. |
+
+---
+
+## TC-ADM-010c — Deactivate reviewer user
+
+| Field | Value |
+|-------|-------|
+| **Priority** | P1 |
+| **Type** | Positive |
+| **Preconditions** | Active user with role `reviewer` exists |
+| **Steps** | 1. Admin deactivates the reviewer user. 2. Attempt login with that user's credentials. |
+| **Expected** | User list shows inactive; login rejected (TC-AUTH-004); Reviewer workspace inaccessible. |
 
 ---
 
@@ -177,7 +247,31 @@
 | **Type** | Positive |
 | **Preconditions** | Several admin actions performed |
 | **Steps** | Open audit section on Admin page; review recent rows. |
-| **Expected** | Shows who / when / action / entity; newest first; limit reasonable (≤500). After create/role/reset, corresponding `user.*` actions appear. |
+| **Expected** | Shows who / when / action / entity; newest first; limit reasonable (≤500). After create/role/reset, corresponding `user.*` actions appear (`user.set_roles` for role changes). |
+
+---
+
+## TC-ADM-017 — Version history visible
+
+| Field | Value |
+|-------|-------|
+| **Priority** | P1 |
+| **Type** | Positive |
+| **Preconditions** | At least one customer or request edit with reason |
+| **Steps** | Open **Version history** on Admin page; filter by entity type / ID. |
+| **Expected** | Shows version #, entity, editor, timestamp, reason; expander shows JSON snapshot of prior state. |
+
+---
+
+## TC-ADM-018 — Audit log shows edit reason
+
+| Field | Value |
+|-------|-------|
+| **Priority** | P2 |
+| **Type** | Positive |
+| **Preconditions** | Edit with reason performed |
+| **Steps** | Open audit log after `customer.update` or `request.update`. |
+| **Expected** | **Edit reason** column populated for that row. |
 
 ---
 
@@ -190,3 +284,27 @@
 | **Preconditions** | Logged in as reception/analyst/reviewer |
 | **Steps** | Open Admin page. |
 | **Expected** | Access denied. |
+
+---
+
+## TC-ADM-019 — Deactivate non-sole second admin
+
+| Field | Value |
+|-------|-------|
+| **Priority** | P1 |
+| **Type** | Positive |
+| **Preconditions** | At least two active admins (e.g. after TC-ADM-014: bootstrap admin + second admin) |
+| **Steps** | 1. Select the second admin. 2. Deactivate that user. |
+| **Expected** | Second admin deactivated; first admin remains active and can still manage users. |
+
+---
+
+## TC-ADM-020 — Sole admin cannot self-demote or self-deactivate
+
+| Field | Value |
+|-------|-------|
+| **Priority** | P0 |
+| **Type** | Negative |
+| **Preconditions** | Logged in as the only active admin |
+| **Steps** | 1. Attempt to change own roles away from `admin` (e.g. to `reception`). 2. Attempt to deactivate own account. |
+| **Expected** | Both blocked with last-admin / self-demote errors; session remains admin and active. |

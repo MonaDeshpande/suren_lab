@@ -114,7 +114,7 @@ def _risk_rows(inv: SystemInventory) -> list[tuple[str, ...]]:
         "Admin privileged actions",
         "Malicious or mistaken deactivate / password reset",
         "Lockout of staff; account takeover via reset",
-        "Admin-only page; audit of user.create/set_role/set_active/reset_password; last-admin guard",
+        "Admin-only page; audit of user.create/set_roles/set_active/reset_password; last-admin guard",
     )
     r(
         "RA-010",

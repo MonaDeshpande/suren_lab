@@ -10,9 +10,10 @@ Maps product features to manual TC-IDs and automated tests.
 | Bootstrap admin no force-change | TC-AUTH-010 | — |
 | Logout / unauthenticated gate | TC-AUTH-011…012 | — |
 | RBAC page matrix | TC-RBAC-001…005, TC-ADM-016, TC-ANL-019, TC-REV-013 | — |
-| Create / validate users | TC-ADM-001…006 | — |
-| Last-admin protection | TC-ADM-008…009, TC-E2E-004 | — |
-| Activate / reset password | TC-ADM-010…013 | — |
+| Create / validate users | TC-ADM-001…006 | `test_users_admin_db.py` (create) |
+| Multi-role assign / change | TC-ADM-007, 007b–d, TC-E2E-009 | `test_users_admin_db.py` + `test_users_roles.py` |
+| Last-admin protection | TC-ADM-008…009, TC-ADM-020, TC-E2E-004 | `test_users_admin_db.py` |
+| Activate / deactivate / reset | TC-ADM-010…013, 010a–c, 019, TC-E2E-006, TC-E2E-009 | `test_users_admin_db.py` |
 | Audit viewer | TC-ADM-015, TC-AUD-* | — |
 | CTR save happy / multi-sample | TC-REC-001…002, TC-E2E-001…002 | integration (optional) |
 | CTR validation rules | TC-REC-003…009 | `test_validation.py` |
@@ -27,15 +28,20 @@ Maps product features to manual TC-IDs and automated tests.
 | Worksheet errors | TC-ANL-007…010 | `test_formulas.py` |
 | Catalog restrict / fallback | TC-ANL-011…012 | — |
 | Protocol document | TC-ANL-015 | — |
+| Water / Nutrition / Jaggery protocol flow | TC-ANL-020…025, TC-E2E-007…008 | `test_protocol_flow.py` |
+| Water final report (IS 10500 layout) | TC-REV-015 | `test_water_report_docx.py` |
+| Micro category + final report | TC-REC-036, TC-ANL-026, TC-REV-016 | `test_micro_report.py` |
 | Status completed | TC-ANL-016 | integration |
-| Appearance / moisture / ash / … | TC-FOR-001…024 | `test_formulas.py` |
+| Appearance / moisture / ash / … (Jaggery) | TC-FOR-001…024 | `test_formulas.py` |
+| Water calculations | TC-FOR-025…029 (+ existing water tests in pytest) | `test_formulas.py` |
+| Basic Nutrition calculations | TC-FOR-030…037 (+ existing bn_* tests in pytest) | `test_formulas.py` |
 | Reviewer preconditions | TC-REV-002…003 | — |
 | Final report → reported | TC-REV-004, TC-E2E-001 | — |
 | Status warnings non-blocking | TC-REV-005…006 | — |
 | Reviewer note / stamp | TC-REV-008…009 | — |
 | 10-day retention / purge | TC-RET-001…010 | integration retention |
 | Audit action matrix | TC-AUD-001…013 | — |
-| Full E2E smoke | TC-E2E-001…006 | `pytest` formulas regression |
+| Full E2E smoke | TC-E2E-001…009 | `pytest` formulas + protocol flow + `test_users_admin_db.py` |
 
 ## Document index
 

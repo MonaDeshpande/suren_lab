@@ -76,8 +76,9 @@ def write_pq(inv: SystemInventory, out_dir: Path, stamp: str) -> Path:
         (
             "PQ-03",
             "Admin user lifecycle",
-            "Admin creates reception/analyst/reviewer users, forces password change, "
-            "changes a role, deactivates a user, resets password; confirm audit entries.",
+            "Admin creates reception/analyst/reviewer users (including dual-role), "
+            "forces password change, changes roles, deactivates a user, resets password; "
+            "confirm audit entries.",
             "User list screenshots; audit viewer export/screenshot; login proofs",
             "TC-ADM-*, TC-AUTH-006…",
         ),

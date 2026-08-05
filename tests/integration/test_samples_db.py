@@ -7,6 +7,7 @@ Skip automatically when DB is down.
 
 from __future__ import annotations
 
+import uuid
 from datetime import date, datetime, timedelta, timezone
 
 import pytest
@@ -18,11 +19,35 @@ from services.samples import (
     delete_expired_samples,
     generate_sample_code,
     get_by_code,
+    list_open,
     update_status,
 )
+from services.users import create_user
 
 
 pytestmark = pytest.mark.integration
+
+_ANALYST_PW = "Temp@12"
+
+
+@pytest.fixture
+def qa_analyst_pair(require_db):
+    """Two active analyst users for assignment tests."""
+    created = []
+    for suffix in ("a", "b"):
+        user = create_user(
+            username=f"qa_smp_{suffix}_{uuid.uuid4().hex[:8]}",
+            temporary_password=_ANALYST_PW,
+            roles=["analyst"],
+            full_name=f"QA Analyst {suffix.upper()}",
+        )
+        created.append(user)
+    yield created[0], created[1]
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            ids = [u.id for u in created]
+            cur.execute("DELETE FROM user_roles WHERE user_id = ANY(%s)", (ids,))
+            cur.execute("DELETE FROM users WHERE id = ANY(%s)", (ids,))
 
 
 @pytest.fixture
@@ -68,8 +93,9 @@ def test_generate_sample_code_format_and_sequence(require_db):
     assert seq >= 1
 
 
-def test_save_request_status_and_lookup(require_db, clean_customer_gst):
+def test_save_request_status_and_lookup(require_db, clean_customer_gst, qa_analyst_pair):
     gst = clean_customer_gst
+    analyst_a, _analyst_b = qa_analyst_pair
     data = TestRequestData(
         customer=Customer(
             customer_name="QA Integration Co",
@@ -79,13 +105,16 @@ def test_save_request_status_and_lookup(require_db, clean_customer_gst):
             email="qa@example.com",
             gst_number=gst,
         ),
-        request_date=date.today(),
+        request_date=date(2099, 1, 15),
         lab_code="LAB-QA-1",
         samples=[
             SampleRow(
                 sr_no=1,
                 sample_name="Integration Sample",
                 test_keys=["moisture", "appearance"],
+                assigned_analyst_id=analyst_a.id,
+                protocol_no="P-QA-1",
+                package_type="fssai",
             )
         ],
     )
@@ -93,7 +122,7 @@ def test_save_request_status_and_lookup(require_db, clean_customer_gst):
     assert saved.request_id is not None
     assert len(saved.samples) == 1
     code = saved.samples[0].sample_code
-    assert code.startswith("SLS-")
+    assert code == "LAB-QA-1"
 
     rec = get_by_code(code)
     assert rec is not None
@@ -101,6 +130,12 @@ def test_save_request_status_and_lookup(require_db, clean_customer_gst):
     assert rec.sample_name == "Integration Sample"
     assert rec.category == "food"
     assert rec.selected_test_keys() == ["moisture", "appearance"]
+    assert rec.assigned_analyst_id == analyst_a.id
+
+    scoped = list_open(assigned_analyst_id=analyst_a.id)
+    assert any(s.sample_code == code for s in scoped)
+    assert get_by_code(code, assigned_analyst_id=analyst_a.id) is not None
+    assert get_by_code(code, assigned_analyst_id=_analyst_b.id) is None
 
     update_status(code, "in_progress", analyst_remarks="started")
     rec2 = get_by_code(code)
@@ -113,8 +148,9 @@ def test_save_request_status_and_lookup(require_db, clean_customer_gst):
     assert rec3.status == "completed"
 
 
-def test_expired_sample_hidden_and_purged(require_db, clean_customer_gst):
+def test_expired_sample_hidden_and_purged(require_db, clean_customer_gst, qa_analyst_pair):
     gst = clean_customer_gst
+    analyst_a, _ = qa_analyst_pair
     data = TestRequestData(
         customer=Customer(
             customer_name="QA Expiry Co",
@@ -124,13 +160,22 @@ def test_expired_sample_hidden_and_purged(require_db, clean_customer_gst):
             email="expiry@example.com",
             gst_number=gst,
         ),
-        request_date=date.today(),
+        request_date=date(2099, 2, 1),
+        lab_code="LAB-QA-EXP",
         samples=[
-            SampleRow(sr_no=1, sample_name="Expire Me", test_keys=["moisture"])
+            SampleRow(
+                sr_no=1,
+                sample_name="Expire Me",
+                test_keys=["moisture"],
+                sample_code="SLS-990201-9002",
+                assigned_analyst_id=analyst_a.id,
+                protocol_no="P-EXP-1",
+            )
         ],
     )
     saved = save_test_request(data, actor=None)
     code = saved.samples[0].sample_code
+    assert code == "SLS-990201-9002"
 
     past = datetime.now(timezone.utc) - timedelta(days=1)
     with get_db() as conn:
