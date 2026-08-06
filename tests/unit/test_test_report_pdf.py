@@ -9,6 +9,10 @@ from services.protocol_store import ProtocolHeader, TestResultRow
 from services.samples import SampleRecord
 from services.test_report_pdf import (
     DEFAULT_TESTS_PROCESSED,
+    NUTRITION_REMARK_TEXT,
+    NUTRITION_SPECS_HEADER,
+    REMARK_TEXT,
+    SPECS_HEADER,
     build_test_report_data,
 )
 
@@ -34,6 +38,7 @@ def _sample(**overrides) -> SampleRecord:
         report_format="with_logo",
         tests_with_logo_json="",
         tests_without_logo_json="",
+        package_type="",
     )
     base.update(overrides)
     return SampleRecord(**base)
@@ -75,6 +80,8 @@ def test_build_test_report_data_defaults():
     assert data.tests_processed == DEFAULT_TESTS_PROCESSED
     assert data.condition_of_sample == ""
     assert data.rows[0].specification == "Not more than 7 %"
+    assert data.remark_text == REMARK_TEXT
+    assert data.specs_header == SPECS_HEADER
 
 
 def test_build_test_report_data_reviewer_overrides():
@@ -89,3 +96,42 @@ def test_build_test_report_data_reviewer_overrides():
     assert data.condition_of_sample == "Sealed pouch"
     assert data.tests_processed == "Moisture only"
     assert data.rows[0].specification == "Custom spec"
+
+
+def test_fssai_package_uses_jaggery_remark_despite_bn_keys():
+    data = build_test_report_data(
+        _sample(
+            package_type="fssai",
+            tests_json=json.dumps(["moisture", "bn_protein"]),
+        ),
+        _header(),
+        [_moisture_result()],
+    )
+    assert data.remark_text == REMARK_TEXT
+    assert data.specs_header == SPECS_HEADER
+    assert data.is_nutrition is False
+    assert [row.test_name for row in data.rows] == ["Moisture"]
+
+
+def test_basic_nutrition_package_uses_nutrition_remark():
+    data = build_test_report_data(
+        _sample(
+            package_type="basic_nutrition",
+            tests_json=json.dumps(["bn_moisture", "bn_protein"]),
+        ),
+        _header(),
+        [],
+    )
+    assert data.remark_text == NUTRITION_REMARK_TEXT
+    assert data.specs_header == NUTRITION_SPECS_HEADER
+    assert data.is_nutrition is True
+
+
+def test_legacy_bn_keys_without_package_type_use_nutrition_remark():
+    data = build_test_report_data(
+        _sample(tests_json=json.dumps(["bn_moisture"])),
+        _header(),
+        [],
+    )
+    assert data.remark_text == NUTRITION_REMARK_TEXT
+    assert data.is_nutrition is True

@@ -11,8 +11,10 @@ Chemical rows = only tests selected for the sample (excl. appearance).
 from __future__ import annotations
 
 import io
+import os
 from dataclasses import dataclass, field
 from datetime import date
+from pathlib import Path
 from typing import Optional
 
 from reportlab.lib import colors
@@ -20,6 +22,8 @@ from reportlab.lib.enums import TA_CENTER, TA_LEFT
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import mm
+from reportlab.pdfbase import pdfmetrics
+from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.platypus import (
     Image as RLImage,
     PageBreak,
@@ -31,6 +35,7 @@ from reportlab.platypus import (
 )
 
 from services.branding import (
+    LAB_SHORT_NAME,
     LOGO_HEIGHT_IN,
     LOGO_PATH,
     LOGO_WIDTH_IN,
@@ -41,11 +46,18 @@ from services.protocol_store import ProtocolHeader, TestResultRow
 from services.protocols.test_catalog import (
     CATEGORY_MICRO,
     CATEGORY_WATER,
+    PROTOCOL_FAMILY_JAGGERY,
     TEST_CATALOG,
     catalog_keys_for_category,
     get_test,
     normalize_category,
+    protocol_family_for_key,
     uses_nutrition_template,
+)
+from services.test_packages import (
+    is_fssai_package_type,
+    is_nutrition_package_type,
+    normalize_package_type,
 )
 from services.samples import (
     REPORT_FORMAT_BOTH,
@@ -61,6 +73,40 @@ from services.audit import format_stamp_datetime, generator_stamp_lines
 BORDER = colors.black
 FONT = "Helvetica"
 FONT_BOLD = "Helvetica-Bold"
+_FONTS_REGISTERED = False
+
+
+def _register_report_fonts() -> None:
+    """Load Cambria when available; fall back to Times on other hosts."""
+    global FONT, FONT_BOLD, _FONTS_REGISTERED
+    if _FONTS_REGISTERED:
+        return
+    _FONTS_REGISTERED = True
+    windir = os.environ.get("WINDIR", r"C:\Windows")
+    candidates = [
+        Path(windir) / "Fonts" / "cambria.ttc",
+        Path(windir) / "Fonts" / "cambriab.ttf",
+        Path(windir) / "Fonts" / "Cambria.ttf",
+        Path(windir) / "Fonts" / "Cambria Bold.ttf",
+    ]
+    regular = next((p for p in candidates if p.exists()), None)
+    bold = Path(windir) / "Fonts" / "cambriab.ttf"
+    if regular:
+        try:
+            pdfmetrics.registerFont(TTFont("Cambria", str(regular), subfontIndex=0))
+            FONT = "Cambria"
+        except Exception:
+            FONT = "Times-Roman"
+    else:
+        FONT = "Times-Roman"
+    if bold.exists():
+        try:
+            pdfmetrics.registerFont(TTFont("Cambria-Bold", str(bold)))
+            FONT_BOLD = "Cambria-Bold"
+        except Exception:
+            FONT_BOLD = "Times-Bold"
+    else:
+        FONT_BOLD = "Times-Bold"
 
 # FSSAI specs from reference Test Report Format (whole Jaggery)
 FSSAI_SPECS: dict[str, str] = {
@@ -178,6 +224,42 @@ def _p(text: str, style: ParagraphStyle) -> Paragraph:
     return Paragraph(_escape(text).replace("\n", "<br/>"), style)
 
 
+def _remark_paragraph(text: str, style: ParagraphStyle) -> Paragraph:
+    """Render remark with bold label in the Name-of-Test column (reference layout)."""
+    body = (text or "").strip()
+    if body.lower().startswith("remark:"):
+        body = body[7:].lstrip()
+    html = f"<b>Remark:</b> {_escape(body)}"
+    return Paragraph(html.replace("\n", "<br/>"), style)
+
+
+def _uses_nutrition_report(sample: SampleRecord) -> bool:
+    """
+    Basic Nutrition report template when package group is Basic or Detailed Nutrition.
+
+    Falls back to legacy bn_* key detection when package_type is missing on old rows.
+    """
+    ptype = normalize_package_type(getattr(sample, "package_type", None) or "")
+    if ptype:
+        return is_nutrition_package_type(ptype)
+    return uses_nutrition_template(sample.selected_test_keys())
+
+
+def _filter_fssai_report_keys(
+    chem_keys: list[str],
+    sample: SampleRecord,
+) -> list[str]:
+    """On FSSAI packages, exclude stray Basic Nutrition catalog keys from the report."""
+    ptype = normalize_package_type(getattr(sample, "package_type", None) or "")
+    if not is_fssai_package_type(ptype):
+        return chem_keys
+    return [
+        key
+        for key in chem_keys
+        if protocol_family_for_key(key) == PROTOCOL_FAMILY_JAGGERY
+    ]
+
+
 def _report_keys(
     sample: SampleRecord,
     row_filter: Optional[set[str]] = None,
@@ -205,8 +287,11 @@ def build_test_report_data(
     results_by_key = {r.test_key: r for r in results}
     cat = normalize_category(sample.category)
     is_water = cat == CATEGORY_WATER
-    is_nutrition = not is_water and uses_nutrition_template(sample.selected_test_keys())
-    chem_keys = _report_keys(sample, row_filter=row_filter)
+    is_nutrition = not is_water and _uses_nutrition_report(sample)
+    chem_keys = _filter_fssai_report_keys(
+        _report_keys(sample, row_filter=row_filter),
+        sample,
+    )
 
     name_addr_parts = [sample.customer_name or ""]
     if (sample.customer_address or "").strip():
@@ -435,38 +520,39 @@ def _render_pdf_sections(sections: list[tuple[TestReportData, bool]]) -> bytes:
 
 
 def _report_styles() -> dict:
+    _register_report_fonts()
     styles = getSampleStyleSheet()
     return {
         "title": ParagraphStyle(
             "TRTitle",
             parent=styles["Normal"],
             fontName=FONT_BOLD,
-            fontSize=14,
+            fontSize=16,
             alignment=TA_CENTER,
-            leading=16,
+            leading=18,
         ),
         "qsf": ParagraphStyle(
             "TRQsf",
             parent=styles["Normal"],
             fontName=FONT_BOLD,
-            fontSize=9,
+            fontSize=10,
             alignment=TA_CENTER,
-            leading=11,
+            leading=12,
         ),
         "label": ParagraphStyle(
             "TRLabel",
             parent=styles["Normal"],
             fontName=FONT_BOLD,
-            fontSize=8,
-            leading=10,
+            fontSize=10,
+            leading=12,
             alignment=TA_LEFT,
         ),
         "value": ParagraphStyle(
             "TRValue",
             parent=styles["Normal"],
             fontName=FONT,
-            fontSize=8,
-            leading=10,
+            fontSize=10,
+            leading=12,
             alignment=TA_LEFT,
         ),
         "section": ParagraphStyle(
@@ -491,17 +577,25 @@ def _report_styles() -> dict:
             "TRTd",
             parent=styles["Normal"],
             fontName=FONT,
-            fontSize=7,
-            leading=9,
+            fontSize=10,
+            leading=12,
             alignment=TA_LEFT,
         ),
         "td_center": ParagraphStyle(
             "TRTdC",
             parent=styles["Normal"],
             fontName=FONT,
-            fontSize=7,
-            leading=9,
+            fontSize=10,
+            leading=12,
             alignment=TA_CENTER,
+        ),
+        "remark": ParagraphStyle(
+            "TRRemark",
+            parent=styles["Normal"],
+            fontName=FONT,
+            fontSize=10,
+            leading=12,
+            alignment=TA_LEFT,
         ),
         "small": ParagraphStyle(
             "TRSmall",
@@ -515,7 +609,7 @@ def _report_styles() -> dict:
             "TRSign",
             parent=styles["Normal"],
             fontName=FONT,
-            fontSize=9,
+            fontSize=10,
             leading=12,
             alignment=TA_LEFT,
         ),
@@ -544,6 +638,7 @@ def _build_report_story(
     th_style = styles["th"]
     td_style = styles["td"]
     td_center = styles["td_center"]
+    remark_style = styles["remark"]
     small = styles["small"]
     sign_style = styles["sign"]
     end_style = styles["end"]
@@ -719,14 +814,14 @@ def _build_report_story(
             ]
         )
 
-    # Remark as final merged row
+    # Remark as final merged row (empty Sr. No; text starts in Name of Test column)
     body.append(
         [
-            _p(data.remark_text, small),
-            _p("", small),
-            _p("", small),
-            _p("", small),
-            _p("", small),
+            _p("", td_style),
+            _remark_paragraph(data.remark_text, remark_style),
+            _p("", td_style),
+            _p("", td_style),
+            _p("", td_style),
         ]
     )
 
@@ -743,7 +838,7 @@ def _build_report_story(
                 ("INNERGRID", (0, 0), (-1, last - 1), 0.5, BORDER),
                 ("LINEBELOW", (0, last - 1), (-1, last - 1), 0.5, BORDER),
                 ("BOX", (0, last), (-1, last), 1, BORDER),
-                ("SPAN", (0, last), (-1, last)),
+                ("SPAN", (1, last), (-1, last)),
                 ("VALIGN", (0, 0), (-1, -1), "TOP"),
                 ("BACKGROUND", (0, 0), (-1, 0), colors.Color(0.95, 0.95, 0.95)),
                 ("LEFTPADDING", (0, 0), (-1, -1), 3),
@@ -757,18 +852,17 @@ def _build_report_story(
     story.append(Spacer(1, 14))
 
     # ----- Signature block -----
-    # Left (authorized signatory) and Checked by left blank for pen at client
     sign_left = (
-        "________________________<br/>"
-        "<br/>"
-        "<br/>"
-        f"For, {ORGANIZATION_NAME}"
+        "xxx<br/>"
+        "Director<br/>"
+        "Authorized signatory<br/>"
+        f"For, {LAB_SHORT_NAME}"
     )
     sign_tbl = Table(
         [
             [
                 Paragraph(sign_left, sign_style),
-                _p("Checked by:\n\n________________________", sign_style),
+                _p("Checked by:", sign_style),
             ]
         ],
         colWidths=[usable * 0.5, usable * 0.5],

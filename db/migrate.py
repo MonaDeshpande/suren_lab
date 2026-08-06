@@ -32,6 +32,7 @@ _MIGRATION_FILES = (
     "migrate_custom_formula_validation.sql",
     "migrate_package_logo_scope.sql",
     "migrate_micro_category.sql",
+    "migrate_water_micro_analyst.sql",
 )
 
 _applied = False

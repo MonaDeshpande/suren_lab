@@ -18,6 +18,18 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
+# RPC_E_CALL_REJECTED — Word busy / dialog open / reused instance not responding.
+_WORD_CALL_REJECTED_MARKERS = (
+    "Call was rejected by callee",
+    "-2147418111",
+    "RPC_E_CALL_REJECTED",
+)
+
+_WORD_BUSY_MESSAGE = (
+    "Microsoft Word was busy and rejected PDF export. "
+    "Close any Word dialogs/windows and try again."
+)
+
 # Isolated child process — avoids Streamlit/COM threading issues on Windows.
 _WORD_CHILD_SCRIPT = r"""
 import sys
@@ -29,42 +41,74 @@ pdf_path = str(Path(sys.argv[2]).resolve())
 
 import pythoncom
 
+CALL_REJECTED = -2147418111
+
+
+def _is_call_rejected(exc):
+    if getattr(exc, "hresult", None) == CALL_REJECTED:
+        return True
+    text = str(exc)
+    return "Call was rejected by callee" in text or str(CALL_REJECTED) in text
+
+
+def _retry_com(action, attempts=3, base_delay=1.0):
+    last_exc = None
+    for attempt in range(attempts):
+        try:
+            return action()
+        except Exception as exc:
+            last_exc = exc
+            if not _is_call_rejected(exc) or attempt >= attempts - 1:
+                raise
+            time.sleep(base_delay * (attempt + 1))
+    raise last_exc
+
+
 pythoncom.CoInitialize()
 word = None
 doc = None
 try:
     import win32com.client
 
-    word = win32com.client.gencache.EnsureDispatch("Word.Application")
+    word = win32com.client.DispatchEx("Word.Application")
     word.Visible = False
     word.DisplayAlerts = 0
     time.sleep(0.5)
 
-    last_open_err = None
-    for attempt in range(3):
-        try:
-            doc = word.Documents.Open(docx_path)
-            if doc is None:
-                raise RuntimeError("Word did not open the document")
-            last_open_err = None
-            break
-        except Exception as exc:
-            last_open_err = exc
-            time.sleep(1.5 * (attempt + 1))
-    if last_open_err is not None:
-        raise SystemExit(f"Word Open failed: {last_open_err}")
+    def _open_doc():
+        opened = word.Documents.Open(
+            docx_path,
+            ConfirmConversions=False,
+            ReadOnly=True,
+            AddToRecentFiles=False,
+        )
+        if opened is None:
+            raise RuntimeError("Word did not open the document")
+        return opened
 
-    try:
+    doc = _retry_com(_open_doc)
+
+    def _export_pdf():
         try:
-            doc.SaveAs(pdf_path, FileFormat=17)
+            doc.ExportAsFixedFormat(
+                OutputFileName=pdf_path,
+                ExportFormat=17,
+                OpenAfterExport=False,
+                OptimizeFor=0,
+            )
         except Exception:
-            doc.ExportAsFixedFormat(pdf_path, 17)
-    finally:
-        doc.Close(0)
+            doc.SaveAs(pdf_path, FileFormat=17)
+
+    _retry_com(_export_pdf)
 finally:
+    if doc is not None:
+        try:
+            _retry_com(lambda: doc.Close(False), attempts=2, base_delay=0.5)
+        except Exception:
+            pass
     if word is not None:
         try:
-            word.Quit()
+            _retry_com(lambda: word.Quit(), attempts=2, base_delay=0.5)
         except Exception:
             pass
     pythoncom.CoUninitialize()
@@ -79,6 +123,25 @@ def word_pdf_available() -> bool:
     if sys.platform == "win32":
         return True
     return shutil.which("soffice") is not None
+
+
+def _is_word_call_rejected(detail: str) -> bool:
+    lower = (detail or "").lower()
+    return any(marker.lower() in lower for marker in _WORD_CALL_REJECTED_MARKERS)
+
+
+def format_word_conversion_error(detail: str) -> str:
+    """
+    Collapse noisy Word COM tracebacks into a short UI-friendly message.
+
+    Full detail should still be logged by the caller.
+    """
+    if _is_word_call_rejected(detail):
+        return _WORD_BUSY_MESSAGE
+    stripped = (detail or "").strip()
+    if not stripped:
+        return "Microsoft Word conversion failed"
+    return f"Microsoft Word conversion failed: {stripped}"
 
 
 def _convert_with_word_subprocess(docx_path: Path, pdf_path: Path) -> str | None:
@@ -102,7 +165,10 @@ def _convert_with_word_subprocess(docx_path: Path, pdf_path: Path) -> str | None
     detail = (proc.stderr or proc.stdout or "").strip()
     if not detail:
         detail = f"exit code {proc.returncode}"
-    return f"Microsoft Word conversion failed: {detail}"
+    friendly = format_word_conversion_error(detail)
+    if friendly != detail and not friendly.startswith("Microsoft Word conversion failed:"):
+        logger.warning("Word PDF conversion failed (full detail): %s", detail)
+    return friendly
 
 
 def _convert_with_libreoffice(docx_path: Path, pdf_path: Path) -> str | None:
@@ -166,7 +232,7 @@ def convert_docx_bytes_to_pdf(docx_bytes: bytes) -> tuple[bytes | None, str | No
             if word_err:
                 errors.append(word_err)
                 logger.warning("Word PDF conversion failed (attempt 1): %s", word_err)
-                time.sleep(1.0)
+                time.sleep(2.0)
                 pdf_path.unlink(missing_ok=True)
                 word_err = _convert_with_word_subprocess(docx_path, pdf_path)
                 if word_err is None and pdf_path.is_file():

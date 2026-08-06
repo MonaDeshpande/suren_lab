@@ -22,6 +22,7 @@ from services.protocol_docx import (
     JAGGERY_TEMPLATE_PATH,
     NUTRITION_TEMPLATE_PATH,
     OBSERVATION_TABLE_HEADING,
+    SUMMARY_HEADER_LABELS,
     WATER_TEMPLATE_PATH,
     _template_path,
     fill_protocol_docx_bytes,
@@ -31,6 +32,7 @@ from services.protocol_store import ProtocolHeader, TestResultRow
 from services.protocols.test_catalog import (
     CATEGORY_WATER,
     TEST_CATALOG,
+    WATER_MICRO_TEST_KEYS,
     WATER_TEST_KEYS,
     default_test_keys_for_category,
     uses_nutrition_template,
@@ -180,10 +182,12 @@ class TestTemplateRouting:
         if not JAGGERY_TEMPLATE_PATH.exists():
             pytest.skip("Jaggery template not present in reference/")
 
-    def test_water_auto_assigns_eleven_tests_at_reception(self):
-        """TC-ANL-020 — water bundle matches Water protocol 2025.docx."""
-        assert default_test_keys_for_category(CATEGORY_WATER) == WATER_TEST_KEYS
+    def test_water_auto_assigns_thirteen_tests_at_reception(self):
+        """TC-ANL-020 — water bundle: 11 chemical + 2 micro."""
+        expected = WATER_TEST_KEYS + WATER_MICRO_TEST_KEYS
+        assert default_test_keys_for_category(CATEGORY_WATER) == expected
         assert len(WATER_TEST_KEYS) == 11
+        assert len(WATER_MICRO_TEST_KEYS) == 2
 
 
 @pytest.mark.skipif(not WATER_TEMPLATE_PATH.exists(), reason="Water template missing")
@@ -229,6 +233,65 @@ class TestWaterProtocolGeneration:
         assert method_after == template_method
         assert method_after != "CUSTOM METHOD OVERRIDE"
         assert result_after == "7.0"
+
+    def test_water_result_table_title_bold_13pt(self):
+        sample = _sample(category=CATEGORY_WATER, tests_json=json.dumps(["ph"]))
+        doc = Document(io.BytesIO(fill_protocol_docx_bytes(sample, _header(), [])))
+        for paragraph in doc.paragraphs:
+            if (paragraph.text or "").strip() == "Result Table:":
+                assert paragraph.text == "Result Table:"
+                name, size, bold = _paragraph_run_font(paragraph)
+                assert name == "Cambria"
+                assert size == "26"
+                assert bold
+                return
+        pytest.fail("Result Table: paragraph not found")
+
+    def test_water_summary_data_10pt_header_bold_11pt(self):
+        sample = _sample(category=CATEGORY_WATER, tests_json=json.dumps(["ph"]))
+        results = [
+            TestResultRow(
+                test_key="ph",
+                test_name="pH",
+                method=TEST_CATALOG["ph"].method,
+                unit="—",
+                inputs={},
+                result_value="6.8",
+                result_numeric=6.8,
+            )
+        ]
+        doc = Document(io.BytesIO(fill_protocol_docx_bytes(sample, _header(), results)))
+        summary = doc.tables[1]
+        for cell in summary.rows[0].cells:
+            name, size, bold = _cell_run_font(cell)
+            assert name == "Cambria"
+            assert size == "22"
+            assert bold
+        for row in summary.rows[1:]:
+            for cell in row.cells:
+                name, size, bold = _cell_run_font(cell)
+                if name is None and size is None:
+                    continue
+                assert name == "Cambria"
+                assert size == "20"
+                assert not bold
+
+    def test_water_protocol_header_row_10pt(self):
+        sample = _sample(category=CATEGORY_WATER, tests_json=json.dumps(["ph"]))
+        doc = Document(io.BytesIO(fill_protocol_docx_bytes(sample, _header(), [])))
+        for cell in doc.tables[0].rows[0].cells:
+            name, size, bold = _cell_run_font(cell)
+            if name is None and size is None:
+                continue
+            assert name == "Cambria"
+            assert size == "20"
+            assert not bold
+            assert _cell_has_no_wrap(cell)
+
+    def test_water_blank_line_before_result_table(self):
+        sample = _sample(category=CATEGORY_WATER, tests_json=json.dumps(["ph"]))
+        doc = Document(io.BytesIO(fill_protocol_docx_bytes(sample, _header(), [])))
+        assert _has_blank_line_before_result_table(doc)
 
     def test_page1_result_filled_for_saved_tests_only(self):
         sample = _sample(category=CATEGORY_WATER, tests_json=json.dumps(WATER_TEST_KEYS))
@@ -291,6 +354,51 @@ class TestWaterProtocolGeneration:
         ]
         assert filled_methods == template_methods
 
+    def test_water_micro_observation_table_on_last_page(self):
+        from services.protocols.test_catalog import default_water_micro_procedure
+
+        sample = _sample(
+            category=CATEGORY_WATER,
+            tests_json=json.dumps(WATER_TEST_KEYS + WATER_MICRO_TEST_KEYS),
+        )
+        results = [
+            TestResultRow(
+                test_key="water_total_coliform",
+                test_name="Total Coliform",
+                method="",
+                unit="",
+                inputs={
+                    "procedure": default_water_micro_procedure("water_total_coliform"),
+                    "result_obs": "present",
+                },
+                result_value="present",
+                result_numeric=None,
+            ),
+            TestResultRow(
+                test_key="water_e_coli",
+                test_name="E. coli",
+                method="",
+                unit="",
+                inputs={
+                    "procedure": "Custom E. coli procedure",
+                    "result_obs": "absent",
+                },
+                result_value="absent",
+                result_numeric=None,
+            ),
+        ]
+        out = fill_protocol_docx_bytes(sample, _header(), results)
+        doc = Document(io.BytesIO(out))
+        full_text = _full_document_text(doc)
+        assert "OBSERVATION TABLE" in full_text
+        assert "Total Coliform" in full_text
+        assert "E. coli" in full_text
+        assert "present" in full_text
+        assert "Custom E. coli procedure" in full_text
+        assert "absent" in full_text
+        # Page-1 summary stays chemical-only (11 data rows)
+        assert len(doc.tables[1].rows) == 12
+
 
 @pytest.mark.skipif(not NUTRITION_TEMPLATE_PATH.exists(), reason="Nutrition template missing")
 class TestNutritionProtocolGeneration:
@@ -318,6 +426,225 @@ class TestNutritionProtocolGeneration:
         method_after = _summary_method_by_name(doc, "Moisture", table_idx=1)
         assert method_after == template_method
         assert _summary_result_by_name(doc, "Moisture", table_idx=1) == "5.0"
+
+
+@pytest.mark.skipif(not NUTRITION_TEMPLATE_PATH.exists(), reason="Nutrition template missing")
+class TestNutritionWorksheetReadings:
+    """Basic Nutrition observation tables: readings + worked = answer, format-safe."""
+
+    def _nutrition_moisture_results(self) -> list[TestResultRow]:
+        return [
+            TestResultRow(
+                test_key="bn_moisture",
+                test_name="Moisture",
+                method=TEST_CATALOG["bn_moisture"].method,
+                unit="%",
+                inputs={
+                    "empty_dish": 68.7246,
+                    "w1": 73.7923,
+                    "w": 5.0677,
+                    "after_dry": 73.6292,
+                    "w2": 73.6292,
+                },
+                result_value="3.21",
+                result_numeric=3.21,
+            )
+        ]
+
+    def test_bn_moisture_readings_and_worked_formula(self):
+        sample = _sample(
+            tests_json=json.dumps(["bn_moisture"]),
+            package_type="basic_nutrition",
+        )
+        out = fill_protocol_docx_bytes(
+            sample, _header(), self._nutrition_moisture_results()
+        )
+        doc = Document(io.BytesIO(out))
+        table = _worksheet_table_with_text(doc, "stainless steel dish")
+        assert table is not None
+        assert "68.7246" in _cell_text(table.rows[1].cells[1])
+        assert "73.7923" in _cell_text(table.rows[2].cells[1])
+        assert "5.0677" in _cell_text(table.rows[3].cells[1])
+        assert "73.6292" in _cell_text(table.rows[5].cells[1])
+        formula_row = table.rows[7]
+        readings = _cell_text(formula_row.cells[1])
+        assert "=" in readings
+        assert "3.21" in readings
+        desc = _cell_text(formula_row.cells[0])
+        assert "73.7923" not in desc
+        assert "Moisture" in desc or "W1" in desc
+
+    def test_bn_moisture_preserves_template_formula_wording(self):
+        sample = _sample(
+            tests_json=json.dumps(["bn_moisture"]),
+            package_type="basic_nutrition",
+        )
+        out = fill_protocol_docx_bytes(
+            sample, _header(), self._nutrition_moisture_results()
+        )
+        doc = Document(io.BytesIO(out))
+        table = _worksheet_table_with_text(doc, "stainless steel dish")
+        assert table is not None
+        filled_desc = _cell_text(table.rows[7].cells[0])
+        assert "Moisture w/w" in filled_desc or "W1" in filled_desc
+        assert "Moisture % =" not in filled_desc
+
+    def test_bn_moisture_formula_readings_alignment_preserved(self):
+        from docx.enum.text import WD_ALIGN_PARAGRAPH
+
+        ref = Document(str(NUTRITION_TEMPLATE_PATH))
+        ref_align = ref.tables[3].rows[7].cells[1].paragraphs[0].alignment
+        sample = _sample(
+            tests_json=json.dumps(["bn_moisture"]),
+            package_type="basic_nutrition",
+        )
+        out = fill_protocol_docx_bytes(
+            sample, _header(), self._nutrition_moisture_results()
+        )
+        doc = Document(io.BytesIO(out))
+        table = _worksheet_table_with_text(doc, "stainless steel dish")
+        assert table is not None
+        filled_align = table.rows[7].cells[1].paragraphs[0].alignment
+        assert filled_align == ref_align == WD_ALIGN_PARAGRAPH.RIGHT
+
+    def test_bn_ash_insoluble_dual_worked_lines(self):
+        sample = _sample(
+            tests_json=json.dumps(["bn_moisture", "bn_ash_insoluble_hcl"]),
+            package_type="basic_nutrition",
+        )
+        results = [
+            *self._nutrition_moisture_results(),
+            TestResultRow(
+                test_key="bn_ash_insoluble_hcl",
+                test_name="Ash Insoluble in HCL",
+                method=TEST_CATALOG["bn_ash_insoluble_hcl"].method,
+                unit="%",
+                inputs={
+                    "w1": 45.0958,
+                    "w": 5.0854,
+                    "w2": 45.0970,
+                },
+                result_value="0.023",
+                result_numeric=0.023,
+            ),
+        ]
+        out = fill_protocol_docx_bytes(sample, _header(), results)
+        doc = Document(io.BytesIO(out))
+        table = _worksheet_table_with_text(doc, "Insoluble ash")
+        assert table is not None
+        wet_row = table.rows[6]
+        dry_row = table.rows[7]
+        assert "45.097" in _cell_text(wet_row.cells[1])
+        assert "0.023" in _cell_text(dry_row.cells[1])
+        assert "96.79" in _cell_text(dry_row.cells[1]) or "3.21" in _cell_text(
+            dry_row.cells[1]
+        )
+
+    def test_bn_protein_paragraph_worked_lines(self):
+        sample = _sample(
+            tests_json=json.dumps(["bn_protein"]),
+            package_type="basic_nutrition",
+        )
+        results = [
+            TestResultRow(
+                test_key="bn_protein",
+                test_name="Protein",
+                method=TEST_CATALOG["bn_protein"].method,
+                unit="%",
+                inputs={
+                    "w": 1.5,
+                    "n_naoh": 0.1,
+                    "br_blank": 10.0,
+                    "br_sample": 8.5,
+                    "n_factor": 6.25,
+                },
+                result_value="6.5",
+                result_numeric=6.5,
+            )
+        ]
+        out = fill_protocol_docx_bytes(sample, _header(), results)
+        doc = Document(io.BytesIO(out))
+        body = "\n".join(p.text for p in doc.paragraphs)
+        assert "0.014" in body
+        assert "6.5" in body
+        assert "× 6.25" in body or "x 6.25" in body.lower()
+
+    def test_bn_sugar_readings_and_formula(self):
+        sample = _sample(
+            tests_json=json.dumps(["bn_moisture", "bn_added_sugar", "bn_total_sugar"]),
+            package_type="basic_nutrition",
+        )
+        results = [
+            *self._nutrition_moisture_results(),
+            TestResultRow(
+                test_key="bn_added_sugar",
+                test_name="Added Sugar",
+                method=TEST_CATALOG["bn_added_sugar"].method,
+                unit="%",
+                inputs={
+                    "sample_wt": 1.0201,
+                    "fehling": 10,
+                    "br": 23.5,
+                    "sugar_conc": 0.21775,
+                },
+                result_value="14.84",
+                result_numeric=14.84,
+            ),
+            TestResultRow(
+                test_key="bn_total_sugar",
+                test_name="Total Sugar",
+                method=TEST_CATALOG["bn_total_sugar"].method,
+                unit="%",
+                inputs={
+                    "sample_wt": 1.0201,
+                    "fehling": 10,
+                    "br": 22.5,
+                    "sugar_conc": 0.227,
+                },
+                result_value="91.96",
+                result_numeric=91.96,
+            ),
+        ]
+        out = fill_protocol_docx_bytes(sample, _header(), results)
+        doc = Document(io.BytesIO(out))
+        table = _worksheet_table_with_text(doc, "Fehling solution")
+        assert table is not None
+        assert "1.0201" in _cell_text(table.rows[1].cells[2])
+        assert "23.5" in _cell_text(table.rows[3].cells[2])
+        assert "22.5" in _cell_text(table.rows[5].cells[2])
+        formula_cell = table.rows[6].cells[0]
+        formula_text = _cell_text(formula_cell)
+        assert "Concentration of sugar" in formula_text
+        assert "14.84" in formula_text
+        assert "91.96" in formula_text
+        assert "Total Invert sugar" in formula_text
+        assert "Total reducing sugar" in formula_text
+
+    def test_nutrition_fill_preview_docx_written(self, tmp_path):
+        sample = _sample(
+            sample_name="Protein Sauce",
+            lab_code="GLG/26/555",
+            tests_json=json.dumps(["bn_moisture", "bn_total_ash"]),
+            package_type="basic_nutrition",
+        )
+        results = [
+            *self._nutrition_moisture_results(),
+            TestResultRow(
+                test_key="bn_total_ash",
+                test_name="Total Ash",
+                method=TEST_CATALOG["bn_total_ash"].method,
+                unit="%",
+                inputs={"w1": 45.0958, "w": 5.0854, "w2": 45.1114},
+                result_value="0.30",
+                result_numeric=0.30,
+            ),
+        ]
+        out = fill_protocol_docx_bytes(sample, _header(), results)
+        preview = PROJECT_ROOT / "tmp" / "nutrition_fill_preview.docx"
+        preview.parent.mkdir(parents=True, exist_ok=True)
+        preview.write_bytes(out)
+        assert preview.exists()
+        assert preview.stat().st_size > 1000
 
 
 class TestHeaderValueColumns:
@@ -731,6 +1058,84 @@ class TestJaggeryPruneAndResultCells:
         assert "TOTAL ASH (on dry basis)" not in body_text
         assert "ASH INSOLUBLE" not in body_text
 
+    def test_moisture_and_added_color_are_separate_sections(self):
+        sample = _sample(
+            sample_name="Masala",
+            tests_json=json.dumps(["moisture", "added_color"]),
+        )
+        results = [
+            TestResultRow(
+                test_key="moisture",
+                test_name="Moisture",
+                method=TEST_CATALOG["moisture"].method,
+                unit="%",
+                inputs={"w1": 86.0, "w": 6.0, "w2": 82.0},
+                result_value="66.67",
+                result_numeric=66.67,
+            ),
+            TestResultRow(
+                test_key="added_color",
+                test_name="Added Color",
+                method=TEST_CATALOG["added_color"].method,
+                unit="",
+                inputs={"color_result": "Absent"},
+                result_value="Absent",
+                result_numeric=None,
+            ),
+        ]
+        out = fill_protocol_docx_bytes(sample, _header(), results)
+        doc = Document(io.BytesIO(out))
+
+        section_titles: list[str] = []
+        seen_obs = False
+        for child in doc.element.body:
+            if child.tag.endswith("p"):
+                text = next(
+                    (p.text or "").strip()
+                    for p in doc.paragraphs
+                    if p._element is child
+                )
+                if not text:
+                    continue
+                if "observation table" in text.lower():
+                    seen_obs = True
+                    continue
+                if not seen_obs or text == "Result Table:":
+                    continue
+                first_line = text.split("\n", 1)[0].strip()
+                if first_line.endswith(":"):
+                    section_titles.append(first_line)
+            elif child.tag.endswith("tbl") and seen_obs:
+                table = next(t for t in doc.tables if t._tbl is child)
+                if (
+                    len(table.rows) == 1
+                    and len(table.rows[0].cells) == 1
+                    and "appearance" in _cell_text(table.rows[0].cells[0]).lower()
+                ):
+                    continue
+
+        moisture_titles = [t for t in section_titles if "MOISTURE" in t.upper()]
+        color_titles = [t for t in section_titles if "ADDED COLOR" in t.upper()]
+        assert moisture_titles, "Expected MOISTURE section title"
+        assert color_titles, "Expected ADDED COLOR section title"
+        assert moisture_titles[0].startswith("1.")
+        assert color_titles[0].startswith("2.")
+
+        moisture = _worksheet_table_with_text(doc, "stainless steel dish")
+        color = _worksheet_table_with_text(doc, "Added Color")
+        assert moisture is not None
+        assert color is not None
+        assert moisture is not color
+
+        assert _cell_text(color.rows[0].cells[1]).strip() == "Result"
+        assert "Absent" in _cell_text(color.rows[1].cells[1])
+
+        prev = color._tbl.getprevious()
+        assert prev is not None and prev.tag.endswith("p")
+        para = Paragraph(prev, doc)
+        assert "ADDED COLOR" in (para.text or "").upper()
+        assert _paragraph_has_keep_next(para)
+
     def test_added_color_worksheet_result_filled(self):
         sample = _sample(tests_json=json.dumps(["added_color"]))
         results = [
@@ -746,9 +1151,10 @@ class TestJaggeryPruneAndResultCells:
         ]
         out = fill_protocol_docx_bytes(sample, _header(), results)
         doc = Document(io.BytesIO(out))
-        table = _worksheet_table_with_text(doc, "ADDED COLOR")
+        table = _worksheet_table_with_text(doc, "Added Color")
         assert table is not None
         assert "Absent" in _cell_text(table.rows[1].cells[1])
+        assert _cell_text(table.rows[0].cells[1]).strip() == "Result"
         assert _summary_result_by_name(doc, "Added Color") == "Absent"
 
 
@@ -870,6 +1276,24 @@ def _table_tbl_ind(table) -> tuple[str, str] | None:
     return (ind.get(qn("w:w")), ind.get(qn("w:type")))
 
 
+def _table_grid_sum_twips(table) -> int:
+    return sum(_table_grid_col_twips(table))
+
+
+def _table_outer_right_edge_twips(table) -> int:
+    ind = _table_tbl_ind(table)
+    ind_twips = int(ind[0]) if ind is not None else 0
+    return ind_twips + _table_grid_sum_twips(table)
+
+
+def _canonical_worksheet_outer_frame() -> tuple[int, tuple[str, str]]:
+    ref = Document(str(NUTRITION_TEMPLATE_PATH))
+    worksheet_ref = ref.tables[3]
+    target_width = _table_grid_sum_twips(worksheet_ref)
+    target_ind = _table_tbl_ind(worksheet_ref) or ("-162", "dxa")
+    return target_width, target_ind
+
+
 def _empty_paragraphs_between_summary_and_observation(doc: Document) -> int:
     summary_idx = _summary_table_index(doc)
     if summary_idx is None:
@@ -922,7 +1346,7 @@ class TestProtocolPageLayout:
         summary_idx = _summary_table_index(doc)
         assert summary_idx is not None
         headers = [_cell_text(cell) for cell in doc.tables[summary_idx].rows[0].cells]
-        assert headers[:5] == ["Sr No.", "Parameter", "Method", "Result", "Unit"]
+        assert headers[:5] == list(SUMMARY_HEADER_LABELS)
 
     def test_jaggery_margins_match_reference(self):
         sample = _sample(tests_json=json.dumps(["moisture"]))
@@ -1013,12 +1437,13 @@ class TestProtocolPageLayout:
         sample = _sample(tests_json=json.dumps(["moisture"]))
         out = fill_protocol_docx_bytes(sample, _header(), self._jaggery_results())
         doc = Document(io.BytesIO(out))
-        ref = Document(str(NUTRITION_TEMPLATE_PATH))
+        canonical_width, canonical_ind = _canonical_worksheet_outer_frame()
         t0 = doc.tables[0]
         assert len(t0.rows) == 2
         assert _cell_text(t0.rows[0].cells[0]).startswith("Sample Name")
         assert _cell_text(doc.tables[1].rows[0].cells[0]).startswith("Sr")
-        assert _table_tbl_ind(t0) == _table_tbl_ind(ref.tables[0])
+        assert _table_tbl_ind(t0) == canonical_ind
+        assert _table_grid_sum_twips(t0) == canonical_width
         tbl_pr = t0._tbl.tblPr
         assert tbl_pr is None or tbl_pr.find(qn("w:tblpPr")) is None
 
@@ -1048,19 +1473,9 @@ class TestProtocolPageLayout:
         ]
         out = fill_protocol_docx_bytes(sample, _header(), results)
         doc = Document(io.BytesIO(out))
-        appearance_text = ""
-        for paragraph in doc.paragraphs:
-            if "appearance" in (paragraph.text or "").lower():
-                appearance_text = paragraph.text or ""
-                break
-        if not appearance_text:
-            for table in doc.tables:
-                if len(table.rows) == 1 and "appearance" in _cell_text(
-                    table.rows[0].cells[0]
-                ).lower():
-                    appearance_text = _cell_text(table.rows[0].cells[0])
-                    break
-        assert "Red Colored Viscous" in appearance_text
+        app_table = _appearance_table(doc)
+        assert app_table is not None
+        assert "Red Colored Viscous" in _cell_text(app_table.rows[0].cells[0])
 
     def test_bare_unit_placeholders_cleared(self):
         sample = _sample(tests_json=json.dumps(["moisture"]))
@@ -1174,21 +1589,23 @@ class TestProtocolPageLayout:
         ref = Document(str(NUTRITION_TEMPLATE_PATH))
         ref_summary_grid = _table_grid_col_inches(ref.tables[1])
         ref_max_width = sum(ref_summary_grid)
+        canonical_width, _ = _canonical_worksheet_outer_frame()
+        canonical_max_width = canonical_width / 1440
         jaggery_overflow_threshold = 7.2
 
         summary_idx = _summary_table_index(doc)
         assert summary_idx is not None
         summary = doc.tables[summary_idx]
-        assert _table_grid_col_inches(summary) == ref_summary_grid
-        assert sum(_table_grid_col_inches(summary)) <= ref_max_width + 0.05
+        assert sum(_table_grid_col_inches(summary)) == canonical_max_width
+        assert sum(_table_grid_col_inches(summary)) <= ref_max_width + 0.1
         assert sum(_table_grid_col_inches(summary)) < jaggery_overflow_threshold
 
         for table in doc.tables:
             grid_sum = sum(_table_grid_col_inches(table))
             if grid_sum <= 0:
                 continue
-            assert grid_sum <= ref_max_width + 0.05, (
-                f"table grid {grid_sum:.2f}in exceeds reference {ref_max_width:.2f}in"
+            assert grid_sum == canonical_max_width, (
+                f"table grid {grid_sum:.2f}in != canonical {canonical_max_width:.2f}in"
             )
 
         for table in doc.sections[0].header.tables:
@@ -1227,17 +1644,18 @@ class TestProtocolPageLayout:
         ]
         out = fill_protocol_docx_bytes(sample, _header(), results)
         doc = Document(io.BytesIO(out))
-        ref = Document(str(NUTRITION_TEMPLATE_PATH))
+        canonical_width, canonical_ind = _canonical_worksheet_outer_frame()
 
         summary_idx = _summary_table_index(doc)
         assert summary_idx is not None
-        assert _table_tbl_ind(doc.tables[summary_idx]) == _table_tbl_ind(ref.tables[1])
+        assert _table_tbl_ind(doc.tables[summary_idx]) == canonical_ind
 
         worksheet = _worksheet_table_with_text(doc, "stainless steel dish")
         assert worksheet is not None
-        assert _table_tbl_ind(worksheet) == _table_tbl_ind(ref.tables[3])
+        assert _table_tbl_ind(worksheet) == canonical_ind
 
-        assert _table_tbl_ind(doc.tables[0]) == _table_tbl_ind(ref.tables[0])
+        assert _table_tbl_ind(doc.tables[0]) == canonical_ind
+        assert _table_grid_sum_twips(doc.tables[0]) == canonical_width
 
     @pytest.mark.skipif(
         not NUTRITION_TEMPLATE_PATH.exists(), reason="Nutrition template missing"
@@ -1250,3 +1668,322 @@ class TestProtocolPageLayout:
         out = fill_protocol_docx_bytes(sample, _header(), self._jaggery_results())
         doc = Document(io.BytesIO(out))
         assert _empty_paragraphs_between_summary_and_observation(doc) <= 1
+
+
+def _row_has_cant_split(row) -> bool:
+    tr_pr = row._tr.trPr
+    if tr_pr is None:
+        return False
+    return tr_pr.find(qn("w:cantSplit")) is not None
+
+
+def _paragraph_has_keep_next(paragraph: Paragraph) -> bool:
+    p_pr = paragraph._element.pPr
+    if p_pr is None:
+        return False
+    return p_pr.find(qn("w:keepNext")) is not None
+
+
+def _appearance_table(doc: Document):
+    for table in doc.tables:
+        if len(table.rows) == 1 and len(table.rows[0].cells) == 1:
+            if "appearance" in _cell_text(table.rows[0].cells[0]).lower():
+                return table
+    return None
+
+
+def _cell_run_font(cell) -> tuple[str | None, str | None, bool]:
+    """Return (font_name, sz_half_points, bold) from the first run in a cell."""
+    for paragraph in cell.paragraphs:
+        for run in paragraph.runs:
+            r_pr = run._element.rPr
+            if r_pr is None:
+                continue
+            fonts = r_pr.find(qn("w:rFonts"))
+            name = fonts.get(qn("w:ascii")) if fonts is not None else None
+            sz_el = r_pr.find(qn("w:sz"))
+            size = sz_el.get(qn("w:val")) if sz_el is not None else None
+            bold = r_pr.find(qn("w:b")) is not None
+            return name, size, bold
+    return None, None, False
+
+
+def _paragraph_run_font(paragraph: Paragraph) -> tuple[str | None, str | None, bool]:
+    for run in paragraph.runs:
+        r_pr = run._element.rPr
+        if r_pr is None:
+            continue
+        fonts = r_pr.find(qn("w:rFonts"))
+        name = fonts.get(qn("w:ascii")) if fonts is not None else None
+        sz_el = r_pr.find(qn("w:sz"))
+        size = sz_el.get(qn("w:val")) if sz_el is not None else None
+        bold = r_pr.find(qn("w:b")) is not None
+        return name, size, bold
+    return None, None, False
+
+
+def _cell_has_no_wrap(cell) -> bool:
+    tc_pr = cell._tc.tcPr
+    if tc_pr is None:
+        return False
+    return tc_pr.find(qn("w:noWrap")) is not None
+
+
+def _has_blank_line_before_result_table(doc: Document) -> bool:
+    if not doc.tables:
+        return False
+    next_el = doc.tables[0]._tbl.getnext()
+    if next_el is None or not next_el.tag.endswith("p"):
+        return False
+    para = Paragraph(next_el, doc)
+    if not (para.text or "").strip():
+        following = next_el.getnext()
+        if following is not None and following.tag.endswith("p"):
+            return (Paragraph(following, doc).text or "").strip() == "Result Table:"
+    if (para.text or "").strip() == "Result Table:":
+        return False
+    return False
+
+
+@pytest.mark.skipif(
+    not JAGGERY_TEMPLATE_PATH.exists() or not NUTRITION_TEMPLATE_PATH.exists(),
+    reason="Templates missing",
+)
+class TestSauceProtocolLayout:
+    """House-style layout: appearance box, headers, alignment, unsplit worksheets."""
+
+    def _sauce_results(self) -> list[TestResultRow]:
+        return [
+            TestResultRow(
+                test_key="appearance",
+                test_name="Appearance",
+                method="",
+                unit="",
+                inputs={},
+                result_value="Red Colored Viscous",
+                result_numeric=None,
+            ),
+            TestResultRow(
+                test_key="moisture",
+                test_name="Moisture",
+                method=TEST_CATALOG["moisture"].method,
+                unit="%",
+                inputs={
+                    "empty_dish": 68.7246,
+                    "w1": 73.7923,
+                    "w": 5.0677,
+                    "w2": 73.6292,
+                },
+                result_value="3.22",
+                result_numeric=3.22,
+            ),
+            TestResultRow(
+                test_key="sulphated_ash",
+                test_name="Sulphated ash on dry basis",
+                method=TEST_CATALOG["sulphated_ash"].method,
+                unit="%",
+                inputs={
+                    "w1": 43.0958,
+                    "w": 5.0854,
+                    "w2": 45.114,
+                },
+                result_value="41.01",
+                result_numeric=41.01,
+            ),
+        ]
+
+    def _filled_sauce_doc(self) -> Document:
+        sample = _sample(
+            sample_name="Sauce",
+            lab_code="GLG/26/555",
+            tests_json=json.dumps(["appearance", "moisture", "sulphated_ash"]),
+            package_type="fssai",
+        )
+        out = fill_protocol_docx_bytes(
+            sample,
+            _header(),
+            self._sauce_results(),
+        )
+        return Document(io.BytesIO(out))
+
+    def test_appearance_stays_bordered_table(self):
+        doc = self._filled_sauce_doc()
+        app_table = _appearance_table(doc)
+        assert app_table is not None
+        assert "Red Colored Viscous" in _cell_text(app_table.rows[0].cells[0])
+        for paragraph in doc.paragraphs:
+            if "red colored viscous" in (paragraph.text or "").lower():
+                pytest.fail("Appearance promoted to body paragraph")
+
+    def test_moisture_worksheet_third_header_is_readings(self):
+        doc = self._filled_sauce_doc()
+        moisture = _worksheet_table_with_text(doc, "stainless steel dish")
+        assert moisture is not None
+        third_hdr = _cell_text(moisture.rows[0].cells[2])
+        assert third_hdr == "Readings"
+
+    def test_sulphated_ash_worksheet_third_header_is_readings(self):
+        doc = self._filled_sauce_doc()
+        ash = _worksheet_table_with_text(doc, "Sulphated ash")
+        assert ash is not None
+        third_hdr = _cell_text(ash.rows[0].cells[2])
+        assert third_hdr == "Readings"
+
+    def test_worksheet_rows_have_cant_split(self):
+        doc = self._filled_sauce_doc()
+        moisture = _worksheet_table_with_text(doc, "stainless steel dish")
+        assert moisture is not None
+        assert all(_row_has_cant_split(row) for row in moisture.rows)
+
+    def test_worksheet_section_title_has_keep_next(self):
+        doc = self._filled_sauce_doc()
+        moisture = _worksheet_table_with_text(doc, "stainless steel dish")
+        assert moisture is not None
+        prev = moisture._tbl.getprevious()
+        assert prev is not None and prev.tag.endswith("p")
+        para = Paragraph(prev, doc)
+        assert "MOISTURE" in (para.text or "").upper()
+        assert _paragraph_has_keep_next(para)
+
+    def test_footer_table_aligns_with_sample_table(self):
+        doc = self._filled_sauce_doc()
+        canonical_width, canonical_ind = _canonical_worksheet_outer_frame()
+        sample = doc.tables[0]
+        footer = doc.sections[0].footer.tables[0]
+        assert _table_tbl_ind(sample) == canonical_ind
+        assert _table_tbl_ind(footer) == canonical_ind
+        assert _table_grid_sum_twips(sample) == canonical_width
+        assert _table_grid_sum_twips(footer) == canonical_width
+
+    def test_section_header_matches_nutrition_spacing_structure(self):
+        doc = self._filled_sauce_doc()
+        ref = Document(str(NUTRITION_TEMPLATE_PATH))
+        ref_hdr = ref.sections[0].header._element
+        ref_trailing = 0
+        seen_tbl = False
+        for child in ref_hdr:
+            if child.tag.endswith("tbl"):
+                seen_tbl = True
+                ref_trailing = 0
+            elif seen_tbl and child.tag.endswith("p"):
+                ref_trailing += 1
+
+        hdr_el = doc.sections[0].header._element
+        children = list(hdr_el)
+        assert children[0].tag.endswith("tbl")
+        assert "Protocol No" in doc.sections[0].header.tables[0].rows[0].cells[0].text
+        trailing = [c for c in children[1:] if c.tag.endswith("p")]
+        assert len(trailing) == ref_trailing == 2
+        for para_el in trailing:
+            text = "".join(t.text or "" for t in para_el.findall(".//" + qn("w:t")))
+            assert not text.strip()
+
+    def test_all_outer_boxes_share_width_and_indent(self):
+        doc = self._filled_sauce_doc()
+        canonical_width, canonical_ind = _canonical_worksheet_outer_frame()
+        outer_tables = [doc.tables[0], doc.tables[1], _appearance_table(doc)]
+        outer_tables.extend(
+            t
+            for t in doc.tables
+            if "description" in _cell_text(t.rows[0].cells[0]).lower()
+        )
+        outer_tables.append(doc.sections[0].header.tables[0])
+        outer_tables.append(doc.sections[0].footer.tables[0])
+
+        for table in outer_tables:
+            assert table is not None
+            assert _table_tbl_ind(table) == canonical_ind
+            assert _table_grid_sum_twips(table) == canonical_width
+            assert _table_outer_right_edge_twips(table) == int(canonical_ind[0]) + canonical_width
+
+    def test_appearance_value_on_single_line(self):
+        doc = self._filled_sauce_doc()
+        app_table = _appearance_table(doc)
+        assert app_table is not None
+        text = _cell_text(app_table.rows[0].cells[0])
+        assert "APPEARANCE:" in text.upper()
+        assert "Red Colored Viscous" in text
+        assert "\n" not in text.strip()
+
+    def test_protocol_header_uses_cambria_10pt(self):
+        doc = self._filled_sauce_doc()
+        header_table = doc.sections[0].header.tables[0]
+        for cell in header_table.rows[0].cells:
+            name, size, bold = _cell_run_font(cell)
+            if name is None and size is None:
+                continue
+            assert name == "Cambria"
+            assert size == "20"
+            assert not bold
+
+    def test_protocol_header_cells_single_line(self):
+        doc = self._filled_sauce_doc()
+        header_table = doc.sections[0].header.tables[0]
+        for cell in header_table.rows[0].cells:
+            assert "\n" not in _cell_text(cell)
+            assert _cell_has_no_wrap(cell)
+
+    def test_blank_line_before_result_table(self):
+        doc = self._filled_sauce_doc()
+        assert _has_blank_line_before_result_table(doc)
+
+    def test_result_table_title_uses_cambria_bold_13pt(self):
+        doc = self._filled_sauce_doc()
+        for paragraph in doc.paragraphs:
+            if (paragraph.text or "").strip() == "Result Table:":
+                assert paragraph.text == "Result Table:"
+                name, size, bold = _paragraph_run_font(paragraph)
+                assert name == "Cambria"
+                assert size == "26"
+                assert bold
+                return
+        pytest.fail("Result Table: paragraph not found")
+
+    def test_result_table_header_row_bold_11pt(self):
+        doc = self._filled_sauce_doc()
+        summary = doc.tables[1]
+        for cell in summary.rows[0].cells:
+            name, size, bold = _cell_run_font(cell)
+            assert name == "Cambria"
+            assert size == "22"
+            assert bold
+
+    def test_result_table_data_cells_all_10pt(self):
+        doc = self._filled_sauce_doc()
+        summary = doc.tables[1]
+        for row in summary.rows[1:]:
+            for cell in row.cells:
+                name, size, bold = _cell_run_font(cell)
+                if name is None and size is None:
+                    continue
+                assert name == "Cambria"
+                assert size == "20"
+                assert not bold
+
+    def test_worksheet_data_cells_all_10pt(self):
+        doc = self._filled_sauce_doc()
+        moisture = _worksheet_table_with_text(doc, "stainless steel dish")
+        assert moisture is not None
+        desc_cell = moisture.rows[1].cells[0]
+        reading_cell = moisture.rows[1].cells[1]
+        for cell in (desc_cell, reading_cell):
+            name, size, bold = _cell_run_font(cell)
+            assert name == "Cambria"
+            assert size == "20"
+            assert not bold
+
+    def test_sauce_layout_preview_written(self):
+        doc_bytes = fill_protocol_docx_bytes(
+            _sample(
+                sample_name="Sauce",
+                lab_code="GLG/26/555",
+                tests_json=json.dumps(["appearance", "moisture", "sulphated_ash"]),
+                package_type="fssai",
+            ),
+            _header(),
+            self._sauce_results(),
+        )
+        preview_docx = PROJECT_ROOT / "tmp" / "Protocol_Sauce_layout_preview.docx"
+        preview_docx.parent.mkdir(parents=True, exist_ok=True)
+        preview_docx.write_bytes(doc_bytes)
+        assert preview_docx.stat().st_size > 1000

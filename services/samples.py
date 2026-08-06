@@ -72,11 +72,14 @@ _SAMPLE_SELECT = """
             COALESCE(s.tests_with_logo_json, ''),
             COALESCE(s.tests_without_logo_json, ''),
             COALESCE(s.protocol_no, ''),
-            COALESCE(s.package_type, '')
+            COALESCE(s.package_type, ''),
+            s.assigned_micro_analyst_id,
+            COALESCE(um.full_name, um.username, '')
           FROM request_samples s
           JOIN test_requests tr ON tr.id = s.request_id
           JOIN customers c ON c.id = tr.customer_id
           LEFT JOIN users ua ON ua.id = s.assigned_analyst_id
+          LEFT JOIN users um ON um.id = s.assigned_micro_analyst_id
 """
 
 
@@ -84,8 +87,8 @@ def sample_scope_for_user(user) -> tuple[Optional[int], bool]:
     """
     Return (assigned_analyst_id filter, scoped) for sample queries.
 
-    Pure analyst users are scoped to their assignments. Admin, reception,
-    and reviewer roles bypass the filter.
+    Pure analyst users are scoped to their assignments (chemical or micro).
+    Admin, reception, and reviewer roles bypass the filter.
     """
     if user is None:
         return None, False
@@ -128,6 +131,8 @@ class SampleRecord:
     category: str = "food"  # food | water | cattle_feed_fertilizer
     assigned_analyst_id: Optional[int] = None
     assigned_analyst_name: str = ""
+    assigned_micro_analyst_id: Optional[int] = None
+    assigned_micro_analyst_name: str = ""
     protocol_no: str = ""
     report_format: str = REPORT_FORMAT_WITH_LOGO
     tests_with_logo_json: str = ""
@@ -377,8 +382,11 @@ def get_by_code(
     """
     params: list = [code]
     if assigned_analyst_id is not None:
-        sql += "           AND s.assigned_analyst_id = %s\n"
-        params.append(assigned_analyst_id)
+        sql += (
+            "           AND (s.assigned_analyst_id = %s"
+            " OR s.assigned_micro_analyst_id = %s)\n"
+        )
+        params.extend([assigned_analyst_id, assigned_analyst_id])
     with get_db() as conn:
         with conn.cursor() as cur:
             cur.execute(sql, params)
@@ -431,8 +439,11 @@ def search_open(
         params.append(pattern)
 
     if assigned_analyst_id is not None:
-        sql += "           AND s.assigned_analyst_id = %s\n"
-        params.append(assigned_analyst_id)
+        sql += (
+            "           AND (s.assigned_analyst_id = %s"
+            " OR s.assigned_micro_analyst_id = %s)\n"
+        )
+        params.extend([assigned_analyst_id, assigned_analyst_id])
 
     sql += "         ORDER BY s.created_at DESC LIMIT %s"
     params.append(limit)
@@ -465,8 +476,11 @@ def list_open(
         params.append(status)
 
     if assigned_analyst_id is not None:
-        sql += "           AND s.assigned_analyst_id = %s\n"
-        params.append(assigned_analyst_id)
+        sql += (
+            "           AND (s.assigned_analyst_id = %s"
+            " OR s.assigned_micro_analyst_id = %s)\n"
+        )
+        params.extend([assigned_analyst_id, assigned_analyst_id])
 
     sql += "         ORDER BY s.created_at DESC LIMIT %s"
     params.append(limit)
@@ -478,6 +492,37 @@ def list_open(
 
     return [_row_to_record(r) for r in rows]
 
+
+def water_analyst_test_keys(
+    sample: SampleRecord,
+    user_id: Optional[int],
+    *,
+    is_admin_like: bool = False,
+) -> list[str]:
+    """
+    Catalog keys an analyst may perform on a water sample.
+
+    Chemical assignee gets WATER_TEST_KEYS; micro assignee gets WATER_MICRO_TEST_KEYS.
+    Admin/reception/reviewer (is_admin_like) or dual assignee sees all assigned keys.
+    """
+    from services.protocols.test_catalog import (
+        WATER_MICRO_TEST_KEYS,
+        WATER_TEST_KEYS,
+    )
+
+    keys = sample.selected_test_keys()
+    if is_admin_like or user_id is None:
+        return keys
+    is_chem = sample.assigned_analyst_id == user_id
+    is_micro = sample.assigned_micro_analyst_id == user_id
+    if is_chem and is_micro:
+        return keys
+    allowed: set[str] = set()
+    if is_chem:
+        allowed.update(WATER_TEST_KEYS)
+    if is_micro:
+        allowed.update(WATER_MICRO_TEST_KEYS)
+    return [k for k in keys if k in allowed]
 
 
 def update_status(
@@ -593,4 +638,6 @@ def _row_to_record(row: tuple) -> SampleRecord:
         tests_without_logo_json=row[28] if len(row) > 28 else "",
         protocol_no=row[29] if len(row) > 29 else "",
         package_type=row[30] if len(row) > 30 else "",
+        assigned_micro_analyst_id=row[31] if len(row) > 31 else None,
+        assigned_micro_analyst_name=row[32] if len(row) > 32 else "",
     )

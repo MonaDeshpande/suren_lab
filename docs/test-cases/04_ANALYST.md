@@ -252,16 +252,16 @@ Reception assigns tests → Analyst finds sample → saves header → performs e
 
 ---
 
-## TC-ANL-020 — Water sample: all 11 tests auto-assigned at Reception
+## TC-ANL-020 — Water sample: all 13 tests auto-assigned at Reception
 
 | Field | Value |
 |-------|-------|
 | **Priority** | P0 |
 | **Type** | Positive |
-| **Preconditions** | CTR saved with category Water |
+| **Preconditions** | CTR saved with category Water; chemical + micro analysts assigned |
 | **Steps** | Open sample on Analyst page; inspect test selector. |
-| **Expected** | All 11 water protocol tests available (pH, TDS, chlorides, …). No manual multiselect at Reception. |
-| **Automated** | `test_protocol_flow.py::TestTemplateRouting::test_water_auto_assigns_eleven_tests_at_reception` |
+| **Expected** | 11 chemical tests for chemical analyst; Total Coliform + E. coli for micro analyst. Reception shows two analyst dropdowns. |
+| **Automated** | `test_protocol_flow.py::TestTemplateRouting::test_water_auto_assigns_thirteen_tests_at_reception` |
 
 ---
 
@@ -272,7 +272,7 @@ Reception assigns tests → Analyst finds sample → saves header → performs e
 | **Priority** | P0 |
 | **Type** | Positive |
 | **Steps** | Save ≥1 water result; generate protocol document. |
-| **Expected** | Output based on `reference/Water protocol 2025.docx`; page-1 summary has 11 fixed method rows (results filled in place; unused rows remain blank). |
+| **Expected** | Output based on `reference/Water protocol 2025.docx`; page-1 summary has 11 fixed chemical method rows. Last page **Observation Table** has Total Coliform + E. coli with editable procedure/result from saved data. |
 | **Automated** | `test_protocol_flow.py::TestWaterProtocolGeneration` |
 
 ---

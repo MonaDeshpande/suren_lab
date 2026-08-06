@@ -46,8 +46,11 @@ from services.protocol_store import (  # noqa: E402
 )
 from services.protocols.test_catalog import (
     CATEGORY_MICRO,
+    CATEGORY_WATER,
     TEST_CATALOG,
+    WATER_MICRO_TEST_KEYS,
     catalog_keys_for_category,
+    default_water_micro_procedure,
     get_test,
     is_dry_basis_test,
     moisture_ctx_key_for,
@@ -62,6 +65,7 @@ from services.samples import (  # noqa: E402
     sample_scope_for_user,
     search_open,
     update_status,
+    water_analyst_test_keys,
 )
 from ui.auth import require_page_access  # noqa: E402
 from ui.components import (  # noqa: E402
@@ -120,7 +124,9 @@ def _samples_table_rows(
             "Expires": _fmt_dt(s.expires_at),
         }
         if show_analyst:
-            row["Assigned analyst"] = s.assigned_analyst_name or "—"
+            row["Chemical analyst"] = s.assigned_analyst_name or "—"
+            if normalize_category(s.category) == CATEGORY_WATER:
+                row["Micro analyst"] = getattr(s, "assigned_micro_analyst_name", "") or "—"
         rows.append(row)
     return rows
 
@@ -363,17 +369,39 @@ def main() -> None:
         ),
     )
 
+    is_admin_like = not scoped
+    role_keys = (
+        water_analyst_test_keys(selected, scope_id, is_admin_like=is_admin_like)
+        if cat == CATEGORY_WATER
+        else None
+    )
+
     assigned = [k for k in catalog_order if k in keys]
     extra = [k for k in keys if k not in catalog_order]
     assigned = assigned + extra if keys else catalog_order
+    if role_keys is not None:
+        allowed = set(role_keys)
+        assigned = [k for k in assigned if k in allowed]
+        if not assigned:
+            st.warning(
+                "No tests are assigned to you on this water sample. "
+                "Ask reception to assign you as chemical or micro analyst."
+            )
+            st.stop()
     labels = {k: get_test(k).name for k in assigned}
     choice = st.selectbox(
         "Select test",
         options=assigned,
-        format_func=lambda k: f"{labels[k]}  —  {get_test(k).method}",
+        format_func=lambda k: f"{labels[k]}  —  {get_test(k).method or 'Observation Table'}",
         key="analyst_test_choice",
     )
     test = get_test(choice)
+
+    if cat == CATEGORY_WATER and choice in WATER_MICRO_TEST_KEYS:
+        st.caption(
+            "Edit **Procedure** if needed (pre-filled from the reference), "
+            "then enter **Result** and save."
+        )
 
     if normalize_category(selected.category) == CATEGORY_MICRO:
         from services.micro_report_catalog import spec_for_key
@@ -415,6 +443,12 @@ def main() -> None:
             if field.key == "moisture_pct":
                 continue
             default = prior_inputs.get(field.key, "")
+            if (
+                field.key == "procedure"
+                and choice in WATER_MICRO_TEST_KEYS
+                and not str(default or "").strip()
+            ):
+                default = default_water_micro_procedure(choice)
             label = f"{field.label}" + (f" ({field.unit})" if field.unit else "")
             if field.field_type == "choice":
                 idx = 0
@@ -547,7 +581,24 @@ def main() -> None:
     else:
         render_section_title("6. Generate final protocol")
         header = get_protocol_header(selected.id)
-        missing_saves = unsaved_selected_test_names(selected, results)
+        from services.protocol_docx import test_unsaved_display_name
+
+        saved_keys = {
+            r.test_key
+            for r in results
+            if (r.result_value or "").strip()
+            or any(str(v).strip() for v in (r.inputs or {}).values())
+        }
+        keys_to_check = (
+            role_keys
+            if role_keys is not None
+            else selected.selected_test_keys()
+        )
+        missing_saves = [
+            test_unsaved_display_name(k)
+            for k in keys_to_check
+            if k in TEST_CATALOG and k not in saved_keys
+        ]
         if missing_saves:
             st.warning(
                 "These selected tests have no saved result yet — their worksheet "

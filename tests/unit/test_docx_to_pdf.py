@@ -79,6 +79,39 @@ def test_convert_docx_bytes_to_pdf_failure(monkeypatch):
     assert "LibreOffice" in (err or "")
 
 
+def test_format_word_conversion_error_call_rejected():
+    detail = (
+        "Traceback (most recent call last):\n"
+        "pywintypes.com_error: (-2147418111, 'Call was rejected by callee.', None, None)"
+    )
+    msg = docx_to_pdf.format_word_conversion_error(detail)
+    assert msg == docx_to_pdf._WORD_BUSY_MESSAGE
+    assert "Traceback" not in msg
+
+
+def test_format_word_conversion_error_other():
+    msg = docx_to_pdf.format_word_conversion_error("Word did not create the PDF file")
+    assert msg == "Microsoft Word conversion failed: Word did not create the PDF file"
+
+
+def test_convert_with_word_subprocess_maps_call_rejected(monkeypatch, tmp_path):
+    docx_path = tmp_path / "in.docx"
+    pdf_path = tmp_path / "out.pdf"
+    docx_path.write_bytes(b"docx")
+
+    proc = MagicMock(
+        returncode=1,
+        stdout="",
+        stderr=(
+            "pywintypes.com_error: (-2147418111, 'Call was rejected by callee.', None, None)"
+        ),
+    )
+    monkeypatch.setattr(docx_to_pdf.subprocess, "run", lambda *a, **k: proc)
+
+    err = docx_to_pdf._convert_with_word_subprocess(docx_path, pdf_path)
+    assert err == docx_to_pdf._WORD_BUSY_MESSAGE
+
+
 def test_try_convert_docx_to_pdf_returns_none_on_error(monkeypatch):
     monkeypatch.setattr(
         docx_to_pdf,

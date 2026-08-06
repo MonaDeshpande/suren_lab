@@ -703,6 +703,11 @@ def _migrate_sample_editor_df(df: pd.DataFrame, category: str) -> pd.DataFrame:
                 f"workflow_analyst_{sr_no}",
                 _cell_text(row.get("Assigned analyst")),
             )
+        if "Micro analyst" in df.columns:
+            st.session_state.setdefault(
+                f"workflow_micro_analyst_{sr_no}",
+                _cell_text(row.get("Micro analyst")),
+            )
         if "Protocol No" in df.columns:
             st.session_state.setdefault(
                 f"workflow_protocol_no_{sr_no}",
@@ -786,6 +791,9 @@ def _sync_request_prefill(request: TestRequestData) -> None:
             )
             st.session_state[f"workflow_analyst_{s.sr_no}"] = id_to_label.get(
                 s.assigned_analyst_id, ""
+            )
+            st.session_state[f"workflow_micro_analyst_{s.sr_no}"] = id_to_label.get(
+                getattr(s, "assigned_micro_analyst_id", None), ""
             )
             st.session_state[f"workflow_protocol_no_{s.sr_no}"] = (
                 getattr(s, "protocol_no", "") or ""
@@ -967,8 +975,9 @@ def collect_form(
 
     if filter_category == CATEGORY_WATER:
         st.info(
-            "All **11 water protocol tests** are included automatically "
-            "(no manual test selection required)."
+            "All **13 water protocol tests** are included automatically "
+            "(11 chemical + 2 microbiological on the last Observation Table page). "
+            "Assign a **chemical analyst** and a **micro analyst** in Section 6."
         )
     elif filter_category == CATEGORY_MICRO:
         st.info(
@@ -1190,7 +1199,7 @@ def collect_form(
                 "Parameters": st.column_config.TextColumn(
                     "Parameters",
                     disabled=True,
-                    help="Water: all 11 protocol tests are included automatically.",
+                    help="Water: 11 chemical + 2 micro protocol tests are included automatically.",
                 ),
             }
         elif filter_category == CATEGORY_MICRO:
@@ -1338,20 +1347,13 @@ def collect_form(
             else:
                 sample_id_label = derived_codes.get(sr_no, "") or "—"
             st.caption(f"Sample ID: **{sample_id_label}**")
-            p_col, a_col, r_col = st.columns(3)
+            p_col, r_col = st.columns(2)
             with p_col:
                 st.text_input(
                     "Protocol No *",
                     key=f"workflow_protocol_no_{sr_no}",
                     disabled=locked,
                     help="Printed on the analyst protocol document.",
-                )
-            with a_col:
-                st.selectbox(
-                    "Assigned analyst *",
-                    options=analyst_select_options,
-                    key=f"workflow_analyst_{sr_no}",
-                    disabled=locked or not analyst_options,
                 )
             with r_col:
                 st.selectbox(
@@ -1363,6 +1365,31 @@ def collect_form(
                         "B uses the without-logo set; "
                         "Both stores both sets separately for the final report."
                     ),
+                )
+            if normalize_category(filter_category) == CATEGORY_WATER:
+                chem_col, micro_col = st.columns(2)
+                with chem_col:
+                    st.selectbox(
+                        "Chemical analyst *",
+                        options=analyst_select_options,
+                        key=f"workflow_analyst_{sr_no}",
+                        disabled=locked or not analyst_options,
+                        help="Performs the 11 chemical water tests.",
+                    )
+                with micro_col:
+                    st.selectbox(
+                        "Micro analyst *",
+                        options=analyst_select_options,
+                        key=f"workflow_micro_analyst_{sr_no}",
+                        disabled=locked or not analyst_options,
+                        help="Performs Total Coliform and E. coli on the last page.",
+                    )
+            else:
+                st.selectbox(
+                    "Assigned analyst *",
+                    options=analyst_select_options,
+                    key=f"workflow_analyst_{sr_no}",
+                    disabled=locked or not analyst_options,
                 )
 
             options = _custom_options_for_row(row, filter_category)
@@ -1547,6 +1574,14 @@ def collect_form(
             st.session_state.get(f"workflow_analyst_{sr_no}", "") or ""
         ).strip()
         assigned_analyst_id = label_to_id.get(analyst_label)
+        micro_label = str(
+            st.session_state.get(f"workflow_micro_analyst_{sr_no}", "") or ""
+        ).strip()
+        assigned_micro_analyst_id = (
+            label_to_id.get(micro_label)
+            if row_category == CATEGORY_WATER
+            else None
+        )
         if locked and edit_mode and request_prefill is not None:
             old_sample = next(
                 (s for s in request_prefill.samples if s.sr_no == sr_no),
@@ -1569,6 +1604,7 @@ def collect_form(
                 category=row_category,
                 status=status,
                 assigned_analyst_id=assigned_analyst_id,
+                assigned_micro_analyst_id=assigned_micro_analyst_id,
                 protocol_no=protocol_no,
                 report_format=report_format,
                 tests_with_logo=tests_with_logo,

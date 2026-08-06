@@ -74,6 +74,8 @@ class SampleRow:
     status: str = "pending"
     assigned_analyst_id: Optional[int] = None
     assigned_analyst_name: str = ""
+    assigned_micro_analyst_id: Optional[int] = None
+    assigned_micro_analyst_name: str = ""
     protocol_no: str = ""
     report_format: str = REPORT_FORMAT_WITH_LOGO
     tests_with_logo: list[str] = field(default_factory=list)
@@ -406,14 +408,15 @@ def save_test_request(
         INSERT INTO request_samples (
             request_id, sr_no, sample_name, batch_code, quantity, parameters,
             sample_code, category, tests_to_perform, tests_json, status,
-            assigned_analyst_id, protocol_no, report_format, tests_with_logo_json,
+            assigned_analyst_id, assigned_micro_analyst_id, protocol_no,
+            report_format, tests_with_logo_json,
             tests_without_logo_json, package_id, package_version_no, package_type,
             expires_at
         )
         VALUES (
             %s, %s, %s, %s, %s, %s,
             %s, %s, %s, %s, 'pending', %s, %s, %s, %s, %s,
-            %s, %s, %s, NOW() + INTERVAL '10 days'
+            %s, %s, %s, %s, NOW() + INTERVAL '10 days'
         )
         RETURNING id, sample_code
     """
@@ -431,6 +434,18 @@ def save_test_request(
             for sample in samples_to_save:
                 assert_valid_analyst_assignee(sample.assigned_analyst_id)
                 category = normalize_category(sample.category)
+                if category == CATEGORY_WATER:
+                    assert_valid_analyst_assignee(sample.assigned_micro_analyst_id)
+                    if (
+                        sample.assigned_analyst_id
+                        and sample.assigned_micro_analyst_id
+                        and sample.assigned_analyst_id
+                        == sample.assigned_micro_analyst_id
+                    ):
+                        raise ValueError(
+                            f"Sample Sr. {sample.sr_no}: chemical and micro "
+                            "analyst must be different users."
+                        )
                 keys, tests_display, pkg_id, pkg_ver, pkg_type = _resolve_sample_tests(
                     sample, category
                 )
@@ -454,6 +469,7 @@ def save_test_request(
                         tests_display or None,
                         tests_json,
                         sample.assigned_analyst_id,
+                        sample.assigned_micro_analyst_id,
                         (sample.protocol_no or "").strip() or None,
                         report_fmt,
                         _tests_with_logo_json_for_save(sample),
@@ -474,6 +490,9 @@ def save_test_request(
                 sample.package_type = pkg_type
                 sample.assigned_analyst_name = analyst_labels.get(
                     sample.assigned_analyst_id, ""
+                )
+                sample.assigned_micro_analyst_name = analyst_labels.get(
+                    sample.assigned_micro_analyst_id, ""
                 )
                 saved_samples.append(sample)
 
@@ -511,9 +530,12 @@ def get_test_request(request_id: int) -> Optional[TestRequestData]:
                COALESCE(rs.tests_with_logo_json, ''),
                COALESCE(rs.tests_without_logo_json, ''),
                rs.package_id, rs.package_version_no, rs.package_type,
-               COALESCE(rs.protocol_no, '')
+               COALESCE(rs.protocol_no, ''),
+               rs.assigned_micro_analyst_id,
+               COALESCE(um.full_name, um.username, '')
           FROM request_samples rs
           LEFT JOIN users u ON u.id = rs.assigned_analyst_id
+          LEFT JOIN users um ON um.id = rs.assigned_micro_analyst_id
          WHERE rs.request_id = %s
          ORDER BY rs.sr_no
     """
@@ -577,6 +599,8 @@ def get_test_request(request_id: int) -> Optional[TestRequestData]:
                 package_version_no=row[17],
                 package_type=row[18],
                 protocol_no=row[19] or "",
+                assigned_micro_analyst_id=row[20],
+                assigned_micro_analyst_name=row[21] or "",
             )
         )
 
@@ -726,6 +750,7 @@ def update_test_request(
             tests_to_perform = %s,
             tests_json = %s,
             assigned_analyst_id = %s,
+            assigned_micro_analyst_id = %s,
             protocol_no = %s,
             report_format = %s,
             tests_with_logo_json = %s,
@@ -740,14 +765,15 @@ def update_test_request(
         INSERT INTO request_samples (
             request_id, sr_no, sample_name, batch_code, quantity, parameters,
             sample_code, category, tests_to_perform, tests_json, status,
-            assigned_analyst_id, protocol_no, report_format, tests_with_logo_json,
+            assigned_analyst_id, assigned_micro_analyst_id, protocol_no,
+            report_format, tests_with_logo_json,
             tests_without_logo_json, package_id, package_version_no, package_type,
             expires_at
         )
         VALUES (
             %s, %s, %s, %s, %s, %s,
             %s, %s, %s, %s, 'pending', %s, %s, %s, %s, %s,
-            %s, %s, %s, NOW() + INTERVAL '10 days'
+            %s, %s, %s, %s, NOW() + INTERVAL '10 days'
         )
         RETURNING id, sample_code
     """
@@ -776,6 +802,18 @@ def update_test_request(
             for sample in submitted:
                 assert_valid_analyst_assignee(sample.assigned_analyst_id)
                 category = normalize_category(sample.category)
+                if category == CATEGORY_WATER:
+                    assert_valid_analyst_assignee(sample.assigned_micro_analyst_id)
+                    if (
+                        sample.assigned_analyst_id
+                        and sample.assigned_micro_analyst_id
+                        and sample.assigned_analyst_id
+                        == sample.assigned_micro_analyst_id
+                    ):
+                        raise ValueError(
+                            f"Sample Sr. {sample.sr_no}: chemical and micro "
+                            "analyst must be different users."
+                        )
                 keys, tests_display, pkg_id, pkg_ver, pkg_type = _resolve_sample_tests(
                     sample, category
                 )
@@ -806,6 +844,15 @@ def update_test_request(
                         raise ValueError(
                             f"Cannot reassign analyst for sample '{old.sample_code}' "
                             f"because status is '{old.status}'."
+                        )
+                    if (
+                        old.status != "pending"
+                        and sample.assigned_micro_analyst_id
+                        != old.assigned_micro_analyst_id
+                    ):
+                        raise ValueError(
+                            f"Cannot reassign micro analyst for sample "
+                            f"'{old.sample_code}' because status is '{old.status}'."
                         )
                     if old.status != "pending" and (
                         (sample.protocol_no or "").strip()
@@ -847,6 +894,7 @@ def update_test_request(
                             tests_display or None,
                             tests_json,
                             sample.assigned_analyst_id,
+                            sample.assigned_micro_analyst_id,
                             (sample.protocol_no or "").strip() or None,
                             new_fmt,
                             _tests_with_logo_json_for_save(sample),
@@ -868,6 +916,9 @@ def update_test_request(
                     sample.assigned_analyst_name = analyst_labels.get(
                         sample.assigned_analyst_id, ""
                     ) or old.assigned_analyst_name
+                    sample.assigned_micro_analyst_name = analyst_labels.get(
+                        sample.assigned_micro_analyst_id, ""
+                    ) or getattr(old, "assigned_micro_analyst_name", "")
                     saved_samples.append(sample)
                 else:
                     code = allocate_sample_code(cur, sample.sample_code)
@@ -885,6 +936,7 @@ def update_test_request(
                             tests_display or None,
                             tests_json,
                             sample.assigned_analyst_id,
+                            sample.assigned_micro_analyst_id,
                             (sample.protocol_no or "").strip() or None,
                             normalize_report_format(sample.report_format),
                             _tests_with_logo_json_for_save(sample),
@@ -906,6 +958,9 @@ def update_test_request(
                     sample.status = "pending"
                     sample.assigned_analyst_name = analyst_labels.get(
                         sample.assigned_analyst_id, ""
+                    )
+                    sample.assigned_micro_analyst_name = analyst_labels.get(
+                        sample.assigned_micro_analyst_id, ""
                     )
                     saved_samples.append(sample)
 
@@ -988,10 +1043,22 @@ def validate_request(data: TestRequestData) -> list[str]:
             else:
                 seen_codes.add(derived_code)
             if not s.assigned_analyst_id:
-                errors.append(f"Sample Sr. {s.sr_no}: assign an analyst.")
+                errors.append(f"Sample Sr. {s.sr_no}: assign a chemical analyst.")
+            category = normalize_category(s.category)
+            if category == CATEGORY_WATER:
+                if not s.assigned_micro_analyst_id:
+                    errors.append(f"Sample Sr. {s.sr_no}: assign a micro analyst.")
+                elif (
+                    s.assigned_analyst_id
+                    and s.assigned_micro_analyst_id
+                    and s.assigned_analyst_id == s.assigned_micro_analyst_id
+                ):
+                    errors.append(
+                        f"Sample Sr. {s.sr_no}: chemical and micro analyst "
+                        "must be different users."
+                    )
             if not (s.protocol_no or "").strip():
                 errors.append(f"Sample Sr. {s.sr_no}: protocol number is required.")
-            category = normalize_category(s.category)
             if category == CATEGORY_FOOD:
                 if not normalize_package_type(s.package_type):
                     errors.append(

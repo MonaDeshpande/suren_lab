@@ -40,6 +40,8 @@ from services.protocols.test_catalog import (
     CATEGORY_WATER,
     TEST_CATALOG,
     catalog_keys_for_category,
+    default_water_micro_procedure,
+    get_test,
     normalize_category,
     test_unsaved_display_name,
     uses_nutrition_template,
@@ -352,14 +354,25 @@ def _fmt_date(d: Optional[date]) -> str:
     return d.strftime("%d/%m/%Y")
 
 
+def _cell_text(cell) -> str:
+    """Full cell text across paragraphs (trimmed)."""
+    return "\n".join(p.text for p in cell.paragraphs).strip()
+
+
 def _set_cell(cell, text: str) -> None:
+    """
+    Replace cell text in-place, preserving first-paragraph alignment and fonts.
+
+    Uses run-level updates instead of ``cell.text = …`` or ``paragraph.text = …``
+    so template jc / rPr survive printed fill values.
+    """
     text = text or ""
     if not cell.paragraphs:
         cell.text = text
         return
-    cell.paragraphs[0].text = text
-    for p in cell.paragraphs[1:]:
-        p.text = ""
+    _set_paragraph_text(cell.paragraphs[0], text)
+    for para in cell.paragraphs[1:]:
+        _set_paragraph_text(para, "")
 
 
 def _set_paragraph_text(paragraph, text: str) -> None:
@@ -371,6 +384,294 @@ def _set_paragraph_text(paragraph, text: str) -> None:
     paragraph.runs[0].text = text
     for run in paragraph.runs[1:]:
         run.text = ""
+
+
+PROTOCOL_HEADER_FONT = ("Cambria", 10)
+RESULT_TABLE_TITLE_FONT = ("Cambria", 13)
+TABLE_HEADER_FONT = ("Cambria", 11)
+TABLE_DATA_FONT = ("Cambria", 10)
+
+
+def _apply_run_font(
+    run,
+    name: str,
+    size_pt: float,
+    *,
+    bold: bool = False,
+) -> None:
+    """Set explicit font family, size, and optional bold on a run."""
+    r_pr = run._element.get_or_add_rPr()
+    r_fonts = r_pr.find(qn("w:rFonts"))
+    if r_fonts is None:
+        r_fonts = OxmlElement("w:rFonts")
+        r_pr.insert(0, r_fonts)
+    for attr in (qn("w:ascii"), qn("w:hAnsi"), qn("w:cs")):
+        r_fonts.set(attr, name)
+    half_points = str(int(round(size_pt * 2)))
+    for tag_name in ("w:sz", "w:szCs"):
+        sz_el = r_pr.find(qn(tag_name))
+        if sz_el is None:
+            sz_el = OxmlElement(tag_name)
+            r_pr.append(sz_el)
+        sz_el.set(qn("w:val"), half_points)
+    b_el = r_pr.find(qn("w:b"))
+    if bold:
+        if b_el is None:
+            r_pr.append(OxmlElement("w:b"))
+    elif b_el is not None:
+        r_pr.remove(b_el)
+
+
+def _apply_paragraph_font(
+    paragraph: Paragraph,
+    name: str,
+    size_pt: float,
+    *,
+    bold: bool = False,
+) -> None:
+    if not paragraph.runs:
+        run = paragraph.add_run(paragraph.text or "")
+        if paragraph.text:
+            paragraph.text = ""
+    for run in paragraph.runs:
+        _apply_run_font(run, name, size_pt, bold=bold)
+
+
+def _apply_cell_font(
+    cell,
+    name: str,
+    size_pt: float,
+    *,
+    bold: bool = False,
+) -> None:
+    for paragraph in cell.paragraphs:
+        _apply_paragraph_font(paragraph, name, size_pt, bold=bold)
+
+
+def _apply_table_font(
+    table,
+    name: str,
+    size_pt: float,
+    *,
+    bold: bool = False,
+) -> None:
+    for row in table.rows:
+        for cell in row.cells:
+            _apply_cell_font(cell, name, size_pt, bold=bold)
+
+
+def _apply_table_header_row_font(table, row_index: int = 0) -> None:
+    name, size = TABLE_HEADER_FONT
+    if row_index >= len(table.rows):
+        return
+    for cell in table.rows[row_index].cells:
+        _apply_cell_font(cell, name, size, bold=True)
+
+
+def _apply_table_data_fonts(table) -> None:
+    data_name, data_size = TABLE_DATA_FONT
+    for row in table.rows[1:]:
+        for cell in row.cells:
+            _apply_cell_font(cell, data_name, data_size)
+
+
+def _apply_protocol_identity_row_fonts(row) -> None:
+    name, size = PROTOCOL_HEADER_FONT
+    for cell in row.cells:
+        _apply_cell_font(cell, name, size)
+        _set_cell_no_wrap(cell)
+
+
+def _apply_water_page1_sample_row_fonts(table) -> None:
+    label_name, label_size = TABLE_HEADER_FONT
+    data_name, data_size = TABLE_DATA_FONT
+    for row_idx in (2, 3):
+        if row_idx >= len(table.rows):
+            continue
+        for col_idx, cell in enumerate(table.rows[row_idx].cells):
+            if col_idx in (0, 4):
+                _apply_cell_font(cell, label_name, label_size, bold=True)
+            elif col_idx in (3, 7):
+                _apply_cell_font(cell, data_name, data_size)
+
+
+def _apply_sample_info_table_fonts(table) -> None:
+    label_name, label_size = TABLE_HEADER_FONT
+    data_name, data_size = TABLE_DATA_FONT
+    for row in table.rows:
+        for col_idx, cell in enumerate(row.cells):
+            if col_idx in (0, 2):
+                _apply_cell_font(cell, label_name, label_size, bold=True)
+            else:
+                _apply_cell_font(cell, data_name, data_size)
+
+
+def _apply_footer_table_fonts(table) -> None:
+    label_name, label_size = TABLE_HEADER_FONT
+    data_name, data_size = TABLE_DATA_FONT
+    for row in table.rows:
+        if row.cells:
+            _apply_cell_font(row.cells[0], label_name, label_size, bold=True)
+        if len(row.cells) > 1:
+            _apply_cell_font(row.cells[1], data_name, data_size)
+
+
+def _set_cell_no_wrap(cell) -> None:
+    tc_pr = cell._tc.get_or_add_tcPr()
+    if tc_pr.find(qn("w:noWrap")) is None:
+        tc_pr.append(OxmlElement("w:noWrap"))
+
+
+def _set_table_equal_column_widths(table) -> None:
+    """Give every column the same width while preserving table outer width."""
+    cols = _table_grid_col_twips(table)
+    if not cols:
+        return
+    total = sum(cols)
+    count = len(cols)
+    base = total // count
+    widths = [base] * count
+    widths[-1] += total - sum(widths)
+    _replace_table_grid_columns(table, widths)
+
+
+def _replace_table_grid_columns(table, col_widths: list[int]) -> None:
+    if not col_widths:
+        return
+    target_twips = sum(col_widths)
+    tbl = table._tbl
+    old_grid = tbl.find(qn("w:tblGrid"))
+    if old_grid is not None:
+        tbl.remove(old_grid)
+    new_grid = OxmlElement("w:tblGrid")
+    for width in col_widths:
+        col = OxmlElement("w:gridCol")
+        col.set(qn("w:w"), str(width))
+        new_grid.append(col)
+    tbl_pr = tbl.tblPr
+    if tbl_pr is not None:
+        tbl_pr.addnext(new_grid)
+    else:
+        tbl.insert(0, new_grid)
+    for row in table.rows:
+        for col_idx, cell in enumerate(row.cells):
+            if col_idx >= len(col_widths):
+                break
+            tc_pr = cell._tc.get_or_add_tcPr()
+            tc_w = tc_pr.find(qn("w:tcW"))
+            if tc_w is None:
+                tc_w = OxmlElement("w:tcW")
+                tc_pr.append(tc_w)
+            tc_w.set(qn("w:w"), str(col_widths[col_idx]))
+            tc_w.set(qn("w:type"), "dxa")
+    _set_table_tbl_w(table, target_twips)
+
+
+def _normalize_protocol_header_single_line(table) -> None:
+    """Keep Protocol No header labels/values on one line."""
+    _set_table_equal_column_widths(table)
+    for row in table.rows:
+        for cell in row.cells:
+            _set_cell_no_wrap(cell)
+
+
+def _normalize_result_table_title(doc: Document) -> None:
+    for paragraph in doc.paragraphs:
+        if (paragraph.text or "").strip() != "Result Table:":
+            continue
+        _set_paragraph_text(paragraph, "Result Table:")
+        title_name, title_size = RESULT_TABLE_TITLE_FONT
+        _apply_paragraph_font(paragraph, title_name, title_size, bold=True)
+        return
+
+
+def _page1_sample_block_table(doc: Document, sample: SampleRecord):
+    if normalize_category(sample.category) == CATEGORY_WATER:
+        if doc.tables and len(doc.tables[0].rows) >= 2:
+            first = (doc.tables[0].rows[0].cells[0].text or "").strip().lower()
+            if first.startswith("protocol no"):
+                return doc.tables[0]
+        return None
+    for table in doc.tables:
+        if _is_sample_info_table(table):
+            return table
+    return None
+
+
+def _ensure_blank_line_before_result_table(
+    doc: Document,
+    sample: SampleRecord,
+) -> None:
+    block_table = _page1_sample_block_table(doc, sample)
+    if block_table is None:
+        return
+    tbl_el = block_table._tbl
+    next_el = tbl_el.getnext()
+    if next_el is None:
+        return
+    if next_el.tag.endswith("p"):
+        para = Paragraph(next_el, doc)
+        text = (para.text or "").strip()
+        if text == "Result Table:":
+            blank = OxmlElement("w:p")
+            tbl_el.addnext(blank)
+            return
+        if not text:
+            following = next_el.getnext()
+            if following is not None and following.tag.endswith("p"):
+                following_text = (Paragraph(following, doc).text or "").strip()
+                if following_text == "Result Table:":
+                    return
+    if next_el.tag.endswith("p") and (
+        Paragraph(next_el, doc).text or ""
+    ).strip() == "Result Table:":
+        blank = OxmlElement("w:p")
+        tbl_el.addnext(blank)
+
+
+def _normalize_protocol_typography(doc: Document, sample: SampleRecord) -> None:
+    """Apply Cambria typography to food- and water-protocol documents."""
+    _normalize_result_table_title(doc)
+    is_water = normalize_category(sample.category) == CATEGORY_WATER
+    header_name, header_size = PROTOCOL_HEADER_FONT
+
+    if is_water:
+        if doc.tables:
+            page1 = doc.tables[0]
+            if page1.rows:
+                _apply_protocol_identity_row_fonts(page1.rows[0])
+            if len(page1.rows) >= 4:
+                _apply_water_page1_sample_row_fonts(page1)
+        for table in doc.tables[1:]:
+            if _is_repeat_protocol_header_table(table):
+                _apply_table_font(table, header_name, header_size)
+                for row in table.rows:
+                    for cell in row.cells:
+                        _set_cell_no_wrap(cell)
+    else:
+        for section in doc.sections:
+            for table in section.header.tables:
+                if table.rows and len(table.rows[0].cells) >= 6:
+                    _apply_table_font(table, header_name, header_size)
+                    _normalize_protocol_header_single_line(table)
+
+    for table in doc.tables:
+        if _is_summary_table(table):
+            _apply_table_header_row_font(table)
+            _apply_table_data_fonts(table)
+        elif _is_worksheet_table(table):
+            _apply_table_header_row_font(table)
+            _apply_table_data_fonts(table)
+        elif _is_sample_info_table(table) and not is_water:
+            _apply_sample_info_table_fonts(table)
+        elif _is_appearance_only_table(table):
+            data_name, data_size = TABLE_DATA_FONT
+            _apply_table_font(table, data_name, data_size)
+
+    if not is_water:
+        for section in doc.sections:
+            for table in section.footer.tables:
+                _apply_footer_table_fonts(table)
 
 
 def _set_row_cant_split(row) -> None:
@@ -400,6 +701,8 @@ def _set_paragraph_keep_with_next(paragraph) -> None:
 def _is_worksheet_table(table) -> bool:
     if not table.rows:
         return False
+    if _is_summary_table(table):
+        return False
     hdr = (table.rows[0].cells[0].text or "").lower()
     return (
         "description" in hdr
@@ -407,6 +710,77 @@ def _is_worksheet_table(table) -> bool:
         or "sr no" in hdr
         or "parameter" in hdr
     )
+
+
+def _is_result_only_worksheet_table(table) -> bool:
+    """Jaggery result-only blocks (e.g. Added Color) — 2-row, Result header, inline title."""
+    if len(table.rows) != 2:
+        return False
+    if not _is_worksheet_table(table):
+        return False
+    hdr_cells = table.rows[0].cells
+    if len(hdr_cells) < 2:
+        return False
+    hdr1 = (hdr_cells[1].text or "").strip().lower()
+    if "result" in hdr1:
+        return True
+    label = (_cell_text(table.rows[1].cells[0]) or "").strip().lower().rstrip(":")
+    known_labels = {v.lower() for v in RESULT_ONLY_ROW_LABELS.values()}
+    known_titles = {
+        p.lower().rstrip(":")
+        for patterns in RESULT_ONLY_TITLE_PATTERNS.values()
+        for p in patterns
+    }
+    return label in known_labels or label in known_titles
+
+
+RESULT_ONLY_ROW_LABELS: dict[str, str] = {
+    "added_color": "Added Color",
+}
+
+RESULT_ONLY_TITLE_PATTERNS: dict[str, list[str]] = {
+    "added_color": ["ADDED COLOR"],
+}
+
+
+def _result_only_test_key_for_table(table, conducted: set[str]) -> str | None:
+    if not _is_result_only_worksheet_table(table):
+        return None
+    label = (_cell_text(table.rows[1].cells[0]) or "").strip().upper().rstrip(":")
+    for test_key in WORKSHEET_RESULT_CELLS:
+        if test_key not in conducted:
+            continue
+        patterns = RESULT_ONLY_TITLE_PATTERNS.get(
+            test_key, [test_key.replace("_", " ").upper()]
+        )
+        row_label = RESULT_ONLY_ROW_LABELS.get(
+            test_key, test_key.replace("_", " ").title()
+        ).upper()
+        if label == row_label or any(p.rstrip(":") in label for p in patterns):
+            return test_key
+    return None
+
+
+def _promote_inline_worksheet_section_titles(
+    doc: Document,
+    conducted: set[str],
+) -> None:
+    """Move inline section titles (e.g. ADDED COLOR:) to body paragraphs above the table."""
+    for table in list(doc.tables):
+        test_key = _result_only_test_key_for_table(table, conducted)
+        if not test_key:
+            continue
+        row_label_cell = table.rows[1].cells[0]
+        title_text = (_cell_text(row_label_cell) or "").strip()
+        if not title_text:
+            continue
+        if not title_text.endswith(":"):
+            title_text = f"{title_text}:"
+        _insert_paragraph_before(doc, table._tbl, title_text)
+        row_label = RESULT_ONLY_ROW_LABELS.get(
+            test_key, test_key.replace("_", " ").title()
+        )
+        _set_cell(row_label_cell, row_label)
 
 
 def _is_repeat_protocol_header_table(table) -> bool:
@@ -1532,6 +1906,173 @@ def _replace_table_grid_from_reference(table, ref_table) -> None:
             tc_w.set(qn("w:type"), "dxa")
 
 
+def _ensure_table_tbl_pr(table):
+    tbl = table._tbl
+    doc_tbl_pr = tbl.tblPr
+    if doc_tbl_pr is None:
+        doc_tbl_pr = OxmlElement("w:tblPr")
+        tbl.insert(0, doc_tbl_pr)
+    return doc_tbl_pr
+
+
+def _set_table_tbl_w(table, width_twips: int) -> None:
+    """Set w:tblW so Word/PDF use the same outer width as tblGrid."""
+    doc_tbl_pr = _ensure_table_tbl_pr(table)
+    old_tbl_w = doc_tbl_pr.find(qn("w:tblW"))
+    if old_tbl_w is not None:
+        doc_tbl_pr.remove(old_tbl_w)
+    tbl_w = OxmlElement("w:tblW")
+    tbl_w.set(qn("w:w"), str(width_twips))
+    tbl_w.set(qn("w:type"), "dxa")
+    doc_tbl_pr.append(tbl_w)
+
+
+def _table_tbl_ind_twips(table) -> int | None:
+    tbl_pr = table._tbl.tblPr
+    if tbl_pr is None:
+        return None
+    ind = tbl_pr.find(qn("w:tblInd"))
+    if ind is None or ind.get(qn("w:type")) != "dxa":
+        return None
+    return int(ind.get(qn("w:w")))
+
+
+def _set_table_tbl_ind(table, ind_twips: int) -> None:
+    doc_tbl_pr = _ensure_table_tbl_pr(table)
+    old_ind = doc_tbl_pr.find(qn("w:tblInd"))
+    if old_ind is not None:
+        doc_tbl_pr.remove(old_ind)
+    tbl_ind = OxmlElement("w:tblInd")
+    tbl_ind.set(qn("w:w"), str(ind_twips))
+    tbl_ind.set(qn("w:type"), "dxa")
+    doc_tbl_pr.append(tbl_ind)
+
+
+def _scale_table_grid_to_width(table, target_twips: int) -> None:
+    """Proportionally scale tblGrid/tcW so column sum equals target_twips."""
+    cols = _table_grid_col_twips(table)
+    if not cols or target_twips <= 0:
+        return
+    if len(cols) == 1:
+        _set_table_single_column_width(table, target_twips)
+        return
+
+    current = sum(cols)
+    if current <= 0:
+        return
+
+    scaled: list[int] = []
+    remaining = target_twips
+    for idx, width in enumerate(cols):
+        if idx == len(cols) - 1:
+            scaled.append(max(1, remaining))
+            continue
+        new_width = max(1, round(width * target_twips / current))
+        scaled.append(new_width)
+        remaining -= new_width
+
+    drift = target_twips - sum(scaled)
+    if drift:
+        scaled[-1] = max(1, scaled[-1] + drift)
+
+    tbl = table._tbl
+    old_grid = tbl.find(qn("w:tblGrid"))
+    if old_grid is not None:
+        tbl.remove(old_grid)
+    new_grid = OxmlElement("w:tblGrid")
+    for width in scaled:
+        col = OxmlElement("w:gridCol")
+        col.set(qn("w:w"), str(width))
+        new_grid.append(col)
+    tbl_pr = tbl.tblPr
+    if tbl_pr is not None:
+        tbl_pr.addnext(new_grid)
+    else:
+        tbl.insert(0, new_grid)
+
+    for row in table.rows:
+        for col_idx, cell in enumerate(row.cells):
+            if col_idx >= len(scaled):
+                break
+            tc_pr = cell._tc.get_or_add_tcPr()
+            tc_w = tc_pr.find(qn("w:tcW"))
+            if tc_w is None:
+                tc_w = OxmlElement("w:tcW")
+                tc_pr.append(tc_w)
+            tc_w.set(qn("w:w"), str(scaled[col_idx]))
+            tc_w.set(qn("w:type"), "dxa")
+
+    _set_table_tbl_w(table, target_twips)
+
+
+def _set_table_single_column_width(table, width_twips: int) -> None:
+    """Replace tblGrid with one column of ``width_twips`` (full sample-table width)."""
+    tbl = table._tbl
+    old_grid = tbl.find(qn("w:tblGrid"))
+    if old_grid is not None:
+        tbl.remove(old_grid)
+    new_grid = OxmlElement("w:tblGrid")
+    col = OxmlElement("w:gridCol")
+    col.set(qn("w:w"), str(width_twips))
+    new_grid.append(col)
+    tbl_pr = tbl.tblPr
+    if tbl_pr is not None:
+        tbl_pr.addnext(new_grid)
+    else:
+        tbl.insert(0, new_grid)
+    for row in table.rows:
+        if not row.cells:
+            continue
+        tc_pr = row.cells[0]._tc.get_or_add_tcPr()
+        tc_w = tc_pr.find(qn("w:tcW"))
+        if tc_w is None:
+            tc_w = OxmlElement("w:tcW")
+            tc_pr.append(tc_w)
+        tc_w.set(qn("w:w"), str(width_twips))
+        tc_w.set(qn("w:type"), "dxa")
+    _set_table_tbl_w(table, width_twips)
+
+
+def _worksheet_third_column_header(table) -> str:
+    """Return Unit or Readings for the third worksheet header cell."""
+    if len(table.rows) < 2 or len(table.rows[0].cells) < 3:
+        return "Readings"
+    hdr_third = (table.rows[0].cells[2].text or "").strip().lower()
+    if hdr_third == "unit":
+        return "Unit"
+    for row in table.rows[1:4]:
+        if len(row.cells) < 3:
+            continue
+        c1 = (row.cells[1].text or "").strip().lower()
+        c2 = (row.cells[2].text or "").strip().lower()
+        if c2 in BARE_UNIT_PLACEHOLDERS and not c1.endswith(c2):
+            return "Unit"
+    return "Readings"
+
+
+def _normalize_food_worksheet_headers(doc: Document, sample: SampleRecord) -> None:
+    """Label worksheet header rows (Description | Readings | Readings/Unit)."""
+    if normalize_category(sample.category) == CATEGORY_WATER:
+        return
+    for table in doc.tables:
+        if not _is_worksheet_table(table):
+            continue
+        if _is_result_only_worksheet_table(table):
+            continue
+        if len(table.rows) < 1:
+            continue
+        hdr0 = (table.rows[0].cells[0].text or "").strip().lower()
+        cells = table.rows[0].cells
+        if "description" in hdr0 and len(cells) >= 3:
+            _set_cell(cells[0], "Description")
+            _set_cell(cells[1], "Readings")
+            _set_cell(cells[2], _worksheet_third_column_header(table))
+        elif ("sr. no" in hdr0 or "sr no" in hdr0) and len(cells) >= 3:
+            _set_cell(cells[0], "Sr. No.")
+            _set_cell(cells[1], "Parameter")
+            _set_cell(cells[2], "Reading")
+
+
 def _normalize_food_protocol_table_widths(doc: Document) -> None:
     """
     Fit food-protocol tables to Basic Nutrition reference widths so PDF does not
@@ -1540,20 +2081,90 @@ def _normalize_food_protocol_table_widths(doc: Document) -> None:
     if not NUTRITION_TEMPLATE_PATH.exists():
         return
     _, sample_ref, summary_ref, worksheet_ref, header_ref = _nutrition_reference_tables()
+    sample_width = sum(_table_grid_col_twips(sample_ref))
 
     for table in doc.tables:
-        if _is_sample_info_table(table):
+        if _is_appearance_only_table(table):
+            if sample_width:
+                _set_table_single_column_width(table, sample_width)
+        elif _is_sample_info_table(table):
             _replace_table_grid_from_reference(table, sample_ref)
         elif _is_summary_table(table):
             _replace_table_grid_from_reference(table, summary_ref)
         elif _is_worksheet_table(table):
-            _replace_table_grid_from_reference(table, worksheet_ref)
+            if len(table.columns) == len(worksheet_ref.columns):
+                _replace_table_grid_from_reference(table, worksheet_ref)
 
     if header_ref is not None:
         for section in doc.sections:
             for table in section.header.tables:
                 if table.rows and len(table.rows[0].cells) >= 6:
                     _replace_table_grid_from_reference(table, header_ref)
+
+
+def _is_food_protocol_outer_box_table(table) -> bool:
+    return (
+        _is_appearance_only_table(table)
+        or _is_sample_info_table(table)
+        or _is_summary_table(table)
+        or _is_worksheet_table(table)
+    )
+
+
+def _canonical_food_protocol_outer_frame() -> tuple[int, int]:
+    """Return worksheet-reference outer width and left indent (twips)."""
+    if not NUTRITION_TEMPLATE_PATH.exists():
+        return 9990, -162
+    _, _, _, worksheet_ref, _ = _nutrition_reference_tables()
+    target_width = sum(_table_grid_col_twips(worksheet_ref)) or 9990
+    target_ind = _table_tbl_ind_twips(worksheet_ref)
+    if target_ind is None:
+        target_ind = -162
+    return target_width, target_ind
+
+
+def _apply_food_protocol_outer_frame(
+    table,
+    target_width: int,
+    target_ind: int,
+) -> None:
+    _scale_table_grid_to_width(table, target_width)
+    _set_table_tbl_ind(table, target_ind)
+    _make_table_inline(table)
+
+
+def _unify_food_protocol_outer_boxes(doc: Document) -> None:
+    """Force food-protocol tables to share one left edge and outer width."""
+    if not NUTRITION_TEMPLATE_PATH.exists():
+        return
+    target_width, target_ind = _canonical_food_protocol_outer_frame()
+
+    for table in doc.tables:
+        if _is_food_protocol_outer_box_table(table):
+            _apply_food_protocol_outer_frame(table, target_width, target_ind)
+
+    for section in doc.sections:
+        for table in section.header.tables:
+            if table.rows and len(table.rows[0].cells) >= 6:
+                _apply_food_protocol_outer_frame(table, target_width, target_ind)
+        for table in section.footer.tables:
+            _apply_food_protocol_outer_frame(table, target_width, target_ind)
+
+
+def _normalize_food_protocol_footer_layout(doc: Document) -> None:
+    """Align footer approval table to Basic Nutrition reference grid and indent."""
+    if not NUTRITION_TEMPLATE_PATH.exists():
+        return
+    ref = Document(str(NUTRITION_TEMPLATE_PATH))
+    if not ref.sections[0].footer.tables:
+        return
+    footer_ref = ref.sections[0].footer.tables[0]
+    for section in doc.sections:
+        for table in section.footer.tables:
+            if len(table.columns) == len(footer_ref.columns):
+                _replace_table_grid_from_reference(table, footer_ref)
+            _copy_table_layout_from_reference(table, footer_ref)
+    _unify_food_protocol_outer_boxes(doc)
 
 
 def _copy_table_layout_from_reference(table, ref_table) -> None:
@@ -1584,7 +2195,9 @@ def _normalize_food_protocol_table_alignment(doc: Document) -> None:
     _, sample_ref, summary_ref, worksheet_ref, header_ref = _nutrition_reference_tables()
 
     for table in doc.tables:
-        if _is_sample_info_table(table):
+        if _is_appearance_only_table(table):
+            _copy_table_layout_from_reference(table, sample_ref)
+        elif _is_sample_info_table(table):
             _copy_table_layout_from_reference(table, sample_ref)
         elif _is_summary_table(table):
             _copy_table_layout_from_reference(table, summary_ref)
@@ -1727,23 +2340,6 @@ def _normalize_jaggery_summary_headers(doc: Document, sample: SampleRecord) -> N
             _set_cell(cells[idx], label)
 
 
-def _normalize_jaggery_worksheet_headers(doc: Document, sample: SampleRecord) -> None:
-    if normalize_category(sample.category) == CATEGORY_WATER or _is_nutrition_sample(
-        sample
-    ):
-        return
-    for table in doc.tables:
-        if not _is_worksheet_table(table):
-            continue
-        if len(table.rows) < 1 or len(table.rows[0].cells) < 3:
-            continue
-        hdr0 = (table.rows[0].cells[0].text or "").strip().lower()
-        if "description" not in hdr0:
-            continue
-        if (table.rows[0].cells[2].text or "").strip().lower() == "readings":
-            _set_cell(table.rows[0].cells[2], "")
-
-
 BARE_UNIT_PLACEHOLDERS = frozenset(
     {"g", "ml", "%", "ppm", "—", "-", "ntu", "μs/cm", "us/cm"}
 )
@@ -1862,6 +2458,48 @@ def _replace_page1_body_with_reference_layout(
             break
 
 
+def _nutrition_header_trailing_paragraphs_xml() -> list[Any]:
+    """Clone blank header paragraphs after the Protocol No table in the nutrition ref."""
+    if not NUTRITION_TEMPLATE_PATH.exists():
+        return []
+    ref_hdr = Document(str(NUTRITION_TEMPLATE_PATH)).sections[0].header._element
+    trailing: list[Any] = []
+    seen_table = False
+    for child in ref_hdr:
+        if child.tag.endswith("tbl"):
+            seen_table = True
+            trailing.clear()
+            continue
+        if seen_table and child.tag.endswith("p"):
+            trailing.append(deepcopy(child))
+    return trailing
+
+
+def _normalize_food_protocol_section_header_spacing(doc: Document) -> None:
+    """Match Basic Nutrition gap: Protocol No table first, then trailing blank lines."""
+    trailing_paras = _nutrition_header_trailing_paragraphs_xml()
+    if not trailing_paras:
+        return
+
+    for section in doc.sections:
+        hdr_el = section.header._element
+        protocol_tbl = None
+        for table in section.header.tables:
+            if table.rows and len(table.rows[0].cells) >= 6:
+                protocol_tbl = table._tbl
+                break
+        if protocol_tbl is None:
+            continue
+
+        for child in list(hdr_el):
+            if child is protocol_tbl:
+                continue
+            hdr_el.remove(child)
+
+        for para_xml in trailing_paras:
+            hdr_el.append(deepcopy(para_xml))
+
+
 def _apply_repeating_protocol_header(doc: Document, header: ProtocolHeader) -> None:
     """Add Protocol No / issued-to / issued-by table to every page header."""
     tbl_xml = _nutrition_repeating_header_table_xml()
@@ -1908,7 +2546,7 @@ def _fill_appearance_worksheet_block(
         cell = table.rows[0].cells[0]
         for paragraph in cell.paragraphs:
             _clear_paragraph_numbering(paragraph)
-        _set_cell(cell, f"APPEARANCE:\n{text}")
+        _set_cell(cell, f"APPEARANCE: {text}")
         return
 
 
@@ -2297,27 +2935,64 @@ def _remove_repeat_protocol_headers(doc: Document) -> None:
             _delete_table(table)
 
 
+def _apply_keep_with_next_to_row(row, *, skip_if_last: bool) -> None:
+    """Chain row paragraphs with keepWithNext so blocks stay on one page."""
+    if skip_if_last:
+        return
+    for cell in row.cells:
+        for para in cell.paragraphs:
+            if (para.text or "").strip():
+                _set_paragraph_keep_with_next(para)
+
+
+def _section_title_paragraph_for_table(doc: Document, table) -> Paragraph | None:
+    """Return the non-empty section title paragraph immediately above a table."""
+    prev = table._tbl.getprevious()
+    while prev is not None:
+        if prev.tag.endswith("tbl"):
+            break
+        if prev.tag.endswith("p"):
+            para = Paragraph(prev, doc)
+            text = (para.text or "").strip()
+            if text and text != "Result Table:" and not _is_observation_heading(text):
+                if text.endswith(":") or "dry basis" in text.lower():
+                    return para
+                return None
+        prev = prev.getprevious()
+    return None
+
+
 def _apply_worksheet_page_layout(doc: Document) -> None:
-    """Keep section titles with tables; prevent worksheet rows from splitting."""
+    """
+    Keep each observation section (title + table) on one page.
+
+    cantSplit on every row; keepWithNext on section titles and all rows except
+    the last row in each worksheet / appearance table.
+    """
     worksheet_tbls = {t._tbl for t in doc.tables if _is_worksheet_table(t)}
+    appearance_tbls = {t._tbl for t in doc.tables if _is_appearance_only_table(t)}
+    block_tbls = worksheet_tbls | appearance_tbls
     body_children = list(doc.element.body)
 
     for i, child in enumerate(body_children):
         if child.tag.split("}")[-1] != "tbl":
             continue
-        if child not in worksheet_tbls:
+        if child not in block_tbls:
             continue
 
         table = Table(child, doc)
-        for row in table.rows:
+        row_count = len(table.rows)
+        for ri, row in enumerate(table.rows):
             _set_row_cant_split(row)
+            _apply_keep_with_next_to_row(row, skip_if_last=(ri >= row_count - 1))
 
-        if i > 0 and body_children[i - 1].tag.split("}")[-1] == "p":
+        title_para = _section_title_paragraph_for_table(doc, table)
+        if title_para is not None:
+            _set_paragraph_keep_with_next(title_para)
+        elif i > 0 and body_children[i - 1].tag.split("}")[-1] == "p":
             para = Paragraph(body_children[i - 1], doc)
             text = (para.text or "").strip()
-            if not text:
-                continue
-            if text.endswith(":") or "dry basis" in text.lower():
+            if text and _is_observation_heading(text):
                 _set_paragraph_keep_with_next(para)
 
 
@@ -2342,78 +3017,107 @@ def _fill_nutrition_sugar_formula_row(
     by_key: dict[str, TestResultRow],
     ctx: dict[str, float],
 ) -> None:
-    """Basic Nutrition sugar row: symbolic then calculations (merged or split cells)."""
+    """
+    Basic Nutrition sugar row: keep template paragraph formulas; fill worked lines.
+
+    Template row mirrors Jaggery invert / reducing / sucrose paragraph slots.
+    Maps bn_total_sugar → invert block, bn_added_sugar → reducing block.
+    """
     if not row.cells:
         return
 
-    merged = (
-        len(row.cells) >= 3
-        and row.cells[0]._tc is row.cells[2]._tc
-    )
-    symbolic_parts: list[str] = []
-    reading_parts: list[str] = []
+    cell = row.cells[0]
+    paras = cell.paragraphs
+    if not paras:
+        return
 
-    for key, label, fac in (
-        ("bn_added_sugar", "Added sugar", "10"),
-        ("bn_total_sugar", "Total sugar", "100"),
-    ):
-        if key not in by_key:
-            continue
-        test = TEST_CATALOG.get(key)
-        res = by_key[key]
-        if not test or not res:
-            continue
+    if "bn_total_sugar" in by_key:
+        res = by_key["bn_total_sugar"]
         inputs = res.inputs or {}
-        symbolic_parts.append(
-            f"{label}: Conc × 250 × {fac} / (Wt × B.R.), then dry basis"
+        worked = worked_formula_lines(
+            "bn_total_sugar", inputs, ctx, res.result_value or ""
         )
-        for line in worked_formula_lines(key, inputs, ctx, res.result_value or ""):
-            reading_parts.append(line)
+        line = "\n".join(worked) if worked else ""
         ans = _answer_text(res)
-        if ans:
-            reading_parts.append(ans)
+        if ans and ans not in line:
+            line = f"{line}\n{ans}".strip()
+        if len(paras) > 2:
+            _set_paragraph_text(paras[2], line)
 
-    if merged:
-        merged_text = "\n\n".join(symbolic_parts)
-        if reading_parts:
-            merged_text += "\n\n" + "\n\n".join(reading_parts)
-        _set_cell(row.cells[0], merged_text)
-        return
-
-    if len(row.cells) < 3:
-        _fill_nutrition_sugar_formula_cell(row.cells[0], by_key, ctx)
-        return
-
-    if symbolic_parts:
-        _set_cell(row.cells[0], "\n\n".join(symbolic_parts))
-    if reading_parts:
-        _set_cell(row.cells[2], "\n\n".join(reading_parts))
-
-
-def _fill_nutrition_sugar_formula_cell(
-    cell, by_key: dict[str, TestResultRow], ctx: dict[str, float]
-) -> None:
-    """Fill Added / Total sugar formula block (Basic Nutrition table 10)."""
-    blocks: list[str] = []
-    for key, label, fac in (
-        ("bn_added_sugar", "Added sugar", "10"),
-        ("bn_total_sugar", "Total sugar", "100"),
-    ):
-        if key not in by_key:
-            continue
-        test = TEST_CATALOG.get(key)
-        res = by_key[key]
-        if not test or not res:
-            continue
+    if "bn_added_sugar" in by_key:
+        res = by_key["bn_added_sugar"]
         inputs = res.inputs or {}
-        blocks.append(f"{label}: Conc × 250 × {fac} / (Wt × B.R.), then dry basis")
-        worked = worked_formula_lines(key, inputs, ctx, res.result_value or "")
-        blocks.extend(worked)
+        worked = worked_formula_lines(
+            "bn_added_sugar", inputs, ctx, res.result_value or ""
+        )
+        line = "\n".join(worked) if worked else ""
         ans = _answer_text(res)
-        if ans:
-            blocks.append(f"{label} answer: {ans}")
-    if blocks:
-        _set_cell(cell, "\n".join(blocks))
+        if ans and ans not in line:
+            line = f"{line}\n{ans}".strip()
+        if len(paras) > 9:
+            _set_paragraph_text(paras[9], line)
+        elif len(paras) > 2:
+            _set_paragraph_text(paras[2], line)
+
+    if len(row.cells) >= 3 and row.cells[0]._tc is not row.cells[2]._tc:
+        reading_parts: list[str] = []
+        for key in ("bn_added_sugar", "bn_total_sugar"):
+            if key not in by_key:
+                continue
+            res = by_key[key]
+            worked = worked_formula_lines(
+                key, res.inputs or {}, ctx, res.result_value or ""
+            )
+            reading_parts.extend(worked)
+        if reading_parts:
+            _set_reading_cell(row, 2, "\n\n".join(reading_parts))
+
+
+def _fill_nutrition_paragraph_formulas(
+    doc: Document,
+    by_key: dict[str, TestResultRow],
+    ctx: dict[str, float],
+) -> None:
+    """
+    Fill worked calculation lines for protein / carbohydrate / energy paragraphs.
+
+    Keeps the template's symbolic formula wording; appends typed worked math.
+    """
+    if "bn_protein" in by_key:
+        res = by_key["bn_protein"]
+        worked = worked_formula_lines(
+            "bn_protein", res.inputs or {}, ctx, res.result_value or ""
+        )
+        for para in doc.paragraphs:
+            text = para.text or ""
+            if "Wt. of sample take" in text and worked:
+                _set_paragraph_text(para, worked[0])
+            elif text.strip().startswith("Total Protein =") and len(worked) > 1:
+                _set_paragraph_text(para, f"{text.strip()}\n{worked[1]}")
+
+    if "bn_carbohydrate" in by_key:
+        res = by_key["bn_carbohydrate"]
+        worked = worked_formula_lines(
+            "bn_carbohydrate", res.inputs or {}, ctx, res.result_value or ""
+        )
+        if worked:
+            for para in doc.paragraphs:
+                text = para.text or ""
+                if "Moisture + Ash + Fat + Protein" in text:
+                    _set_paragraph_text(para, f"{text.strip()}\n{worked[0]}")
+                    break
+
+    if "bn_calories" in by_key:
+        res = by_key["bn_calories"]
+        worked = worked_formula_lines(
+            "bn_calories", res.inputs or {}, ctx, res.result_value or ""
+        )
+        if worked:
+            for para in doc.paragraphs:
+                text = para.text or ""
+                if "(Protein + Carbohydrate)" in text and "x 4" in text:
+                    _set_paragraph_text(para, f"{text.strip()}\n{worked[0]}")
+                    break
 
 
 def _fill_worksheet_result_cells(
@@ -2632,7 +3336,11 @@ def _fill_worksheet_formulas(
             if not row.cells:
                 continue
             symbolic = lines[i] if i < len(lines) else test.formula_display
-            _set_cell(row.cells[0], symbolic)
+            existing_desc = _cell_text(row.cells[0]).strip()
+            if not existing_desc:
+                _set_cell(row.cells[0], symbolic)
+            elif not is_nutrition:
+                _set_cell(row.cells[0], symbolic)
 
             worked_line = worked[i] if i < len(worked) else ""
             is_final = len(row_indices) == 1 or i == len(row_indices) - 1
@@ -2771,6 +3479,64 @@ def _fill_nutrition_header_and_summary(
     # Table 1 summary rebuilt in fill_protocol_docx_bytes (conducted tests only).
 
 
+WATER_MICRO_OBSERVATION_ROWS: list[tuple[str, str, str]] = [
+    ("1", "water_total_coliform", "Total Coliform"),
+    ("2", "water_e_coli", "E. coli"),
+]
+
+
+def _append_water_micro_observation_page(
+    doc: Document,
+    sample: SampleRecord,
+    header: ProtocolHeader,
+    by_key: dict[str, TestResultRow],
+) -> None:
+    """Append the water micro Observation Table as the last protocol page."""
+    doc.add_page_break()
+
+    identity = doc.add_paragraph()
+    identity.alignment = WD_ALIGN_PARAGRAPH.LEFT
+    run = identity.add_run(
+        f"Lab Code No\t{_cell_text_safe(sample.lab_code or sample.sample_code)}\t"
+        f"Date of Analysis:\t{_fmt_date(header.date_of_analysis)}"
+    )
+    _apply_run_font(run, *PROTOCOL_HEADER_FONT)
+
+    title = doc.add_paragraph()
+    title_run = title.add_run("OBSERVATION TABLE:")
+    _apply_run_font(title_run, *RESULT_TABLE_TITLE_FONT, bold=True)
+
+    table = doc.add_table(rows=1 + len(WATER_MICRO_OBSERVATION_ROWS), cols=4)
+    headers = ("Sr.No", "Name of test", "Procedure", "Result")
+    for col_idx, label in enumerate(headers):
+        _set_cell(table.rows[0].cells[col_idx], label)
+
+    for row_idx, (sr_no, test_key, display_name) in enumerate(
+        WATER_MICRO_OBSERVATION_ROWS, start=1
+    ):
+        row = table.rows[row_idx]
+        res = by_key.get(test_key)
+        procedure = ""
+        result = ""
+        if res:
+            procedure = str((res.inputs or {}).get("procedure") or "").strip()
+            result = str(res.result_value or "").strip()
+            if not result:
+                result = str((res.inputs or {}).get("result_obs") or "").strip()
+        if not procedure:
+            procedure = default_water_micro_procedure(test_key)
+        test = get_test(test_key)
+        name = test.name if test else display_name
+        _set_cell(row.cells[0], sr_no)
+        _set_cell(row.cells[1], name)
+        _set_cell(row.cells[2], procedure)
+        _set_cell(row.cells[3], result)
+
+
+def _cell_text_safe(value: Optional[str]) -> str:
+    return (value or "").strip()
+
+
 def fill_protocol_docx_bytes(
     sample: SampleRecord,
     header: ProtocolHeader,
@@ -2832,23 +3598,34 @@ def fill_protocol_docx_bytes(
     if is_food_house_style:
         _replace_page1_body_with_reference_layout(doc, sample, header)
         _apply_repeating_protocol_header(doc, header)
+        _normalize_food_protocol_section_header_spacing(doc)
     _fill_appearance_worksheet_block(doc, header, by_key)
-    _promote_appearance_table_to_paragraph(doc)
     _clean_bare_unit_placeholders(doc)
     if is_food_house_style:
         _apply_reference_page_margins(doc)
     if is_food_house_style and not is_nutrition:
         _normalize_jaggery_summary_headers(doc, sample)
-        _normalize_jaggery_worksheet_headers(doc, sample)
+    if is_food_house_style and not is_nutrition:
+        _promote_inline_worksheet_section_titles(doc, conducted)
+    if is_food_house_style:
+        _normalize_food_worksheet_headers(doc, sample)
     _keep_page1_block_together(doc)
     _ensure_observation_section_starts_page_2(doc)
     _renumber_worksheet_section_titles(doc, conducted)
+    if is_nutrition:
+        _fill_nutrition_paragraph_formulas(doc, by_key, _result_context(by_key))
     _apply_worksheet_page_layout(doc)
     if is_food_house_style:
         _normalize_food_protocol_table_widths(doc)
         _normalize_food_protocol_visual_layout(doc)
         _apply_standard_protocol_footer(doc)
+        _normalize_food_protocol_footer_layout(doc)
+    if is_water or is_food_house_style:
+        _ensure_blank_line_before_result_table(doc, sample)
+        _normalize_protocol_typography(doc, sample)
     _blank_director_approval(doc)
+    if is_water:
+        _append_water_micro_observation_page(doc, sample, header, by_key)
     _remove_trailing_empty_paragraphs(doc)
 
     out = io.BytesIO()

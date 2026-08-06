@@ -54,7 +54,7 @@ class TestValidateAnalystAssignment:
             ]
         )
         errors = validate_request(data)
-        assert any("assign an analyst" in e.lower() for e in errors)
+        assert any("assign a chemical analyst" in e.lower() for e in errors)
 
     def test_with_analyst_passes_validation(self):
         assert validate_request(_valid_request()) == []

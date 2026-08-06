@@ -39,7 +39,7 @@ from services.samples import (  # noqa: E402
     delete_expired_samples,
     report_format_label,
 )
-from services.protocols.test_catalog import CATEGORY_FOOD, normalize_category  # noqa: E402
+from services.protocols.test_catalog import CATEGORY_FOOD, CATEGORY_WATER, normalize_category  # noqa: E402
 from services.test_packages import (  # noqa: E402
     describe_sample_package,
     get_package,
@@ -157,6 +157,12 @@ def _render_downloads(saved, actor, gen_by: str, gen_at: str) -> None:
                     "Pkg version": pkg_version,
                     "Package status": pkg_status,
                     "Assigned analyst": getattr(s, "assigned_analyst_name", "") or "—",
+                    "Micro analyst": (
+                        getattr(s, "assigned_micro_analyst_name", "") or "—"
+                        if normalize_category(getattr(s, "category", "food"))
+                        == CATEGORY_WATER
+                        else "—"
+                    ),
                     "Report format": report_format_label(
                         getattr(s, "report_format", REPORT_FORMAT_WITH_LOGO)
                     ),

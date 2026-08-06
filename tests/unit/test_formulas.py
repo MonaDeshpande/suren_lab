@@ -467,8 +467,8 @@ class TestBasicNutritionTotalSugar:
 
 
 class TestCatalogMeta:
-    def test_thirty_two_tests(self):
-        assert len(TEST_CATALOG) == 32
+    def test_catalog_test_count(self):
+        assert len(TEST_CATALOG) == 40
 
     def test_food_tests_count(self):
         food_keys = {t.key for t in _catalog_tests_for_category(CATEGORY_FOOD)}
@@ -493,12 +493,20 @@ class TestCatalogMeta:
         assert not has_mixed_food_families(["bn_moisture", "bn_protein"])
 
     def test_water_tests_count(self):
+        from services.protocols.test_catalog import WATER_MICRO_TEST_KEYS
+
         water = _catalog_tests_for_category(CATEGORY_WATER)
-        assert len(water) == 11
-        assert {t.key for t in water} == set(WATER_TEST_KEYS)
+        assert len(water) == 13
+        assert {t.key for t in water} == set(WATER_TEST_KEYS) | set(
+            WATER_MICRO_TEST_KEYS
+        )
 
     def test_default_water_bundle(self):
-        assert default_test_keys_for_category(CATEGORY_WATER) == WATER_TEST_KEYS
+        from services.protocols.test_catalog import WATER_MICRO_TEST_KEYS
+
+        assert default_test_keys_for_category(CATEGORY_WATER) == (
+            WATER_TEST_KEYS + WATER_MICRO_TEST_KEYS
+        )
         assert default_test_keys_for_category(CATEGORY_FOOD) == []
 
     def test_micro_tests_count(self):

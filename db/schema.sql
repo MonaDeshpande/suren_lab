@@ -198,6 +198,7 @@ CREATE TABLE IF NOT EXISTS request_samples (
                         CHECK (status IN ('pending', 'in_progress', 'completed', 'reported')),
     analyst_remarks     TEXT,
     assigned_analyst_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    assigned_micro_analyst_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
     protocol_no         TEXT,                          -- Reception-entered; synced to sample_protocols
     report_format       TEXT        NOT NULL DEFAULT 'with_logo'
                         CHECK (report_format IN ('with_logo', 'without_logo', 'both')),
@@ -234,6 +235,9 @@ CREATE INDEX IF NOT EXISTS idx_request_samples_category
 
 CREATE INDEX IF NOT EXISTS idx_request_samples_assigned_analyst
     ON request_samples (assigned_analyst_id, status, expires_at);
+
+CREATE INDEX IF NOT EXISTS idx_request_samples_assigned_micro_analyst
+    ON request_samples (assigned_micro_analyst_id, status, expires_at);
 
 CREATE INDEX IF NOT EXISTS idx_request_samples_package
     ON request_samples (package_id);

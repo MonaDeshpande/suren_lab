@@ -104,7 +104,7 @@ class TestValidateRequest:
             ]
         )
         errors = validate_request(data)
-        assert any("assign an analyst" in e.lower() for e in errors)
+        assert any("assign a chemical analyst" in e.lower() for e in errors)
 
     def test_missing_protocol_number(self):
         data = _valid_request(
@@ -179,7 +179,11 @@ class TestValidateRequest:
         assert any("no active test package" in e.lower() for e in errors)
 
     def test_water_category_with_bundle_ok(self):
-        from services.protocols.test_catalog import WATER_TEST_KEYS
+        from services.protocols.test_catalog import (
+            WATER_MICRO_TEST_KEYS,
+            WATER_TEST_KEYS,
+            default_test_keys_for_category,
+        )
 
         data = _valid_request(
             samples=[
@@ -187,14 +191,57 @@ class TestValidateRequest:
                     sr_no=1,
                     sample_name="Borewell",
                     category="water",
-                    test_keys=list(WATER_TEST_KEYS),
+                    test_keys=list(default_test_keys_for_category("water")),
+                    parameters="",
+                    assigned_analyst_id=_VALID_ANALYST_ID,
+                    assigned_micro_analyst_id=2,
+                    protocol_no="P-001",
+                )
+            ]
+        )
+        assert validate_request(data) == []
+        assert WATER_TEST_KEYS + WATER_MICRO_TEST_KEYS == list(
+            default_test_keys_for_category("water")
+        )
+
+    def test_water_missing_micro_analyst(self):
+        from services.protocols.test_catalog import default_test_keys_for_category
+
+        data = _valid_request(
+            samples=[
+                SampleRow(
+                    sr_no=1,
+                    sample_name="Borewell",
+                    category="water",
+                    test_keys=list(default_test_keys_for_category("water")),
                     parameters="",
                     assigned_analyst_id=_VALID_ANALYST_ID,
                     protocol_no="P-001",
                 )
             ]
         )
-        assert validate_request(data) == []
+        errors = validate_request(data)
+        assert any("micro analyst" in e.lower() for e in errors)
+
+    def test_water_same_chemical_and_micro_analyst_rejected(self):
+        from services.protocols.test_catalog import default_test_keys_for_category
+
+        data = _valid_request(
+            samples=[
+                SampleRow(
+                    sr_no=1,
+                    sample_name="Borewell",
+                    category="water",
+                    test_keys=list(default_test_keys_for_category("water")),
+                    parameters="",
+                    assigned_analyst_id=_VALID_ANALYST_ID,
+                    assigned_micro_analyst_id=_VALID_ANALYST_ID,
+                    protocol_no="P-001",
+                )
+            ]
+        )
+        errors = validate_request(data)
+        assert any("different users" in e.lower() for e in errors)
 
     def test_water_category_invalid_food_key(self):
         data = _valid_request(

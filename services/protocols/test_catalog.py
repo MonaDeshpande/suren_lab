@@ -459,6 +459,35 @@ def _calc_micro_result(inputs: dict, _ctx: dict) -> tuple[str, Optional[float]]:
     return text, None
 
 
+# Water protocol micro last page — reference/WhatsApp Image 2026-08-05 at 10.56.20 PM.jpeg
+WATER_TOTAL_COLIFORM_DEFAULT_PROCEDURE = (
+    "Filter 100 ml of the Water sample to be using a membrane filter on "
+    "membrane filter assembly. Place the filter on the HiCrome Coliform agar "
+    "media Petri Plates. Incubate at 37° C for 48 hrs. After Incubation take "
+    "Kovac's Indole Reagent put it on colonies 2-3 drops if pink to converted "
+    "cherry red color then biochemical indole confirmatory test in the total "
+    "coliform is present if color is not changes total coliform is absent"
+)
+
+WATER_E_COLI_DEFAULT_PROCEDURE = (
+    "Filter 100 ml of the Water sample to be using a membrane filter on "
+    "membrane filter assembly Place the filter on the HiCrome Coliform agar "
+    "medium Petri Plate Incubate at 37° C for 48 hrs After Incubation take "
+    "Kovac's Indole Reagent put it on colonies 2-3 drops Blue color colonies "
+    "to see on plates then E. coli is present"
+)
+
+WATER_MICRO_DEFAULT_PROCEDURES: dict[str, str] = {
+    "water_total_coliform": WATER_TOTAL_COLIFORM_DEFAULT_PROCEDURE,
+    "water_e_coli": WATER_E_COLI_DEFAULT_PROCEDURE,
+}
+
+
+def default_water_micro_procedure(test_key: str) -> str:
+    """Return the catalog default procedure text for a water micro test."""
+    return WATER_MICRO_DEFAULT_PROCEDURES.get(test_key, "")
+
+
 # ---------------------------------------------------------------------------
 # Basic Nutrition calculators — reference/Basic Nutrition Protocol 2026.docx
 # ---------------------------------------------------------------------------
@@ -1055,6 +1084,45 @@ TEST_CATALOG: dict[str, LabTest] = {
         calculate=_calc_turbidity,
         categories=[CATEGORY_WATER],
     ),
+    # --- Water micro (last Observation Table page on water protocol) ---
+    "water_total_coliform": LabTest(
+        key="water_total_coliform",
+        name="Total Coliform",
+        method="",
+        unit="",
+        formula_display="Enter observed result (e.g. present, absent).",
+        inputs=[
+            InputField(
+                "procedure",
+                "Procedure",
+                "",
+                True,
+                "text",
+            ),
+            InputField("result_obs", "Result", "", True, "text"),
+        ],
+        calculate=_calc_micro_result,
+        categories=[CATEGORY_WATER],
+    ),
+    "water_e_coli": LabTest(
+        key="water_e_coli",
+        name="E. coli",
+        method="",
+        unit="",
+        formula_display="Enter observed result (e.g. present, absent).",
+        inputs=[
+            InputField(
+                "procedure",
+                "Procedure",
+                "",
+                True,
+                "text",
+            ),
+            InputField("result_obs", "Result", "", True, "text"),
+        ],
+        calculate=_calc_micro_result,
+        categories=[CATEGORY_WATER],
+    ),
     # --- Micro (reference/Micro Test Report.htm) ---
     "total_plate_count": LabTest(
         key="total_plate_count",
@@ -1176,6 +1244,11 @@ WATER_TEST_KEYS: list[str] = [
     "turbidity",
 ]
 
+WATER_MICRO_TEST_KEYS: list[str] = [
+    "water_total_coliform",
+    "water_e_coli",
+]
+
 MICRO_TEST_KEYS: list[str] = [
     "total_plate_count",
     "t_coliform",
@@ -1210,6 +1283,7 @@ def all_test_keys() -> list[str]:
     return (
         list(FOOD_TEST_KEYS)
         + list(WATER_TEST_KEYS)
+        + list(WATER_MICRO_TEST_KEYS)
         + list(MICRO_TEST_KEYS)
         + custom_keys
     )
@@ -1219,7 +1293,7 @@ def catalog_keys_for_category(category: Optional[str]) -> list[str]:
     """Stable display order for a sample category's catalog tests."""
     cat = normalize_category(category)
     if cat == CATEGORY_WATER:
-        base = list(WATER_TEST_KEYS)
+        base = list(WATER_TEST_KEYS) + list(WATER_MICRO_TEST_KEYS)
     elif cat == CATEGORY_FOOD:
         base = list(FOOD_TEST_KEYS)
     elif cat == CATEGORY_MICRO:
@@ -1235,10 +1309,10 @@ def catalog_keys_for_category(category: Optional[str]) -> list[str]:
 
 
 def default_test_keys_for_category(category: Optional[str]) -> list[str]:
-    """Tests auto-assigned at Reception (water = 11, micro = 6)."""
+    """Tests auto-assigned at Reception (water = 13, micro = 6)."""
     cat = normalize_category(category)
     if cat == CATEGORY_WATER:
-        return list(WATER_TEST_KEYS)
+        return list(WATER_TEST_KEYS) + list(WATER_MICRO_TEST_KEYS)
     if cat == CATEGORY_MICRO:
         return list(MICRO_TEST_KEYS)
     return []
