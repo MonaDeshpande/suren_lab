@@ -20,6 +20,8 @@ import pytest
 
 from services.test_packages import (
 
+    PACKAGE_TYPE_BASIC_NUTRITION,
+
     PACKAGE_TYPE_FSSAI,
 
     PACKAGE_TYPE_NUTRITION_ONLY,
@@ -32,11 +34,15 @@ from services.test_packages import (
 
     describe_sample_package,
 
+    describe_sample_package_for_product,
+
     get_package,
 
     list_package_versions,
 
     package_status_label,
+
+    resolve_package_for_product,
 
     resolve_package_tests,
 
@@ -144,17 +150,22 @@ def test_package_crud_and_versioning(require_db, clean_packages):
 
         ["moisture"],
 
-        ["bn_protein", "bn_fat"],
+        ["bn_protein", "bn_total_fat"],
 
         "Removed ash per SOP update for QA",
 
     )
 
+    assert updated.id != pkg.id
+    assert updated.is_active is True
+    assert get_package(pkg.id).is_active is False
+    clean_packages.append(updated.id)
+
     assert updated.current_version_no == 2
 
     assert updated.test_keys_with_logo == ["moisture"]
 
-    assert updated.test_keys_without_logo == ["bn_protein", "bn_fat"]
+    assert updated.test_keys_without_logo == ["bn_protein", "bn_total_fat"]
 
 
 
@@ -170,15 +181,17 @@ def test_package_crud_and_versioning(require_db, clean_packages):
 
     assert resolved2 is not None
 
+    assert resolved2.package_id == updated.id
+
     assert resolved2.package_version_no == 2
 
     assert resolved2.test_keys_with_logo == ["moisture"]
 
 
 
-    delete_package(pkg.id, "QA cleanup deactivate package")
+    delete_package(updated.id, "QA cleanup deactivate package")
 
-    assert get_package(pkg.id).is_active is False
+    assert get_package(updated.id).is_active is False
 
     assert resolve_package_tests(name, PACKAGE_TYPE_FSSAI) is None
 
@@ -244,4 +257,33 @@ def test_describe_sample_package_not_defined(require_db):
     desc = describe_sample_package("NoSuchProduct", PACKAGE_TYPE_FSSAI)
     assert desc["status"] == "not_defined"
     assert package_status_label(desc) == "Not defined"
+
+
+def test_resolve_package_for_product_single_active(require_db, clean_packages):
+    suffix = uuid.uuid4().hex[:8]
+    name = f"QA ProductOnly {suffix}"
+    pkg = create_package(name, PACKAGE_TYPE_FSSAI, ["moisture"], ["total_ash"])
+    clean_packages.append(pkg.id)
+
+    resolved = resolve_package_for_product(name)
+    assert resolved is not None
+    assert resolved.package_id == pkg.id
+    assert set(resolved.test_keys) == {"moisture", "total_ash"}
+
+    desc = describe_sample_package_for_product(name)
+    assert desc["status"] == "defined"
+    assert len(desc["test_keys"]) == 2
+
+
+def test_resolve_package_for_product_ambiguous(require_db, clean_packages):
+    suffix = uuid.uuid4().hex[:8]
+    name = f"QA Ambiguous {suffix}"
+    pkg1 = create_package(name, PACKAGE_TYPE_FSSAI, ["moisture"], [])
+    pkg2 = create_package(name, PACKAGE_TYPE_BASIC_NUTRITION, ["bn_protein"], [])
+    clean_packages.extend([pkg1.id, pkg2.id])
+
+    assert resolve_package_for_product(name) is None
+    desc = describe_sample_package_for_product(name)
+    assert desc["status"] == "ambiguous"
+    assert desc["active_count"] == 2
 

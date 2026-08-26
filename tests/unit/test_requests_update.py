@@ -39,6 +39,7 @@ class TestCtrParametersDisplay:
             sample_name="Jaggery",
             category="food",
             parameters="Jaggery — FSSAI — tests to be conducted (Moisture)",
+            test_keys=["moisture"],
             package_type="fssai",
         )
         assert ctr_parameters_display(row) == "FSSAI"

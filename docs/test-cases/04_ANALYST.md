@@ -8,16 +8,16 @@
 
 ## Analyst protocol flow (validated)
 
-Reception assigns tests → Analyst finds sample → saves header → performs each assigned test (worksheet inputs → **Calculate & save** → auto-calculated result) → reviews page-1 summary → generates protocol PDF/DOCX from reference template → **prints and signs offline** (pen on blank signature blocks).
+Reception assigns tests → Analyst finds sample → saves header → reviews **Tests to conduct** checklist → performs each assigned test (worksheet inputs → **Calculate & save** → auto-calculated result) → reviews page-1 summary → generates protocol PDF/DOCX from reference template → **prints and signs offline** (pen on blank signature blocks).
 
 | Sample type | Reception test assignment | Protocol template |
 |-------------|---------------------------|-------------------|
 | **Water** | All 11 water tests auto-included | `reference/Water protocol 2025.docx` |
-| **Micro** | All 6 micro tests auto-included | No analyst protocol DOCX — Reviewer generates Micro Test Report |
+| **Micro** | All 6 micro tests auto-included | `reference/Micro Protocol.docx` (analyst worksheet); Reviewer generates final Micro Test Report |
 | **Food (Basic Nutrition)** | Multiselect `bn_*` tests at Reception | `reference/Basic Nutrition Protocol 2026.docx` when any `bn_*` key selected |
 | **Food (Jaggery)** | Multiselect Jaggery tests at Reception | `reference/Jaggery Protocol LLP.docx` |
 
-**Page-1 Method column:** Fixed per test in the Word template (e.g. `IS 3025 : Part 11`). Generation fills **Result** only, not Method. Same method strings appear in the Analyst UI from `test_catalog.py`.
+**Page-1 Method column:** Fixed per test in the Word template (e.g. `IS 3025 : Part 11`). Generation fills **Result** only, not Method. Method and limits for built-in tests are stored in `catalog_test_specs` (Admin-editable) and shown in the Analyst UI.
 
 **Signing:** App downloads PDF/DOCX only. Checked By / Dated blocks stay blank for manual pen sign-off after printing. Customer-facing **Test Report** is generated separately by Reviewer.
 
@@ -159,6 +159,18 @@ Reception assigns tests → Analyst finds sample → saves header → performs e
 | **Preconditions** | Sample has `tests_json` with subset of keys |
 | **Steps** | Open worksheet test selector. |
 | **Expected** | Only assigned keys available. |
+
+---
+
+## TC-ANL-011b — Tests-to-conduct checklist visible at a glance
+
+| Field | Value |
+|-------|-------|
+| **Priority** | P1 |
+| **Type** | Positive |
+| **Preconditions** | Sample with multiple assigned tests; some results saved |
+| **Steps** | Open sample on Analyst page. |
+| **Expected** | Section **4. Tests to conduct** lists every assigned test in a table (Sr, Test, Method, Status, Result) without expanding a dropdown. Progress shows `N of M tests saved`. Pending tests trigger a warning listing names. |
 
 ---
 
@@ -327,13 +339,26 @@ Reception assigns tests → Analyst finds sample → saves header → performs e
 
 ---
 
-## TC-ANL-026 — Micro sample: result-only entry for fixed 6-test panel
+## TC-ANL-026 — Micro sample: value + unit entry and protocol document
 
 | Field | Value |
 |-------|-------|
 | **Priority** | P0 |
 | **Type** | Positive |
 | **Preconditions** | CTR saved with category Micro (6 tests auto-assigned) |
-| **Steps** | Open sample; for each test enter Result (e.g. Absent); Calculate & save; set status completed. |
-| **Expected** | All 6 tests available. Limits and Method shown as fixed captions (not editable). No protocol DOCX generate section — caption directs to Reviewer final report. |
-| **Automated** | `test_micro_report.py` |
+| **Steps** | Open sample; for Total Plate Count and T.coliform enter Result with fixed unit `cfu/gm`; for other tests enter Result + editable Unit; Calculate & save each; generate protocol DOCX/PDF. |
+| **Expected** | All 6 tests available. Limits and Method shown as fixed captions from DB catalog. Unit disabled (`cfu/gm`) for tests 1–2; editable for tests 3–6. Section 7 generates Micro protocol from `reference/Micro Protocol.docx` with 6 result rows. |
+| **Automated** | `test_micro_analyst_entry.py`, `test_micro_protocol_docx.py`, `test_micro_report.py` |
+
+---
+
+## TC-ANL-027 — Input precision, recalc readings, Issued to full name
+
+| Field | Value |
+|-------|-------|
+| **Priority** | P0 |
+| **Type** | Positive |
+| **Preconditions** | Food sample assigned to analyst with full name in user profile |
+| **Steps** | Enter worksheet readings with up to 4 decimal places; **Calculate & save**. Change readings; **Calculate & save** again. Generate protocol. |
+| **Expected** | Inputs accept up to 4 dp; saved final result shows 2 dp (e.g. `6.00`). Protocol **Sample Issued to** shows analyst full name only (no username in parentheses). First save fills Readings column 1; second save keeps column 1 and fills column 2 with recalculated readings. Values with >4 dp are rejected. |
+| **Automated** | `test_number_format.py`, `test_input_store.py`, `test_protocol_precision.py` |

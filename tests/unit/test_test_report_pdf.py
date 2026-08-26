@@ -14,6 +14,7 @@ from services.test_report_pdf import (
     REMARK_TEXT,
     SPECS_HEADER,
     build_test_report_data,
+    generate_test_report_pdf_bytes,
 )
 
 
@@ -77,6 +78,7 @@ def test_build_test_report_data_defaults():
         [_moisture_result()],
     )
     assert data.lab_code == "GLG/26/306/01"
+    assert data.report_no == "GLG/26/306/01"
     assert data.tests_processed == DEFAULT_TESTS_PROCESSED
     assert data.condition_of_sample == ""
     assert data.rows[0].specification == "Not more than 7 %"
@@ -135,3 +137,57 @@ def test_legacy_bn_keys_without_package_type_use_nutrition_remark():
     )
     assert data.remark_text == NUTRITION_REMARK_TEXT
     assert data.is_nutrition is True
+
+
+def test_build_test_report_data_pads_results_under_ten():
+    low = TestResultRow(
+        test_key="moisture",
+        test_name="Moisture",
+        method="IS 15279:2003",
+        unit="%",
+        inputs={},
+        result_value="1.19",
+        result_numeric=1.19,
+    )
+    high = TestResultRow(
+        test_key="moisture",
+        test_name="Moisture",
+        method="IS 15279:2003",
+        unit="%",
+        inputs={},
+        result_value="12.34",
+        result_numeric=12.34,
+    )
+    data = build_test_report_data(
+        _sample(tests_json=json.dumps(["moisture"])),
+        _header(),
+        [low],
+    )
+    assert data.rows[0].result == "01.19 %"
+
+    data_high = build_test_report_data(
+        _sample(tests_json=json.dumps(["moisture"])),
+        _header(),
+        [high],
+    )
+    assert data_high.rows[0].result == "12.34 %"
+
+
+def test_both_format_report_numbers_and_footers():
+    sample = _sample(
+        report_format="both",
+        tests_json=json.dumps(["moisture", "total_ash"]),
+        tests_with_logo_json=json.dumps(["moisture"]),
+        tests_without_logo_json=json.dumps(["total_ash"]),
+    )
+    logo_data = build_test_report_data(
+        sample, _header(), [_moisture_result()], with_logo=True, row_filter={"moisture"}
+    )
+    nologo_data = build_test_report_data(
+        sample, _header(), [_moisture_result()], with_logo=False, row_filter={"total_ash"}
+    )
+    assert logo_data.report_no == "GLG/26/306/01/01"
+    assert nologo_data.report_no == "GLG/26/306/01/02"
+
+    pdf = generate_test_report_pdf_bytes(sample, _header(), [_moisture_result()])
+    assert pdf.startswith(b"%PDF")

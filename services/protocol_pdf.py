@@ -8,6 +8,8 @@ from __future__ import annotations
 
 from services.docx_to_pdf import convert_docx_bytes_to_pdf
 from services.protocol_docx import fill_protocol_docx_bytes, suggest_protocol_filename
+from services.protocols.test_catalog import CATEGORY_MICRO, normalize_category
+from services.micro_protocol_docx import fill_micro_protocol_docx_bytes
 from services.protocol_store import ProtocolHeader, TestResultRow
 from services.samples import SampleRecord
 
@@ -20,6 +22,14 @@ def generate_protocol_docx_bytes(
     generated_at: str = "",
 ) -> bytes:
     """Filled protocol Word document."""
+    if normalize_category(sample.category) == CATEGORY_MICRO:
+        return fill_micro_protocol_docx_bytes(
+            sample,
+            header,
+            results,
+            generated_by=generated_by,
+            generated_at=generated_at,
+        )
     return fill_protocol_docx_bytes(
         sample,
         header,
@@ -48,6 +58,10 @@ def generate_protocol_documents(
         generated_at=generated_at,
     )
     docx_name = suggest_protocol_filename(sample)
+    if normalize_category(sample.category) == CATEGORY_MICRO:
+        from services.micro_protocol_docx import suggest_micro_protocol_filename
+
+        docx_name = suggest_micro_protocol_filename(sample)
     pdf_name = docx_name.replace(".docx", ".pdf")
     pdf_bytes, pdf_error = convert_docx_bytes_to_pdf(docx_bytes)
     return docx_bytes, pdf_bytes, docx_name, pdf_name, pdf_error

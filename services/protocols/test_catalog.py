@@ -18,7 +18,7 @@ Source of names/methods/worksheet fields:
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Callable, Optional
 
 # Stable category keys stored on request_samples.category
@@ -452,10 +452,12 @@ def _calc_turbidity(inputs: dict, _ctx: dict) -> tuple[str, Optional[float]]:
 
 
 def _calc_micro_result(inputs: dict, _ctx: dict) -> tuple[str, Optional[float]]:
-    """Micro tests: analyst enters observed result text only (no formula)."""
-    text = str(inputs.get("result_obs") or "").strip()
+    """Micro tests: analyst enters result value (unit stored separately)."""
+    text = str(
+        inputs.get("result_value") or inputs.get("result_obs") or ""
+    ).strip()
     if not text:
-        raise ValueError("Missing value: result_obs")
+        raise ValueError("Missing value: result_value")
     return text, None
 
 
@@ -1129,8 +1131,11 @@ TEST_CATALOG: dict[str, LabTest] = {
         name="Total Plate Count",
         method="IS:5402:2018",
         unit="",
-        formula_display="Enter observed result (e.g. 3.0 x 10³ cfu/gm).",
-        inputs=[InputField("result_obs", "Result", "", True, "text")],
+        formula_display="Enter observed result (e.g. 3.0 x 10³).",
+        inputs=[
+            InputField("result_value", "Result", "", True, "text"),
+            InputField("result_unit", "Unit", "", False, "text"),
+        ],
         calculate=_calc_micro_result,
         categories=[CATEGORY_MICRO],
     ),
@@ -1139,8 +1144,11 @@ TEST_CATALOG: dict[str, LabTest] = {
         name="T.coliform",
         method="IS 5401(Part-2):2018",
         unit="",
-        formula_display="Enter observed result (e.g. Absent, <1.0 x10¹ cfu/gm).",
-        inputs=[InputField("result_obs", "Result", "", True, "text")],
+        formula_display="Enter observed result (e.g. Absent, <1.0 x10¹).",
+        inputs=[
+            InputField("result_value", "Result", "", True, "text"),
+            InputField("result_unit", "Unit", "", False, "text"),
+        ],
         calculate=_calc_micro_result,
         categories=[CATEGORY_MICRO],
     ),
@@ -1150,7 +1158,10 @@ TEST_CATALOG: dict[str, LabTest] = {
         method="IS 5887 (Part - 1 ) : 1976 RA 2018",
         unit="",
         formula_display="Enter observed result (e.g. Absent).",
-        inputs=[InputField("result_obs", "Result", "", True, "text")],
+        inputs=[
+            InputField("result_value", "Result", "", True, "text"),
+            InputField("result_unit", "Unit", "", False, "text"),
+        ],
         calculate=_calc_micro_result,
         categories=[CATEGORY_MICRO],
     ),
@@ -1160,7 +1171,10 @@ TEST_CATALOG: dict[str, LabTest] = {
         method="IS 5887 (Part - 3) : 1999 : RA 2018",
         unit="",
         formula_display="Enter observed result (e.g. Absent).",
-        inputs=[InputField("result_obs", "Result", "", True, "text")],
+        inputs=[
+            InputField("result_value", "Result", "", True, "text"),
+            InputField("result_unit", "Unit", "", False, "text"),
+        ],
         calculate=_calc_micro_result,
         categories=[CATEGORY_MICRO],
     ),
@@ -1170,7 +1184,10 @@ TEST_CATALOG: dict[str, LabTest] = {
         method="IS 5887 ( Part - 8/Sec-1) :RA 2018",
         unit="",
         formula_display="Enter observed result (e.g. Absent).",
-        inputs=[InputField("result_obs", "Result", "", True, "text")],
+        inputs=[
+            InputField("result_value", "Result", "", True, "text"),
+            InputField("result_unit", "Unit", "", False, "text"),
+        ],
         calculate=_calc_micro_result,
         categories=[CATEGORY_MICRO],
     ),
@@ -1180,7 +1197,10 @@ TEST_CATALOG: dict[str, LabTest] = {
         method="IS 5403:1999 RA 2018",
         unit="",
         formula_display="Enter observed result (e.g. Absent).",
-        inputs=[InputField("result_obs", "Result", "", True, "text")],
+        inputs=[
+            InputField("result_value", "Result", "", True, "text"),
+            InputField("result_unit", "Unit", "", False, "text"),
+        ],
         calculate=_calc_micro_result,
         categories=[CATEGORY_MICRO],
     ),
@@ -1262,7 +1282,21 @@ MICRO_TEST_KEYS: list[str] = [
 def get_test(key: str) -> LabTest:
     """Return a catalog test by key; built-in first, then active custom formulas."""
     if key in TEST_CATALOG:
-        return TEST_CATALOG[key]
+        base = TEST_CATALOG[key]
+        try:
+            from services.catalog_specs import get_spec
+
+            spec = get_spec(key)
+        except Exception:  # noqa: BLE001
+            spec = None
+        if spec is not None:
+            return replace(
+                base,
+                name=spec.test_name or base.name,
+                method=spec.method_of_analysis or base.method,
+                unit=spec.default_unit if spec.default_unit is not None else base.unit,
+            )
+        return base
     from services.custom_formulas import load_custom_lab_tests
 
     custom = load_custom_lab_tests()
@@ -1449,3 +1483,21 @@ def missing_required_inputs(test: LabTest, inputs: dict[str, Any]) -> list[str]:
         if val is None or str(val).strip() == "":
             missing.append(f.label)
     return missing
+
+
+def excess_decimal_inputs(test: LabTest, inputs: dict[str, Any]) -> list[str]:
+    """Return labels of number fields with more than 4 decimal places."""
+    from services.number_format import validate_max_decimals
+
+    labels: list[str] = []
+    for f in test.inputs:
+        if f.field_type != "number":
+            continue
+        val = inputs.get(f.key)
+        if val is None or str(val).strip() == "":
+            continue
+        try:
+            validate_max_decimals(str(val), 4)
+        except ValueError:
+            labels.append(f.label)
+    return labels

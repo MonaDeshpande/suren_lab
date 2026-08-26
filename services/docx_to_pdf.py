@@ -16,6 +16,8 @@ import tempfile
 import time
 from pathlib import Path
 
+from services.docx_layout import rewrite_unicode_scripts_in_docx_bytes
+
 logger = logging.getLogger(__name__)
 
 # RPC_E_CALL_REJECTED — Word busy / dialog open / reused instance not responding.
@@ -223,6 +225,7 @@ def convert_docx_bytes_to_pdf(docx_bytes: bytes) -> tuple[bytes | None, str | No
     errors: list[str] = []
 
     try:
+        docx_bytes = rewrite_unicode_scripts_in_docx_bytes(docx_bytes)
         docx_path.write_bytes(docx_bytes)
 
         if sys.platform == "win32":

@@ -10,9 +10,10 @@ from pypdf import PdfReader
 from services.customers import Customer
 from services.pdf_generator import FOOTER_TEXT, _generate_ctr_pdf, generate_pdf_bytes
 from services.requests import SampleRow, TestRequestData
+from tests.conftest import sample_verification_kwargs
 
 
-def _ctr_request() -> TestRequestData:
+def _ctr_request(*, samples: list[SampleRow] | None = None) -> TestRequestData:
     return TestRequestData(
         customer=Customer(
             customer_name="ABC Foods",
@@ -29,7 +30,8 @@ def _ctr_request() -> TestRequestData:
         decision_rule=True,
         service_type="regular",
         delivery_mode="collect",
-        samples=[
+        samples=samples
+        or [
             SampleRow(
                 sr_no=1,
                 sample_name="sauce",
@@ -37,6 +39,8 @@ def _ctr_request() -> TestRequestData:
                 quantity="100gm",
                 parameters="FSSAI",
                 package_type="fssai",
+                test_keys=["moisture"],
+                **sample_verification_kwargs(verify_lab_code="LAB/CTR/26/001"),
             ),
         ],
     )
@@ -64,23 +68,65 @@ class TestCtrPdfGenerator:
         assert "Receiver's Sign & date" in text
         assert "Sample Description & tests to be performed:" in text
         assert "sauce" in text
-        assert "FSSAI" in text
+        assert "Sample Verification Checklist" in text
+        assert "Checked for Sample Quantity" in text
 
-    def test_ctr_pdf_is_two_pages(self):
+    def test_delivery_mode_supports_multiple_selections(self):
+        data = _ctr_request()
+        data.delivery_mode = "Collect, Courier"
+        text = _pdf_text(_generate_ctr_pdf(data))
+        assert "Collect [X]" in text
+        assert "Courier [X]" in text
+        assert "Email/Whatsapp [ ]" in text
+
+    def test_ctr_pdf_one_sample_has_three_pages(self):
         pdf = _generate_ctr_pdf(_ctr_request())
         reader = PdfReader(BytesIO(pdf))
-        assert len(reader.pages) == 2
+        assert len(reader.pages) == 3
 
-    def test_sample_table_on_page_two(self):
+    def test_sample_table_on_page_two_only(self):
         pdf = _generate_ctr_pdf(_ctr_request())
         reader = PdfReader(BytesIO(pdf))
         page1 = reader.pages[0].extract_text() or ""
         page2 = reader.pages[1].extract_text() or ""
+        page3 = reader.pages[2].extract_text() or ""
         assert "Sample Description" not in page1
         assert "Sample Description & tests to be performed:" in page2
         assert "sauce" in page2
-        assert "FSSAI" in page2
+        assert "Tests to be performed:" in page2
+        assert "Moisture" in page2
+        assert "Sample Verification Checklist" in page3
         assert FOOTER_TEXT in page1 or "[Control copy]" in page1
+
+    def test_two_samples_get_separate_pages_and_checklists(self):
+        req = _ctr_request(
+            samples=[
+                SampleRow(
+                    sr_no=1,
+                    sample_name="sauce",
+                    batch_code="01",
+                    quantity="100gm",
+                    test_keys=["moisture"],
+                    **sample_verification_kwargs(verify_lab_code="LAB/CTR/26/001"),
+                ),
+                SampleRow(
+                    sr_no=2,
+                    sample_name="honey",
+                    batch_code="02",
+                    quantity="200gm",
+                    test_keys=["bn_protein"],
+                    **sample_verification_kwargs(verify_lab_code="LAB/CTR/26/001"),
+                ),
+            ]
+        )
+        reader = PdfReader(BytesIO(_generate_ctr_pdf(req)))
+        assert len(reader.pages) == 5
+        page2 = reader.pages[1].extract_text() or ""
+        page3 = reader.pages[2].extract_text() or ""
+        assert "sauce" in page2
+        assert "honey" not in page2
+        assert "honey" in page3
+        assert "sauce" not in page3
 
     def test_generate_pdf_bytes_returns_valid_pdf_header(self):
         pdf = generate_pdf_bytes(_ctr_request())

@@ -16,7 +16,14 @@ from typing import Any, Optional
 
 from db.connection import get_db
 from services.audit import log_from_user
-from services.protocols.test_catalog import TEST_CATALOG, get_test, missing_required_inputs
+from services.input_store import inputs_for_calculation, merge_saved_inputs
+from services.number_format import format_final_number
+from services.protocols.test_catalog import (
+    TEST_CATALOG,
+    excess_decimal_inputs,
+    get_test,
+    missing_required_inputs,
+)
 
 
 @dataclass
@@ -119,7 +126,7 @@ def get_protocol_header(sample_id: int) -> Optional[ProtocolHeader]:
                COALESCE(issued_by,''), sample_received_on, date_of_analysis,
                COALESCE(appearance_text,'')
           FROM sample_protocols
-         WHERE sample_id = %s
+         WHERE sample_id = %s AND is_active = TRUE
     """
     with get_db() as conn:
         with conn.cursor() as cur:
@@ -143,7 +150,7 @@ def get_result_context(sample_id: int) -> dict[str, float]:
     sql = """
         SELECT test_key, result_numeric
           FROM sample_test_results
-         WHERE sample_id = %s AND result_numeric IS NOT NULL
+         WHERE sample_id = %s AND is_active = TRUE AND result_numeric IS NOT NULL
     """
     with get_db() as conn:
         with conn.cursor() as cur:
@@ -158,7 +165,7 @@ def list_results(sample_id: int) -> list[TestResultRow]:
                COALESCE(inputs_json,'{}'), COALESCE(result_value,''),
                result_numeric, calculated_at
           FROM sample_test_results
-         WHERE sample_id = %s
+         WHERE sample_id = %s AND is_active = TRUE
          ORDER BY id
     """
     with get_db() as conn:
@@ -204,13 +211,69 @@ def save_test_result(
         raise ValueError(f"Unknown test_key: {test_key}")
 
     test = get_test(test_key)
-    missing = missing_required_inputs(test, inputs)
+    form_inputs = {k: v for k, v in inputs.items() if k != "recalc"}
+    missing = missing_required_inputs(test, form_inputs)
     if missing:
         # Caller shows popup; we still raise with a clear marker
         raise ValueError("MISSING:" + "|".join(missing))
 
+    excess = excess_decimal_inputs(test, form_inputs)
+    if excess:
+        raise ValueError("DECIMALS:" + "|".join(excess))
+
+    existing_inputs: dict[str, Any] = {}
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT inputs_json
+                  FROM sample_test_results
+                 WHERE sample_id = %s AND test_key = %s
+                """,
+                (sample_id, test_key),
+            )
+            row = cur.fetchone()
+            if row and row[0]:
+                try:
+                    existing_inputs = json.loads(row[0])
+                except json.JSONDecodeError:
+                    existing_inputs = {}
+
+    stored_inputs = merge_saved_inputs(existing_inputs, form_inputs)
+    calc_inputs = inputs_for_calculation(stored_inputs)
+
     ctx = get_result_context(sample_id)
-    display, numeric = test.calculate(inputs, ctx)
+    display, numeric = test.calculate(calc_inputs, ctx)
+    if numeric is not None:
+        display = format_final_number(numeric)
+
+    unit = test.unit or ""
+    from services.protocols.test_catalog import MICRO_TEST_KEYS
+
+    if test_key in MICRO_TEST_KEYS:
+        spec = None
+        try:
+            from services.catalog_specs import get_spec
+
+            spec = get_spec(test_key)
+        except Exception:  # noqa: BLE001
+            spec = None
+        entered_unit = str(form_inputs.get("result_unit") or "").strip()
+        if entered_unit:
+            unit = entered_unit
+        elif spec is not None and spec.default_unit:
+            unit = spec.default_unit
+        method_override = spec.method_of_analysis if spec else test.method
+    else:
+        method_override = test.method
+        try:
+            from services.catalog_specs import get_spec
+
+            spec = get_spec(test_key)
+            if spec is not None and spec.method_of_analysis:
+                method_override = spec.method_of_analysis
+        except Exception:  # noqa: BLE001
+            pass
 
     sql = """
         INSERT INTO sample_test_results (
@@ -235,9 +298,9 @@ def save_test_result(
                     sample_id,
                     test.key,
                     test.name,
-                    test.method,
-                    test.unit,
-                    json.dumps(inputs),
+                    method_override,
+                    unit,
+                    json.dumps(stored_inputs),
                     display,
                     numeric,
                 ),
@@ -253,9 +316,9 @@ def save_test_result(
     return TestResultRow(
         test_key=test.key,
         test_name=test.name,
-        method=test.method,
-        unit=test.unit,
-        inputs=inputs,
+        method=method_override,
+        unit=unit,
+        inputs=stored_inputs,
         result_value=display,
         result_numeric=numeric,
     )

@@ -15,6 +15,7 @@ import json
 
 
 from services.requests import SampleRow, TestRequestData, validate_request
+from tests.conftest import sample_verification_kwargs
 
 from services.samples import (
 
@@ -136,7 +137,13 @@ def _valid_request(**overrides) -> TestRequestData:
 
                 sample_name="Jaggery",
 
-                test_keys=["moisture", "total_ash"],
+                parameters="FSSAI",
+
+                test_keys=["moisture"],
+
+                tests_with_logo=["moisture"],
+
+                tests_without_logo=["moisture"],
 
                 sample_code="SLS-260730-0001",
 
@@ -146,6 +153,8 @@ def _valid_request(**overrides) -> TestRequestData:
                 report_format=REPORT_FORMAT_WITH_LOGO,
 
                 package_type="fssai",
+
+                **sample_verification_kwargs(verify_lab_code="LAB/CTR/26/001"),
 
             )
 
@@ -231,53 +240,7 @@ class TestValidateReportFormat:
 
 
 
-        def _fake_resolve(*_args, **_kwargs):
-
-            return ResolvedPackage(
-
-                package_id=1,
-
-                package_version_no=1,
-
-                package_type="fssai",
-
-                sample_product_name="Jaggery",
-
-                test_keys=["moisture", "total_ash"],
-
-                test_keys_with_logo=["moisture"],
-
-                test_keys_without_logo=[],
-
-                display_label="Jaggery — FSSAI — tests to be conducted",
-
-            )
-
-
-
-        monkeypatch.setattr(
-
-            "services.requests.resolve_package_tests", _fake_resolve
-
-        )
-
-        data = _valid_request()
-
-        data.samples[0].report_format = REPORT_FORMAT_BOTH
-
-        errors = validate_request(data)
-
-        assert any("without-logo tests" in e for e in errors)
-
-
-
-    def test_both_valid_when_package_has_both_sets(self, monkeypatch):
-
-        from services.test_packages import ResolvedPackage
-
-
-
-        def _fake_resolve(*_args, **_kwargs):
+        def _fake_resolve_product(*_args, **_kwargs):
 
             return ResolvedPackage(
 
@@ -302,14 +265,64 @@ class TestValidateReportFormat:
 
 
         monkeypatch.setattr(
-
-            "services.requests.resolve_package_tests", _fake_resolve
-
+            "services.requests.resolve_package_tests", _fake_resolve_product
         )
 
         data = _valid_request()
 
         data.samples[0].report_format = REPORT_FORMAT_BOTH
+
+        data.samples[0].tests_with_logo = ["moisture"]
+
+        data.samples[0].tests_without_logo = []
+
+        errors = validate_request(data)
+
+        assert any("without-logo test" in e for e in errors)
+
+
+
+    def test_both_valid_when_package_has_both_sets(self, monkeypatch):
+
+        from services.test_packages import ResolvedPackage
+
+
+
+        def _fake_resolve_product(*_args, **_kwargs):
+
+            return ResolvedPackage(
+
+                package_id=1,
+
+                package_version_no=1,
+
+                package_type="fssai",
+
+                sample_product_name="Jaggery",
+
+                test_keys=["moisture", "total_ash"],
+
+                test_keys_with_logo=["moisture"],
+
+                test_keys_without_logo=["total_ash"],
+
+                display_label="Jaggery — FSSAI — tests to be conducted",
+
+            )
+
+
+
+        monkeypatch.setattr(
+            "services.requests.resolve_package_tests", _fake_resolve_product
+        )
+
+        data = _valid_request()
+
+        data.samples[0].report_format = REPORT_FORMAT_BOTH
+
+        data.samples[0].tests_with_logo = ["moisture"]
+
+        data.samples[0].tests_without_logo = ["total_ash"]
 
         assert validate_request(data) == []
 

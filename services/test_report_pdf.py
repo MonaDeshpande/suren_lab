@@ -63,12 +63,16 @@ from services.samples import (
     REPORT_FORMAT_BOTH,
     REPORT_FORMAT_WITH_LOGO,
     SampleRecord,
+    default_report_with_logo,
+    default_test_report_no,
     logo_test_keys,
     no_logo_test_keys,
     normalize_report_format,
     report_keys_for_sample,
+    report_page_label,
 )
-from services.audit import format_stamp_datetime, generator_stamp_lines
+from services.audit import format_stamp_datetime
+from services.ulr import generate_ulr_no, lab_code_for_ulr
 
 BORDER = colors.black
 FONT = "Helvetica"
@@ -157,8 +161,8 @@ DISCLAIMER_BULLETS = [
     "e.g. Use of whitener or eraser.",
     "Above test report cannot be produced as legal evidence without our prior "
     "written permission.",
-    "Sample stored for one week and test Report for one year from the date "
-    "received. Duplicate copies of Report or Invoice will be charged extra.",
+    "Sample stored for one week and test Report for one year from the date received.",
+    "Duplicate copies of Report or Invoice will be charged extra.",
 ]
 
 
@@ -203,6 +207,9 @@ class TestReportData:
     specs_header: str = SPECS_HEADER
     is_water: bool = False
     is_nutrition: bool = False
+    authorized_signatory: str = ""
+    checked_by: str = ""
+    disclaimer_bullets: list[str] = field(default_factory=list)
 
 
 def _fmt_date(d: Optional[date]) -> str:
@@ -282,6 +289,14 @@ def build_test_report_data(
     condition_of_sample: str | None = None,
     tests_processed: str | None = None,
     specification_by_test_name: dict[str, str] | None = None,
+    with_logo: bool | None = None,
+    ulr_no: str | None = None,
+    location_of_sampling: str | None = None,
+    sampling_method: str | None = None,
+    authorized_signatory: str | None = None,
+    checked_by: str | None = None,
+    remark_text: str | None = None,
+    disclaimer_bullets: list[str] | None = None,
 ) -> TestReportData:
     """Collate client + protocol into Test Report fields."""
     results_by_key = {r.test_key: r for r in results}
@@ -301,7 +316,16 @@ def build_test_report_data(
     if sample.sampling_by_lab is True:
         sampling_done = "Laboratory"
     else:
-        sampling_done = ""
+        sampling_done = "Customer"
+
+    loc_sampling = (
+        location_of_sampling
+        if location_of_sampling is not None
+        else "--"
+    )
+    samp_method = sampling_method if sampling_method is not None else "--"
+    if sample.sampling_by_lab is True and samp_method == "--":
+        samp_method = "Laboratory sampling"
 
     rows: list[TestReportRow] = []
     for i, key in enumerate(chem_keys, start=1):
@@ -312,7 +336,9 @@ def build_test_report_data(
         saved = results_by_key.get(key)
         result_val = ""
         if saved and (saved.result_value or "").strip():
-            result_val = saved.result_value.strip()
+            from services.number_format import format_report_number
+
+            result_val = format_report_number(saved.result_value.strip())
             if saved.unit and saved.unit not in result_val:
                 result_val = f"{result_val} {saved.unit}".strip()
         method = (saved.method if saved and saved.method else lab_test.method) or ""
@@ -337,6 +363,8 @@ def build_test_report_data(
 
     rd = report_date or date.today()
     stamp_at = (generated_at or "").strip() or format_stamp_datetime()
+    logo_flag = default_report_with_logo(sample) if with_logo is None else with_logo
+    report_no = default_test_report_no(sample, with_logo=logo_flag)
     if is_water:
         remark = WATER_REMARK_TEXT
         specs_hdr = WATER_SPECS_HEADER
@@ -346,12 +374,41 @@ def build_test_report_data(
     else:
         remark = REMARK_TEXT
         specs_hdr = SPECS_HEADER
+    ulr = (ulr_no or "").strip()
+    if not ulr:
+        ulr = generate_ulr_no(
+            lab_code_for_ulr(sample.lab_code, sample.sample_code)
+        )
+    from services.report_settings import (
+        default_authorized_signatory,
+        default_checked_by,
+        load_report_settings,
+    )
+
+    settings = load_report_settings()
+    auth_name = (authorized_signatory or "").strip() or default_authorized_signatory(
+        settings
+    )
+    check_name = (checked_by or "").strip() or default_checked_by(settings)
+    bullets = (
+        list(disclaimer_bullets)
+        if disclaimer_bullets
+        else list(settings.disclaimer_bullets or DISCLAIMER_BULLETS)
+    )
+    if (remark_text or "").strip():
+        final_remark = remark_text.strip()
+    elif not is_water and not is_nutrition:
+        final_remark = settings.default_remark_text or remark
+    else:
+        final_remark = remark
     return TestReportData(
         customer_name_address=name_address,
+        customer_sample_id=(sample.parameters or "").strip() or (sample.sample_name or ""),
         batch_no=sample.batch_code or "",
         lab_code=sample.sample_code or sample.lab_code or "",
         date_of_sample_receipt=_fmt_date(header.sample_received_on),
         sample_name=sample.sample_name or "",
+        sample_drawn_by=sampling_done,
         test_performance_date=_fmt_date(header.date_of_analysis),
         condition_of_sample=(
             condition_of_sample if condition_of_sample is not None else ""
@@ -364,14 +421,21 @@ def build_test_report_data(
         sample_quantity=sample.quantity or "",
         appearance=(header.appearance_text or "").strip() if not is_water else "",
         sampling_done_by=sampling_done,
+        location_of_sampling=loc_sampling,
+        sampling_method=samp_method,
+        ulr_no=ulr,
         report_date=_fmt_date(rd),
+        report_no=report_no,
         generated_by=(generated_by or "").strip(),
         generated_at=stamp_at,
         rows=rows,
-        remark_text=remark,
+        remark_text=final_remark,
         specs_header=specs_hdr,
         is_water=is_water,
         is_nutrition=is_nutrition,
+        authorized_signatory=auth_name,
+        checked_by=check_name,
+        disclaimer_bullets=bullets,
     )
 
 
@@ -404,6 +468,7 @@ def generate_test_report_pdf_bytes(
     condition_of_sample: str | None = None,
     tests_processed: str | None = None,
     specification_by_test_name: dict[str, str] | None = None,
+    ulr_no: str | None = None,
 ) -> bytes:
     """Build the filled Test Report PDF bytes."""
     report_kwargs = {
@@ -413,6 +478,7 @@ def generate_test_report_pdf_bytes(
         "condition_of_sample": condition_of_sample,
         "tests_processed": tests_processed,
         "specification_by_test_name": specification_by_test_name,
+        "ulr_no": ulr_no,
     }
     fmt = normalize_report_format(sample.report_format)
     if fmt == REPORT_FORMAT_BOTH:
@@ -425,6 +491,7 @@ def generate_test_report_pdf_bytes(
                         header,
                         results,
                         row_filter=logo_test_keys(sample),
+                        with_logo=True,
                         **report_kwargs,
                     ),
                     True,
@@ -438,6 +505,7 @@ def generate_test_report_pdf_bytes(
                         header,
                         results,
                         row_filter=no_logo_test_keys(sample),
+                        with_logo=False,
                         **report_kwargs,
                     ),
                     False,
@@ -508,10 +576,12 @@ def _render_pdf_sections(sections: list[tuple[TestReportData, bool]]) -> bytes:
     def _footer(canvas, _doc):
         canvas.saveState()
         canvas.setFont(FONT, 8)
+        n = canvas.getPageNumber()
+        include_logo = sections[min(n - 1, len(sections) - 1)][1]
         canvas.drawRightString(
             page_w - right,
             8 * mm,
-            f"Page {canvas.getPageNumber()}",
+            report_page_label(with_logo=include_logo),
         )
         canvas.restoreState()
 
@@ -559,7 +629,7 @@ def _report_styles() -> dict:
             "TRSection",
             parent=styles["Normal"],
             fontName=FONT_BOLD,
-            fontSize=11,
+            fontSize=14,
             alignment=TA_CENTER,
             leading=13,
             spaceBefore=6,
@@ -723,7 +793,6 @@ def _build_report_story(
             "Batch No.",
             data.batch_no,
         ),
-        _pair("Mfg Date", data.mfg_date, "Exp Date", data.exp_date),
         _pair(
             "Lab Code",
             data.lab_code,
@@ -852,17 +921,20 @@ def _build_report_story(
     story.append(Spacer(1, 14))
 
     # ----- Signature block -----
+    auth = (data.authorized_signatory or "xxx").strip()
+    checked = (data.checked_by or "").strip()
     sign_left = (
-        "xxx<br/>"
+        f"{auth}<br/>"
         "Director<br/>"
         "Authorized signatory<br/>"
         f"For, {LAB_SHORT_NAME}"
     )
+    sign_right = f"Checked by: {checked}" if checked else "Checked by:"
     sign_tbl = Table(
         [
             [
                 Paragraph(sign_left, sign_style),
-                _p("Checked by:", sign_style),
+                Paragraph(sign_right, sign_style),
             ]
         ],
         colWidths=[usable * 0.5, usable * 0.5],
@@ -882,14 +954,11 @@ def _build_report_story(
 
     # ----- Disclaimer -----
     story.append(_p("Disclaimer", label_style))
-    for bullet in DISCLAIMER_BULLETS:
+    bullets = data.disclaimer_bullets or DISCLAIMER_BULLETS
+    for bullet in bullets:
         story.append(_p(f"• {bullet}", small))
     story.append(Spacer(1, 10))
 
-    # ----- Generator stamp (who printed this report) -----
-    for line in generator_stamp_lines(data.generated_by, data.generated_at):
-        story.append(_p(line, small))
-    story.append(Spacer(1, 6))
     story.append(Paragraph("End of Report", end_style))
     return story
 
@@ -916,7 +985,11 @@ def _render_pdf(data: TestReportData, *, include_logo: bool = True) -> bytes:
     def _footer(canvas, _doc):
         canvas.saveState()
         canvas.setFont(FONT, 8)
-        canvas.drawRightString(page_w - right, 8 * mm, "Page 1 of 1")
+        canvas.drawRightString(
+            page_w - right,
+            8 * mm,
+            report_page_label(with_logo=include_logo),
+        )
         canvas.restoreState()
 
     doc.build(story, onFirstPage=_footer, onLaterPages=_footer)
@@ -948,6 +1021,13 @@ def generate_final_report(
     *,
     water_opts: object | None = None,
     micro_opts: object | None = None,
+    ulr_no: str | None = None,
+    location_of_sampling: str | None = None,
+    sampling_method: str | None = None,
+    authorized_signatory: str | None = None,
+    checked_by: str | None = None,
+    remark_text: str | None = None,
+    disclaimer_bullets: list[str] | None = None,
 ) -> FinalReportOutput:
     """
     Route final report generation by sample category.
@@ -1017,7 +1097,13 @@ def generate_final_report(
             is_micro=True,
         )
 
-    pdf_bytes = generate_test_report_pdf_bytes(
+    # Food — Word template matching reference/Test Report Format (1).pdf
+    from services.test_report_food_docx import (
+        generate_food_test_report_pdf_bytes,
+        suggest_food_test_report_docx_filename,
+    )
+
+    docx_bytes, pdf_bytes = generate_food_test_report_pdf_bytes(
         sample,
         header,
         results,
@@ -1027,9 +1113,30 @@ def generate_final_report(
         condition_of_sample=condition_of_sample,
         tests_processed=tests_processed,
         specification_by_test_name=specification_by_test_name,
+        ulr_no=ulr_no,
+        location_of_sampling=location_of_sampling,
+        sampling_method=sampling_method,
+        authorized_signatory=authorized_signatory,
+        checked_by=checked_by,
+        remark_text=remark_text,
+        disclaimer_bullets=disclaimer_bullets,
     )
+    pdf_name = suggest_test_report_filename(sample)
     return FinalReportOutput(
-        pdf_bytes=pdf_bytes,
-        pdf_filename=suggest_test_report_filename(sample),
+        docx_bytes=docx_bytes,
+        pdf_bytes=pdf_bytes or generate_test_report_pdf_bytes(
+            sample,
+            header,
+            results,
+            report_date=report_date,
+            generated_by=generated_by,
+            generated_at=generated_at,
+            condition_of_sample=condition_of_sample,
+            tests_processed=tests_processed,
+            specification_by_test_name=specification_by_test_name,
+            ulr_no=ulr_no,
+        ),
+        docx_filename=suggest_food_test_report_docx_filename(sample),
+        pdf_filename=pdf_name,
         is_water=False,
     )

@@ -9,6 +9,7 @@ from datetime import date
 from services.customers import Customer, ContactPerson, format_contacts_for_display
 from services.protocols.test_catalog import get_test, missing_required_inputs
 from services.requests import SampleRow, TestRequestData, validate_request, validation_warnings
+from tests.conftest import sample_verification_kwargs
 
 _VALID_ANALYST_ID = 1
 _VALID_PROTOCOL_NO = "P-2026-001"
@@ -27,22 +28,29 @@ def _customer(**overrides) -> Customer:
     return Customer(**base)
 
 
+def _food_sample(**overrides) -> SampleRow:
+    base = dict(
+        sr_no=1,
+        sample_name="Jaggery",
+        parameters="FSSAI",
+        test_keys=["moisture"],
+        tests_with_logo=["moisture"],
+        assigned_analyst_id=_VALID_ANALYST_ID,
+        protocol_no="P-001",
+        report_format="with_logo",
+        package_type="fssai",
+    )
+    base.update(sample_verification_kwargs())
+    base.update(overrides)
+    return SampleRow(**base)
+
+
 def _valid_request(**overrides) -> TestRequestData:
     data = TestRequestData(
         customer=_customer(),
         request_date=date(2026, 7, 17),
         lab_code="SLS/26/306",
-        samples=[
-            SampleRow(
-                sr_no=1,
-                sample_name="Jaggery",
-                test_keys=["moisture"],
-                assigned_analyst_id=_VALID_ANALYST_ID,
-                protocol_no="P-001",
-                report_format="with_logo",
-                package_type="fssai",
-            )
-        ],
+        samples=[_food_sample()],
     )
     for key, value in overrides.items():
         setattr(data, key, value)
@@ -93,6 +101,16 @@ class TestValidateRequest:
         data = _valid_request(lab_code="")
         assert any("Lab code" in e for e in validate_request(data))
 
+    def test_missing_verification_review_date(self):
+        data = _valid_request(samples=[_food_sample(verify_review_date=None)])
+        errors = validate_request(data)
+        assert any("verification review date" in e.lower() for e in errors)
+
+    def test_missing_verification_yes_no(self):
+        data = _valid_request(samples=[_food_sample(verify_qty_checked=None)])
+        errors = validate_request(data)
+        assert any("Sample Quantity" in e for e in errors)
+
     def test_missing_analyst_assignment(self):
         data = _valid_request(
             samples=[
@@ -112,6 +130,7 @@ class TestValidateRequest:
                 SampleRow(
                     sr_no=1,
                     sample_name="Jaggery",
+                    parameters="FSSAI",
                     test_keys=["moisture"],
                     assigned_analyst_id=_VALID_ANALYST_ID,
                     package_type="fssai",
@@ -138,9 +157,12 @@ class TestValidateRequest:
                 SampleRow(
                     sr_no=1,
                     sample_name="",
+                    quantity="500 g",
                     test_keys=["moisture"],
+                    tests_with_logo=["moisture"],
                     batch_code="B1",
                     assigned_analyst_id=_VALID_ANALYST_ID,
+                    protocol_no="P-001",
                     package_type="fssai",
                 )
             ]
@@ -155,13 +177,15 @@ class TestValidateRequest:
                     sr_no=1,
                     sample_name="Jaggery",
                     test_keys=[],
+                    tests_with_logo=[],
                     parameters="",
                     assigned_analyst_id=_VALID_ANALYST_ID,
+                    protocol_no="P-001",
                 )
             ]
         )
         errors = validate_request(data)
-        assert any("parameters" in e.lower() for e in errors)
+        assert any("package type" in e.lower() for e in errors)
 
     def test_missing_package_blocks_save(self):
         data = _valid_request(
@@ -169,6 +193,7 @@ class TestValidateRequest:
                 SampleRow(
                     sr_no=1,
                     sample_name="MissingPackage",
+                    parameters="FSSAI",
                     package_type="fssai",
                     test_keys=[],
                     assigned_analyst_id=_VALID_ANALYST_ID,
@@ -196,6 +221,7 @@ class TestValidateRequest:
                     assigned_analyst_id=_VALID_ANALYST_ID,
                     assigned_micro_analyst_id=2,
                     protocol_no="P-001",
+                    **sample_verification_kwargs(),
                 )
             ]
         )
@@ -271,6 +297,7 @@ class TestValidateRequest:
                     parameters="",
                     assigned_analyst_id=_VALID_ANALYST_ID,
                     protocol_no="P-001",
+                    **sample_verification_kwargs(),
                 )
             ]
         )
@@ -282,26 +309,22 @@ class TestValidateRequest:
                 SampleRow(
                     sr_no=1,
                     sample_name="Jaggery",
+                    parameters="FSSAI",
                     test_keys=[],
-                    parameters="Moisture",
+                    tests_with_logo=[],
                     assigned_analyst_id=_VALID_ANALYST_ID,
+                    protocol_no="P-001",
+                    package_type="fssai",
                 )
             ]
         )
         errors = validate_request(data)
-        assert any("parameters" in e.lower() for e in errors)
+        assert any("with-logo test" in e.lower() for e in errors)
 
     def test_empty_trailing_row_ignored(self):
         data = _valid_request(
             samples=[
-                SampleRow(
-                    sr_no=1,
-                    sample_name="Jaggery",
-                    test_keys=["moisture"],
-                    assigned_analyst_id=_VALID_ANALYST_ID,
-                    protocol_no="P-001",
-                    package_type="fssai",
-                ),
+                _food_sample(),
                 SampleRow(sr_no=2),
             ]
         )
@@ -318,15 +341,7 @@ class TestValidateRequest:
     def test_catalog_keys_alone_do_not_count_as_filled_row(self):
         data = _valid_request(
             samples=[
-                SampleRow(
-                    sr_no=1,
-                    sample_name="Jaggery",
-                    test_keys=["moisture"],
-                    sample_code="SLS-260717-0103",
-                    assigned_analyst_id=_VALID_ANALYST_ID,
-                    protocol_no="P-001",
-                    package_type="fssai",
-                ),
+                _food_sample(sample_code="SLS-260717-0103"),
                 SampleRow(
                     sr_no=2,
                     test_keys=["moisture"],
@@ -348,10 +363,14 @@ class TestValidateRequest:
                 SampleRow(
                     sr_no=1,
                     sample_name="Mixed",
+                    parameters="FSSAI",
                     test_keys=["moisture", "bn_protein"],
+                    tests_with_logo=["moisture", "bn_protein"],
                     sample_code="SLS-260717-0104",
                     assigned_analyst_id=_VALID_ANALYST_ID,
                     protocol_no="P-001",
+                    package_type="fssai",
+                    **sample_verification_kwargs(),
                 )
             ]
         )
@@ -369,19 +388,21 @@ class TestValidateRequest:
         errors = validate_request(data)
         assert any("Contact 2" in e and "email" in e.lower() for e in errors)
 
-    def test_duplicate_sample_codes_rejected(self):
+    def test_duplicate_sample_codes_rejected(self, monkeypatch):
+        monkeypatch.setattr(
+            "services.requests.assign_derived_sample_codes",
+            lambda data, existing=None: None,
+        )
         data = _valid_request(
             samples=[
-                SampleRow(
+                _food_sample(
                     sr_no=1,
                     sample_name="A",
-                    test_keys=["moisture"],
                     sample_code="SLS-260721-0099",
                 ),
-                SampleRow(
+                _food_sample(
                     sr_no=2,
                     sample_name="B",
-                    test_keys=["moisture"],
                     sample_code="SLS-260721-0099",
                 ),
             ]
@@ -389,13 +410,15 @@ class TestValidateRequest:
         errors = validate_request(data)
         assert any("duplicate sample code" in e.lower() for e in errors)
 
-    def test_invalid_sample_code_format(self):
+    def test_invalid_sample_code_format(self, monkeypatch):
+        monkeypatch.setattr(
+            "services.requests.assign_derived_sample_codes",
+            lambda data, existing=None: None,
+        )
         data = _valid_request(
             samples=[
-                SampleRow(
-                    sr_no=1,
+                _food_sample(
                     sample_name="A",
-                    test_keys=["moisture"],
                     sample_code="bad code!",
                 )
             ]

@@ -5,7 +5,8 @@ Generate a filled Customer Test Request PDF via ReportLab.
 
 Layout mirrors reference/Customer Test Request form LLP.docx:
   Page 1 — request header table, notes, signature lines
-  Page 2 — sample description heading and 17-row sample grid
+  Pages 2+ — one sample per page (single-row table + tests list)
+  Final pages — per-sample Sample Verification Checklist (table 1 only)
 
 Word (.docx) download is handled separately by services/docx_filler.py.
 """
@@ -30,8 +31,20 @@ from reportlab.platypus import (
     TableStyle,
 )
 
+from services.ctr_verification import (
+    CHECKLIST_TITLE,
+    SAMPLE_SECTION_HEADING,
+    SAMPLE_TABLE_HEADERS,
+    ctr_test_names_for_sample,
+    verification_checklist_rows,
+)
 from services.customers import format_contacts_for_display
-from services.requests import SampleRow, TestRequestData, ctr_parameters_display
+from services.requests import (
+    SampleRow,
+    TestRequestData,
+    ctr_parameters_display,
+    delivery_mode_is_selected,
+)
 
 # Visual constants — plain form look matching LLP template
 BORDER = colors.black
@@ -40,7 +53,6 @@ FONT_BOLD = "Helvetica-Bold"
 FONT_SIZE = 11  # Word template labels ~12 pt
 SMALL = 9
 FOOTER_TEXT = "[Control copy]"
-SAMPLE_DATA_ROWS = 17
 SAMPLE_HEADER_HEIGHT = 0.35 * inch
 SAMPLE_ROW_HEIGHT = 0.30 * inch
 
@@ -60,10 +72,9 @@ def _service_marks(service_type: str) -> str:
 
 
 def _delivery_marks(mode: str) -> str:
-    m = (mode or "").strip().lower()
-    collect = "[X]" if m == "collect" else "[ ]"
-    courier = "[X]" if m == "courier" else "[ ]"
-    email = "[X]" if m in ("email/whatsapp", "email", "whatsapp") else "[ ]"
+    collect = "[X]" if delivery_mode_is_selected(mode, "Collect") else "[ ]"
+    courier = "[X]" if delivery_mode_is_selected(mode, "Courier") else "[ ]"
+    email = "[X]" if delivery_mode_is_selected(mode, "Email/Whatsapp") else "[ ]"
     return f"Collect  {collect}      Courier  {courier}      Email/Whatsapp  {email}"
 
 
@@ -109,51 +120,37 @@ def _draw_footer(canvas, doc) -> None:
     canvas.restoreState()
 
 
-def _build_sample_table(
-    data: TestRequestData,
-    usable: float,
-    th_style: ParagraphStyle,
-    td_style: ParagraphStyle,
-) -> Table:
-    header = [
-        _p("Sr. No", th_style),
-        _p("Name of sample", th_style),
-        _p("Code/batch no.", th_style),
-        _p("Sample qty.", th_style),
-        _p("Parameters", th_style),
-    ]
-
-    filled = [s for s in data.samples if not s.is_empty()]
-    display_rows: list[SampleRow] = list(filled)
-    while len(display_rows) < SAMPLE_DATA_ROWS:
-        display_rows.append(SampleRow(sr_no=len(display_rows) + 1))
-
-    body = []
-    for i, s in enumerate(display_rows, start=1):
-        sr = str(i) if not s.is_empty() else ""
-        body.append(
-            [
-                _p(sr, td_style),
-                _p(s.sample_name or "", td_style),
-                _p(s.batch_code or "", td_style),
-                _p(s.quantity or "", td_style),
-                _p(ctr_parameters_display(s), td_style),
-            ]
-        )
-
-    col_widths = [
+def _sample_col_widths(usable: float) -> list[float]:
+    return [
         0.55 * inch,
         1.7 * inch,
         1.35 * inch,
         1.0 * inch,
         usable - (0.55 + 1.7 + 1.35 + 1.0) * inch,
     ]
-    row_heights = [SAMPLE_HEADER_HEIGHT] + [SAMPLE_ROW_HEIGHT] * SAMPLE_DATA_ROWS
 
+
+def _build_one_sample_table(
+    sample: SampleRow,
+    sr_index: int,
+    usable: float,
+    th_style: ParagraphStyle,
+    td_style: ParagraphStyle,
+) -> Table:
+    header = [_p(label, th_style) for label in SAMPLE_TABLE_HEADERS]
+    body = [
+        [
+            _p(str(sr_index), td_style),
+            _p(sample.sample_name or "", td_style),
+            _p(sample.batch_code or "", td_style),
+            _p(sample.quantity or "", td_style),
+            _p(ctr_parameters_display(sample), td_style),
+        ]
+    ]
     sample_table = Table(
         [header] + body,
-        colWidths=col_widths,
-        rowHeights=row_heights,
+        colWidths=_sample_col_widths(usable),
+        rowHeights=[SAMPLE_HEADER_HEIGHT, SAMPLE_ROW_HEIGHT],
         hAlign="LEFT",
         repeatRows=1,
     )
@@ -173,13 +170,68 @@ def _build_sample_table(
     return sample_table
 
 
+def _build_tests_block(
+    sample: SampleRow,
+    td_style: ParagraphStyle,
+) -> list:
+    names = ctr_test_names_for_sample(sample)
+    if not names:
+        return []
+    blocks: list = [Spacer(1, 8), _p("Tests to be performed:", td_style)]
+    for index, name in enumerate(names, start=1):
+        blocks.append(_p(f"{index}. {name}", td_style))
+    return blocks
+
+
+def _build_verification_table(
+    sample: SampleRow,
+    usable: float,
+    th_style: ParagraphStyle,
+    td_style: ParagraphStyle,
+) -> Table:
+    header = [
+        _p("Sr No", th_style),
+        _p("Particulars", th_style),
+        _p("Remark", th_style),
+    ]
+    rows = verification_checklist_rows(sample)
+    body = [
+        [
+            _p(str(row.sr), td_style),
+            _p(row.particular, td_style),
+            _p(row.remark, td_style),
+        ]
+        for row in rows
+    ]
+    table = Table(
+        [header] + body,
+        colWidths=[0.55 * inch, 2.6 * inch, usable - 3.15 * inch],
+        hAlign="LEFT",
+        repeatRows=1,
+    )
+    table.setStyle(
+        TableStyle(
+            [
+                ("BOX", (0, 0), (-1, -1), 1, BORDER),
+                ("INNERGRID", (0, 0), (-1, -1), 0.5, BORDER),
+                ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                ("LEFTPADDING", (0, 0), (-1, -1), 3),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 3),
+                ("TOPPADDING", (0, 0), (-1, -1), 3),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+            ]
+        )
+    )
+    return table
+
+
 def _generate_ctr_pdf(
     data: TestRequestData,
     generated_by: str = "",
     generated_at: str = "",
 ) -> bytes:
     """
-    Letter-size form matching the LLP Word template layout (2 pages).
+    Letter-size CTR: header page, one sample per page, checklist per sample.
 
     generated_by / generated_at are accepted for API compatibility but are
     not printed on the CTR form (pen signatures stay on template blanks).
@@ -341,7 +393,6 @@ def _generate_ctr_pdf(
     story.append(main_table)
     story.append(Spacer(1, 6))
 
-    # ----- Page 1: notes (Word Table 1) -----
     notes = Paragraph(
         "<b>Note:</b> "
         "1) The samples will be processed only after receiving the advance payment. "
@@ -364,7 +415,6 @@ def _generate_ctr_pdf(
     story.append(note_table)
     story.append(Spacer(1, 14))
 
-    # ----- Page 1: signatures (Word body paragraph) -----
     sign_table = Table(
         [
             [
@@ -376,12 +426,18 @@ def _generate_ctr_pdf(
     )
     story.append(sign_table)
 
-    # ----- Page 2: sample section (matches LLP.docx page break) -----
-    story.append(PageBreak())
-    story.append(
-        Paragraph("Sample Description & tests to be performed:", section_style)
-    )
-    story.append(_build_sample_table(data, usable, th_style, td_style))
+    filled = [s for s in data.samples if not s.is_empty()]
+
+    for index, sample in enumerate(filled, start=1):
+        story.append(PageBreak())
+        story.append(Paragraph(SAMPLE_SECTION_HEADING, section_style))
+        story.append(_build_one_sample_table(sample, index, usable, th_style, td_style))
+        story.extend(_build_tests_block(sample, td_style))
+
+    for sample in filled:
+        story.append(PageBreak())
+        story.append(Paragraph(CHECKLIST_TITLE, section_style))
+        story.append(_build_verification_table(sample, usable, th_style, td_style))
 
     doc.build(story, onFirstPage=_draw_footer, onLaterPages=_draw_footer)
     return buffer.getvalue()

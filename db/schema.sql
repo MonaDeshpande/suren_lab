@@ -19,10 +19,15 @@ CREATE TABLE IF NOT EXISTS customers (
     contact_person  TEXT,                          -- Name of contact person
     contact_number  TEXT,                          -- Phone / mobile
     email           TEXT,                          -- Email ID
-    gst_number      TEXT        NOT NULL UNIQUE,   -- GSTIN — unique key
+    gst_number      TEXT        NOT NULL,          -- GSTIN — unique key (active rows)
+    is_active       BOOLEAN     NOT NULL DEFAULT TRUE,
     created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_customers_gst_active
+    ON customers (gst_number)
+    WHERE is_active = TRUE;
 
 -- Fast lookup by GST or partial name search
 CREATE INDEX IF NOT EXISTS idx_customers_gst
@@ -38,6 +43,7 @@ CREATE TABLE IF NOT EXISTS customer_contacts (
     position        INTEGER     NOT NULL CHECK (position BETWEEN 1 AND 5),
     contact_name    TEXT        NOT NULL DEFAULT '',
     email           TEXT,
+    is_active       BOOLEAN     NOT NULL DEFAULT TRUE,
     created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     UNIQUE (customer_id, position)
@@ -65,6 +71,7 @@ CREATE TABLE IF NOT EXISTS test_requests (
     delivery_mode       TEXT,                      -- Collect | Courier | Email/Whatsapp
     payment_details     TEXT,                      -- Advance / amount / remarks
     sample_description  TEXT,                      -- Free-text description block
+    is_active           BOOLEAN     NOT NULL DEFAULT TRUE,
 
     created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
@@ -94,12 +101,13 @@ CREATE TABLE IF NOT EXISTS sample_test_packages (
     updated_at          TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-CREATE UNIQUE INDEX IF NOT EXISTS idx_sample_test_packages_unique
+CREATE UNIQUE INDEX IF NOT EXISTS idx_sample_test_packages_unique_active
     ON sample_test_packages (
         lower(trim(sample_product_name)),
         package_type,
         category
-    );
+    )
+    WHERE is_active = TRUE;
 
 CREATE INDEX IF NOT EXISTS idx_sample_test_packages_active
     ON sample_test_packages (is_active, lower(trim(sample_product_name)));
@@ -118,11 +126,35 @@ CREATE INDEX IF NOT EXISTS idx_sample_test_package_tests_order
     ON sample_test_package_tests (package_id, sort_order);
 
 -- ---------------------------------------------------------------------------
+-- catalog_test_specs  (built-in test method / limits / units — Admin-editable)
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS catalog_test_specs (
+    test_key            TEXT PRIMARY KEY,
+    category            TEXT        NOT NULL
+                        CHECK (category IN ('food', 'water', 'micro', 'cattle_feed_fertilizer')),
+    test_name           TEXT        NOT NULL,
+    method_of_analysis  TEXT        NOT NULL DEFAULT '',
+    limits_text         TEXT,
+    limits_desirable    TEXT,
+    limits_permissible  TEXT,
+    default_unit        TEXT        NOT NULL DEFAULT '',
+    unit_editable       BOOLEAN     NOT NULL DEFAULT FALSE,
+    sort_order          INTEGER     NOT NULL DEFAULT 0,
+    is_active           BOOLEAN     NOT NULL DEFAULT TRUE,
+    current_version_no  INTEGER     NOT NULL DEFAULT 1
+                        CHECK (current_version_no >= 1),
+    updated_at          TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_catalog_test_specs_category
+    ON catalog_test_specs (category, sort_order);
+
+-- ---------------------------------------------------------------------------
 -- custom_formulas  (Admin-defined tests merged into runtime catalog)
 -- ---------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS custom_formulas (
     id                  SERIAL PRIMARY KEY,
-    test_key            TEXT        NOT NULL UNIQUE,
+    test_key            TEXT        NOT NULL,
     name                TEXT        NOT NULL,
     method              TEXT        NOT NULL DEFAULT '',
     unit                TEXT        NOT NULL DEFAULT '',
@@ -149,6 +181,10 @@ CREATE TABLE IF NOT EXISTS custom_formulas (
     created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at          TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_custom_formulas_test_key_active
+    ON custom_formulas (test_key)
+    WHERE is_active = TRUE;
 
 CREATE INDEX IF NOT EXISTS idx_custom_formulas_scope
     ON custom_formulas (category, package_type, is_active);
@@ -189,7 +225,7 @@ CREATE TABLE IF NOT EXISTS request_samples (
     parameters          TEXT,                          -- Parameters column on CTR form
 
     -- Analyst workflow fields
-    sample_code         TEXT        NOT NULL UNIQUE,   -- e.g. SLS-260717-0001
+    sample_code         TEXT        NOT NULL,        -- e.g. SLS-260717-0001
     category            TEXT        NOT NULL DEFAULT 'food'
                         CHECK (category IN ('food', 'water', 'cattle_feed_fertilizer', 'micro')),
     tests_to_perform    TEXT,                          -- Display names of selected tests
@@ -213,10 +249,26 @@ CREATE TABLE IF NOT EXISTS request_samples (
                                 'fssai', 'nutrition_only', 'basic_nutrition', 'detailed_nutrition'
                             )
                         ),
+    -- Reception sample verification checklist (printed on last CTR page per sample)
+    verify_review_date          DATE,
+    verify_lab_code             TEXT,
+    verify_sample_condition     TEXT,
+    verify_qty_checked          BOOLEAN,
+    verify_chemical_available     BOOLEAN,
+    verify_methods_available    BOOLEAN,
+    verify_methods_informed     BOOLEAN,
+    verify_tat_informed         BOOLEAN,
+    verify_ready_to_issue       BOOLEAN,
+    verify_conformity_statement BOOLEAN,
     created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    expires_at          TIMESTAMPTZ NOT NULL DEFAULT (NOW() + INTERVAL '10 days')
+    expires_at          TIMESTAMPTZ NOT NULL DEFAULT (NOW() + INTERVAL '10 days'),
+    is_active           BOOLEAN     NOT NULL DEFAULT TRUE
 );
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_request_samples_code_active
+    ON request_samples (sample_code)
+    WHERE is_active = TRUE;
 
 CREATE INDEX IF NOT EXISTS idx_request_samples_request
     ON request_samples (request_id);
@@ -259,6 +311,7 @@ CREATE TABLE IF NOT EXISTS sample_protocols (
     sample_received_on  DATE,
     date_of_analysis    DATE,
     appearance_text     TEXT,
+    is_active           BOOLEAN     NOT NULL DEFAULT TRUE,
     created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at          TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
@@ -279,6 +332,7 @@ CREATE TABLE IF NOT EXISTS sample_test_results (
     result_value        TEXT,
     result_numeric      DOUBLE PRECISION,
     calculated_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    is_active           BOOLEAN     NOT NULL DEFAULT TRUE,
     UNIQUE (sample_id, test_key)
 );
 

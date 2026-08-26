@@ -146,7 +146,12 @@ WATER_REPORT_TEST_NAMES: dict[str, str] = {
     "turbidity": "Turbidity",
 }
 
-# Placeholder microbiological rows (blank results until micro protocol arrives).
+# Map final-report placeholder keys to water protocol observation keys.
+WATER_MICRO_PROTOCOL_KEY_MAP: dict[str, str] = {
+    "t_coliform": "water_total_coliform",
+    "e_coli": "water_e_coli",
+}
+
 WATER_MICRO_PLACEHOLDERS: list[WaterMicroPlaceholder] = [
     WaterMicroPlaceholder(
         key="t_coliform",
@@ -182,4 +187,30 @@ def limits_for_key(
 ) -> WaterReportLimits:
     if overrides and key in overrides:
         return overrides[key]
+    from services.catalog_specs import get_spec
+
+    spec = get_spec(key)
+    if spec is not None:
+        return WaterReportLimits(
+            desirable=spec.limits_desirable or "",
+            permissible=spec.limits_permissible or "",
+        )
     return WATER_REPORT_LIMITS.get(key, WaterReportLimits())
+
+
+def method_for_key(key: str) -> str:
+    from services.catalog_specs import get_spec
+
+    spec = get_spec(key)
+    if spec is not None and spec.method_of_analysis:
+        return spec.method_of_analysis
+    return WATER_REPORT_METHOD_LABELS.get(key, "")
+
+
+def report_name_for_key(key: str) -> str:
+    from services.catalog_specs import get_spec
+
+    spec = get_spec(key)
+    if spec is not None and spec.test_name:
+        return spec.test_name
+    return WATER_REPORT_TEST_NAMES.get(key, key)

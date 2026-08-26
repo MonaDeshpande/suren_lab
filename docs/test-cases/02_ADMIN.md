@@ -308,3 +308,16 @@
 | **Preconditions** | Logged in as the only active admin |
 | **Steps** | 1. Attempt to change own roles away from `admin` (e.g. to `reception`). 2. Attempt to deactivate own account. |
 | **Expected** | Both blocked with last-admin / self-demote errors; session remains admin and active. |
+
+---
+
+## TC-ADM-021 — Edit built-in test catalog (methods & limits)
+
+| Field | Value |
+|-------|-------|
+| **Priority** | P1 |
+| **Type** | Positive |
+| **Preconditions** | Logged in as admin; `catalog_test_specs` seeded |
+| **Steps** | 1. Open Admin → **Test catalog (methods & limits)**. 2. Filter Micro; select E. Coli. 3. Confirm caption shows **Version: vN (Latest)**. 4. Change method text; enter edit reason; **Save as new version**. 5. Re-open Analyst micro sample — confirm updated method caption. 6. Open **Version history** — prior version listed with user, time, reason. |
+| **Expected** | Save archives prior row to `entity_versions` and bumps `current_version_no` on the live row. Grid shows `vN · Latest`. Analyst and Micro protocol/report read the latest method/limits from DB. `test_key` stays read-only. Water rows show Desirable/Permissible fields; Micro rows show Limits text. |
+| **Automated** | `test_catalog_specs_db.py` |

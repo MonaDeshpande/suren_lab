@@ -31,7 +31,7 @@ from services.samples import (
     normalize_sample_code,
 )
 from services.users import (
-    analyst_display_label,
+    analyst_full_name,
     assert_valid_analyst_assignee,
     list_active_analysts,
 )
@@ -47,9 +47,13 @@ from services.protocols.test_catalog import (
     tests_for_category,
 )
 from services.test_packages import (
+    ctr_parameters_label_for_sample,
+    is_other_parameters_label,
     normalize_package_type,
     package_display_label,
     package_type_label,
+    parameters_label_to_package_type,
+    resolve_package_for_product,
     resolve_package_tests,
 )
 from services.protocol_store import sync_reception_protocol_header
@@ -84,8 +88,27 @@ class SampleRow:
     package_version_no: Optional[int] = None
     package_type: Optional[str] = None
 
+    # Sample verification checklist (per sample, printed on last CTR page(s))
+    verify_review_date: Optional[date] = None
+    verify_lab_code: str = ""
+    verify_sample_condition: str = ""
+    verify_qty_checked: Optional[bool] = None
+    verify_chemical_available: Optional[bool] = None
+    verify_methods_available: Optional[bool] = None
+    verify_methods_informed: Optional[bool] = None
+    verify_tat_informed: Optional[bool] = None
+    verify_ready_to_issue: Optional[bool] = None
+    verify_conformity_statement: Optional[bool] = None
+
     def is_empty(self) -> bool:
         """True when the user left this sample row blank."""
+        if normalize_category(self.category) == CATEGORY_FOOD:
+            return not any(
+                [
+                    (self.sample_name or "").strip(),
+                    (self.quantity or "").strip(),
+                ]
+            )
         return not any(
             [
                 (self.sample_name or "").strip(),
@@ -100,18 +123,31 @@ def ctr_parameters_display(sample: SampleRow) -> str:
     """Short Parameters text for printed CTR (not the full stored parameters string)."""
     cat = normalize_category(sample.category)
     if cat == CATEGORY_FOOD:
-        label = package_type_label(sample.package_type)
-        if label:
-            return label
-        ptype = normalize_package_type(sample.parameters)
-        if ptype:
-            return package_type_label(ptype)
-        return (sample.parameters or "").strip()
+        return ctr_parameters_label_for_sample(
+            parameters=sample.parameters,
+            package_type=sample.package_type,
+        )
     if cat == CATEGORY_WATER:
         return ""
     if cat == CATEGORY_MICRO:
         return ""
     return (sample.parameters or "").strip()
+
+
+def _verification_tuple(sample: SampleRow) -> tuple:
+    """DB bind values for verification checklist columns."""
+    return (
+        sample.verify_review_date,
+        (sample.verify_lab_code or "").strip() or None,
+        (sample.verify_sample_condition or "").strip() or None,
+        sample.verify_qty_checked,
+        sample.verify_chemical_available,
+        sample.verify_methods_available,
+        sample.verify_methods_informed,
+        sample.verify_tat_informed,
+        sample.verify_ready_to_issue,
+        sample.verify_conformity_statement,
+    )
 
 
 @dataclass
@@ -142,6 +178,98 @@ class TestRequestData:
 
     # Filled after save
     request_id: Optional[int] = None
+
+
+STORAGE_TEMPERATURE_OTHER = "Other"
+STORAGE_TEMPERATURE_OPTIONS = [
+    "2°C to 8°C",
+    "4°C",
+    "Room Temp",
+    STORAGE_TEMPERATURE_OTHER,
+]
+_CANONICAL_STORAGE_TEMPERATURES = frozenset(
+    opt for opt in STORAGE_TEMPERATURE_OPTIONS if opt != STORAGE_TEMPERATURE_OTHER
+)
+
+
+def storage_temperature_select_value(stored: str | None) -> str:
+    """Map a stored value to the Reception selectbox option."""
+    text = (stored or "").strip()
+    if not text:
+        return ""
+    if text in _CANONICAL_STORAGE_TEMPERATURES:
+        return text
+    return STORAGE_TEMPERATURE_OTHER
+
+
+def storage_temperature_for_save(
+    select_value: str,
+    other_text: str | None,
+) -> str:
+    """Merge selectbox + Other text into the value stored on the request."""
+    choice = (select_value or "").strip()
+    if not choice:
+        return ""
+    if choice == STORAGE_TEMPERATURE_OTHER:
+        return (other_text or "").strip()
+    return choice
+
+
+DELIVERY_MODE_OPTIONS = ["Collect", "Courier", "Email/Whatsapp"]
+_DELIVERY_MODE_ALIASES = {
+    "collect": "Collect",
+    "courier": "Courier",
+    "email/whatsapp": "Email/Whatsapp",
+    "email": "Email/Whatsapp",
+    "whatsapp": "Email/Whatsapp",
+}
+
+
+def _canonical_delivery_mode(value: str) -> str | None:
+    text = (value or "").strip()
+    if not text:
+        return None
+    if text in DELIVERY_MODE_OPTIONS:
+        return text
+    return _DELIVERY_MODE_ALIASES.get(text.lower())
+
+
+def parse_delivery_modes(stored: str | None) -> list[str]:
+    """Parse a stored delivery_mode string into canonical multiselect values."""
+    text = (stored or "").strip()
+    if not text:
+        return []
+    selected: list[str] = []
+    seen: set[str] = set()
+    for part in text.split(","):
+        canonical = _canonical_delivery_mode(part)
+        if canonical and canonical not in seen:
+            seen.add(canonical)
+            selected.append(canonical)
+    return [opt for opt in DELIVERY_MODE_OPTIONS if opt in seen]
+
+
+def format_delivery_modes(modes: list[str] | None) -> str:
+    """Serialize multiselect values for storage on test_requests."""
+    if not modes:
+        return ""
+    selected: list[str] = []
+    seen: set[str] = set()
+    for mode in modes:
+        canonical = _canonical_delivery_mode(str(mode))
+        if canonical and canonical not in seen:
+            seen.add(canonical)
+            selected.append(canonical)
+    ordered = [opt for opt in DELIVERY_MODE_OPTIONS if opt in seen]
+    return ", ".join(ordered)
+
+
+def delivery_mode_is_selected(stored: str | None, option: str) -> bool:
+    """True when a delivery option is included in the stored value."""
+    canonical = _canonical_delivery_mode(option)
+    if not canonical:
+        return False
+    return canonical in parse_delivery_modes(stored)
 
 
 def assign_derived_sample_codes(
@@ -234,7 +362,7 @@ def _validate_report_format_for_package(
     with_logo_keys: list[str],
     without_logo_keys: list[str],
 ) -> list[str]:
-    """Validate report format against package logo test sets."""
+    """Validate report format against intake-selected logo test sets."""
     errors: list[str] = []
     fmt = normalize_report_format(report_format)
     if fmt not in REPORT_FORMATS:
@@ -243,72 +371,146 @@ def _validate_report_format_for_package(
             "(A With Logo, B Without Logo, or Both)."
         )
         return errors
+    overlap = set(with_logo_keys) & set(without_logo_keys)
+    if overlap:
+        names = [
+            TEST_CATALOG[k].name for k in sorted(overlap) if k in TEST_CATALOG
+        ]
+        errors.append(
+            f"Sample Sr. {sr_no}: the same test cannot be in both with-logo "
+            f"and without-logo lists: {', '.join(names) or ', '.join(sorted(overlap))}."
+        )
     if fmt == REPORT_FORMAT_WITH_LOGO and not with_logo_keys:
         errors.append(
-            f"Sample Sr. {sr_no}: package has no with-logo tests for "
+            f"Sample Sr. {sr_no}: select at least one with-logo test for "
             "report format A — With Logo."
         )
     elif fmt == REPORT_FORMAT_WITHOUT_LOGO and not without_logo_keys:
         errors.append(
-            f"Sample Sr. {sr_no}: package has no without-logo tests for "
+            f"Sample Sr. {sr_no}: select at least one without-logo test for "
             "report format B — Without Logo."
         )
     elif fmt == REPORT_FORMAT_BOTH:
         if not with_logo_keys:
             errors.append(
-                f"Sample Sr. {sr_no}: package has no with-logo tests for "
+                f"Sample Sr. {sr_no}: select at least one with-logo test for "
                 "report format Both."
             )
         if not without_logo_keys:
             errors.append(
-                f"Sample Sr. {sr_no}: package has no without-logo tests for "
+                f"Sample Sr. {sr_no}: select at least one without-logo test for "
                 "report format Both."
             )
     return errors
 
 
+def _validate_intake_tests_in_package(
+    sr_no: int,
+    selected_keys: list[str],
+    allowed_keys: list[str],
+) -> list[str]:
+    """Ensure intake selections are a subset of the resolved package."""
+    allowed = set(allowed_keys)
+    invalid = [k for k in selected_keys if k not in allowed]
+    if not invalid:
+        return []
+    names = [TEST_CATALOG[k].name for k in invalid if k in TEST_CATALOG]
+    return [
+        f"Sample Sr. {sr_no}: invalid test selection outside the package: "
+        f"{', '.join(names) or ', '.join(invalid)}."
+    ]
+
+
 def _resolve_sample_tests(
     sample: SampleRow,
     category: str,
-) -> tuple[list[str], str, Optional[int], Optional[int], Optional[str]]:
+) -> tuple[list[str], str, str, Optional[int], Optional[int], Optional[str]]:
     """
     Resolve catalog keys and display text for a sample row.
 
-    Returns (test_keys, parameters_display, package_id, package_version_no, package_type).
+    Returns (
+        test_keys,
+        parameters_display,
+        tests_to_perform,
+        package_id,
+        package_version_no,
+        package_type,
+    ).
     """
     cat = normalize_category(category)
     if cat == CATEGORY_FOOD:
-        ptype = normalize_package_type(sample.package_type)
-        resolved = resolve_package_tests(
-            sample.sample_name,
-            ptype or "",
-            category=cat,
-        )
+        params_label = (sample.parameters or "").strip()
+        ptype = parameters_label_to_package_type(
+            params_label
+        ) or normalize_package_type(sample.package_type)
+        wl = filter_keys_for_category(list(sample.tests_with_logo or []), cat)
+        nwl = filter_keys_for_category(list(sample.tests_without_logo or []), cat)
+
+        if is_other_parameters_label(params_label) or (
+            ptype is None
+            and params_label
+            and normalize_package_type(sample.package_type) is None
+        ):
+            keys = filter_keys_for_category(
+                [k for k in (sample.test_keys or []) if k in TEST_CATALOG],
+                cat,
+            )
+            if keys and (wl or nwl):
+                keys = _apply_package_report_format_sets(sample, wl, nwl)
+            names = [TEST_CATALOG[k].name for k in keys if k in TEST_CATALOG]
+            tests_to_perform = ", ".join(names) if names else ""
+            parameters_display = ctr_parameters_label_for_sample(
+                parameters=sample.parameters,
+                package_type=None,
+            )
+            return keys, parameters_display, tests_to_perform, None, None, None
+
+        resolved = None
+        if ptype and (sample.sample_name or "").strip():
+            resolved = resolve_package_tests(
+                sample.sample_name, ptype, category=cat
+            )
+        if resolved is None and (sample.sample_name or "").strip():
+            resolved = resolve_package_for_product(sample.sample_name, category=cat)
+
         if resolved:
-            wl = filter_keys_for_category(resolved.test_keys_with_logo, cat)
-            nwl = filter_keys_for_category(resolved.test_keys_without_logo, cat)
             keys = _apply_package_report_format_sets(sample, wl, nwl)
             names = [TEST_CATALOG[k].name for k in keys if k in TEST_CATALOG]
-            display = resolved.display_label
-            if names:
-                display = f"{display} ({', '.join(names)})"
+            tests_to_perform = ", ".join(names) if names else ""
+            parameters_display = package_type_label(ptype or resolved.package_type)
             return (
                 keys,
-                display,
+                parameters_display,
+                tests_to_perform,
                 resolved.package_id,
                 resolved.package_version_no,
-                resolved.package_type,
+                ptype or resolved.package_type,
             )
+
         keys = filter_keys_for_category(
             [k for k in (sample.test_keys or []) if k in TEST_CATALOG],
             cat,
         )
         if keys:
             names = [TEST_CATALOG[k].name for k in keys]
-            label = package_display_label(sample.sample_name, ptype)
-            display = label or ", ".join(names)
-            return keys, display, sample.package_id, sample.package_version_no, ptype
-        return [], (sample.parameters or "").strip(), None, None, ptype
+            tests_to_perform = ", ".join(names)
+            parameters_display = ctr_parameters_label_for_sample(
+                parameters=sample.parameters,
+                package_type=sample.package_type,
+            )
+            return (
+                keys,
+                parameters_display,
+                tests_to_perform,
+                sample.package_id,
+                sample.package_version_no,
+                sample.package_type,
+            )
+        parameters_display = ctr_parameters_label_for_sample(
+            parameters=sample.parameters,
+            package_type=sample.package_type,
+        )
+        return [], parameters_display, "", None, None, sample.package_type
 
     keys = filter_keys_for_category(
         [k for k in (sample.test_keys or []) if k in TEST_CATALOG],
@@ -318,8 +520,10 @@ def _resolve_sample_tests(
         if cat in (CATEGORY_WATER, CATEGORY_MICRO):
             keys = _apply_package_report_format_sets(sample, keys, keys)
         names = [TEST_CATALOG[k].name for k in keys]
-        return keys, ", ".join(names), None, None, None
-    return [], (sample.parameters or "").strip(), None, None, None
+        tests_to_perform = ", ".join(names)
+        return keys, tests_to_perform, tests_to_perform, None, None, None
+    params = (sample.parameters or "").strip()
+    return [], params, params, None, None, None
 
 
 def _sync_reception_protocol_headers(
@@ -411,19 +615,25 @@ def save_test_request(
             assigned_analyst_id, assigned_micro_analyst_id, protocol_no,
             report_format, tests_with_logo_json,
             tests_without_logo_json, package_id, package_version_no, package_type,
+            verify_review_date, verify_lab_code, verify_sample_condition,
+            verify_qty_checked, verify_chemical_available, verify_methods_available,
+            verify_methods_informed, verify_tat_informed, verify_ready_to_issue,
+            verify_conformity_statement,
             expires_at
         )
         VALUES (
             %s, %s, %s, %s, %s, %s,
             %s, %s, %s, %s, 'pending', %s, %s, %s, %s, %s,
-            %s, %s, %s, %s, NOW() + INTERVAL '10 days'
+            %s, %s, %s, %s,
+            %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+            NOW() + INTERVAL '10 days'
         )
         RETURNING id, sample_code
     """
 
     saved_samples: list[SampleRow] = []
-    analyst_labels = {
-        u.id: analyst_display_label(u) for u in list_active_analysts()
+    analyst_names = {
+        u.id: analyst_full_name(u) for u in list_active_analysts()
     }
 
     with get_db() as conn:
@@ -446,9 +656,14 @@ def save_test_request(
                             f"Sample Sr. {sample.sr_no}: chemical and micro "
                             "analyst must be different users."
                         )
-                keys, tests_display, pkg_id, pkg_ver, pkg_type = _resolve_sample_tests(
-                    sample, category
-                )
+                (
+                    keys,
+                    parameters_display,
+                    tests_to_perform,
+                    pkg_id,
+                    pkg_ver,
+                    pkg_type,
+                ) = _resolve_sample_tests(sample, category)
                 if keys:
                     tests_json = json.dumps(keys)
                 else:
@@ -463,10 +678,10 @@ def save_test_request(
                         (sample.sample_name or "").strip() or None,
                         (sample.batch_code or "").strip() or None,
                         (sample.quantity or "").strip() or None,
-                        tests_display or None,
+                        parameters_display or None,
                         code,
                         category,
-                        tests_display or None,
+                        tests_to_perform or None,
                         tests_json,
                         sample.assigned_analyst_id,
                         sample.assigned_micro_analyst_id,
@@ -477,21 +692,22 @@ def save_test_request(
                         pkg_id,
                         pkg_ver,
                         pkg_type,
+                        *_verification_tuple(sample),
                     ),
                 )
                 new_id, returned_code = cur.fetchone()
                 sample.id = new_id
                 sample.sample_code = returned_code
                 sample.category = category
-                sample.parameters = tests_display or ""
+                sample.parameters = parameters_display or ""
                 sample.test_keys = keys
                 sample.package_id = pkg_id
                 sample.package_version_no = pkg_ver
                 sample.package_type = pkg_type
-                sample.assigned_analyst_name = analyst_labels.get(
+                sample.assigned_analyst_name = analyst_names.get(
                     sample.assigned_analyst_id, ""
                 )
-                sample.assigned_micro_analyst_name = analyst_labels.get(
+                sample.assigned_micro_analyst_name = analyst_names.get(
                     sample.assigned_micro_analyst_id, ""
                 )
                 saved_samples.append(sample)
@@ -519,7 +735,7 @@ def get_test_request(request_id: int) -> Optional[TestRequestData]:
                decision_rule, service_type, delivery_mode,
                payment_details, sample_description
           FROM test_requests
-         WHERE id = %s
+         WHERE id = %s AND is_active = TRUE
     """
     sample_sql = """
         SELECT rs.id, rs.sr_no, rs.sample_name, rs.batch_code, rs.quantity,
@@ -532,11 +748,21 @@ def get_test_request(request_id: int) -> Optional[TestRequestData]:
                rs.package_id, rs.package_version_no, rs.package_type,
                COALESCE(rs.protocol_no, ''),
                rs.assigned_micro_analyst_id,
-               COALESCE(um.full_name, um.username, '')
+               COALESCE(um.full_name, um.username, ''),
+               rs.verify_review_date,
+               COALESCE(rs.verify_lab_code, ''),
+               COALESCE(rs.verify_sample_condition, ''),
+               rs.verify_qty_checked,
+               rs.verify_chemical_available,
+               rs.verify_methods_available,
+               rs.verify_methods_informed,
+               rs.verify_tat_informed,
+               rs.verify_ready_to_issue,
+               rs.verify_conformity_statement
           FROM request_samples rs
           LEFT JOIN users u ON u.id = rs.assigned_analyst_id
           LEFT JOIN users um ON um.id = rs.assigned_micro_analyst_id
-         WHERE rs.request_id = %s
+         WHERE rs.request_id = %s AND rs.is_active = TRUE
          ORDER BY rs.sr_no
     """
     with get_db() as conn:
@@ -601,6 +827,16 @@ def get_test_request(request_id: int) -> Optional[TestRequestData]:
                 protocol_no=row[19] or "",
                 assigned_micro_analyst_id=row[20],
                 assigned_micro_analyst_name=row[21] or "",
+                verify_review_date=row[22],
+                verify_lab_code=row[23] or "",
+                verify_sample_condition=row[24] or "",
+                verify_qty_checked=row[25],
+                verify_chemical_available=row[26],
+                verify_methods_available=row[27],
+                verify_methods_informed=row[28],
+                verify_tat_informed=row[29],
+                verify_ready_to_issue=row[30],
+                verify_conformity_statement=row[31],
             )
         )
 
@@ -640,12 +876,14 @@ def search_test_requests(query: str, limit: int = 20) -> list[RequestSummary]:
                    ''
                ) AS sample_codes
           FROM test_requests tr
-          JOIN customers c ON c.id = tr.customer_id
-          LEFT JOIN request_samples s ON s.request_id = tr.id
-         WHERE tr.lab_code ILIKE %s
+          JOIN customers c ON c.id = tr.customer_id AND c.is_active = TRUE
+          LEFT JOIN request_samples s
+            ON s.request_id = tr.id AND s.is_active = TRUE
+         WHERE tr.is_active = TRUE
+           AND (tr.lab_code ILIKE %s
             OR c.customer_name ILIKE %s
             OR s.sample_code ILIKE %s
-            OR s.sample_name ILIKE %s
+            OR s.sample_name ILIKE %s)
          GROUP BY tr.id, tr.lab_code, tr.request_date, c.customer_name
          ORDER BY tr.id DESC
          LIMIT %s
@@ -758,6 +996,16 @@ def update_test_request(
             package_id = %s,
             package_version_no = %s,
             package_type = %s,
+            verify_review_date = %s,
+            verify_lab_code = %s,
+            verify_sample_condition = %s,
+            verify_qty_checked = %s,
+            verify_chemical_available = %s,
+            verify_methods_available = %s,
+            verify_methods_informed = %s,
+            verify_tat_informed = %s,
+            verify_ready_to_issue = %s,
+            verify_conformity_statement = %s,
             updated_at = NOW()
          WHERE id = %s
     """
@@ -768,19 +1016,25 @@ def update_test_request(
             assigned_analyst_id, assigned_micro_analyst_id, protocol_no,
             report_format, tests_with_logo_json,
             tests_without_logo_json, package_id, package_version_no, package_type,
+            verify_review_date, verify_lab_code, verify_sample_condition,
+            verify_qty_checked, verify_chemical_available, verify_methods_available,
+            verify_methods_informed, verify_tat_informed, verify_ready_to_issue,
+            verify_conformity_statement,
             expires_at
         )
         VALUES (
             %s, %s, %s, %s, %s, %s,
             %s, %s, %s, %s, 'pending', %s, %s, %s, %s, %s,
-            %s, %s, %s, %s, NOW() + INTERVAL '10 days'
+            %s, %s, %s, %s,
+            %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+            NOW() + INTERVAL '10 days'
         )
         RETURNING id, sample_code
     """
 
     saved_samples: list[SampleRow] = []
-    analyst_labels = {
-        u.id: analyst_display_label(u) for u in list_active_analysts()
+    analyst_names = {
+        u.id: analyst_full_name(u) for u in list_active_analysts()
     }
 
     with get_db() as conn:
@@ -814,9 +1068,14 @@ def update_test_request(
                             f"Sample Sr. {sample.sr_no}: chemical and micro "
                             "analyst must be different users."
                         )
-                keys, tests_display, pkg_id, pkg_ver, pkg_type = _resolve_sample_tests(
-                    sample, category
-                )
+                (
+                    keys,
+                    parameters_display,
+                    tests_to_perform,
+                    pkg_id,
+                    pkg_ver,
+                    pkg_type,
+                ) = _resolve_sample_tests(sample, category)
                 tests_json = json.dumps(keys) if keys else None
 
                 if sample.id is not None:
@@ -888,10 +1147,10 @@ def update_test_request(
                             (sample.sample_name or "").strip() or None,
                             (sample.batch_code or "").strip() or None,
                             (sample.quantity or "").strip() or None,
-                            tests_display or None,
+                            parameters_display or None,
                             new_code,
                             category,
-                            tests_display or None,
+                            tests_to_perform or None,
                             tests_json,
                             sample.assigned_analyst_id,
                             sample.assigned_micro_analyst_id,
@@ -902,21 +1161,22 @@ def update_test_request(
                             pkg_id,
                             pkg_ver,
                             pkg_type,
+                            *_verification_tuple(sample),
                             sample.id,
                         ),
                     )
                     sample.sample_code = new_code or old.sample_code
                     sample.category = category
-                    sample.parameters = tests_display or ""
+                    sample.parameters = parameters_display or ""
                     sample.test_keys = keys
                     sample.package_id = pkg_id
                     sample.package_version_no = pkg_ver
                     sample.package_type = pkg_type
                     sample.status = old.status
-                    sample.assigned_analyst_name = analyst_labels.get(
+                    sample.assigned_analyst_name = analyst_names.get(
                         sample.assigned_analyst_id, ""
                     ) or old.assigned_analyst_name
-                    sample.assigned_micro_analyst_name = analyst_labels.get(
+                    sample.assigned_micro_analyst_name = analyst_names.get(
                         sample.assigned_micro_analyst_id, ""
                     ) or getattr(old, "assigned_micro_analyst_name", "")
                     saved_samples.append(sample)
@@ -930,10 +1190,10 @@ def update_test_request(
                             (sample.sample_name or "").strip() or None,
                             (sample.batch_code or "").strip() or None,
                             (sample.quantity or "").strip() or None,
-                            tests_display or None,
+                            parameters_display or None,
                             code,
                             category,
-                            tests_display or None,
+                            tests_to_perform or None,
                             tests_json,
                             sample.assigned_analyst_id,
                             sample.assigned_micro_analyst_id,
@@ -944,22 +1204,23 @@ def update_test_request(
                             pkg_id,
                             pkg_ver,
                             pkg_type,
+                            *_verification_tuple(sample),
                         ),
                     )
                     new_id, returned_code = cur.fetchone()
                     sample.id = new_id
                     sample.sample_code = returned_code
                     sample.category = category
-                    sample.parameters = tests_display or ""
+                    sample.parameters = parameters_display or ""
                     sample.test_keys = keys
                     sample.package_id = pkg_id
                     sample.package_version_no = pkg_ver
                     sample.package_type = pkg_type
                     sample.status = "pending"
-                    sample.assigned_analyst_name = analyst_labels.get(
+                    sample.assigned_analyst_name = analyst_names.get(
                         sample.assigned_analyst_id, ""
                     )
-                    sample.assigned_micro_analyst_name = analyst_labels.get(
+                    sample.assigned_micro_analyst_name = analyst_names.get(
                         sample.assigned_micro_analyst_id, ""
                     )
                     saved_samples.append(sample)
@@ -1059,39 +1320,104 @@ def validate_request(data: TestRequestData) -> list[str]:
                     )
             if not (s.protocol_no or "").strip():
                 errors.append(f"Sample Sr. {s.sr_no}: protocol number is required.")
-            if category == CATEGORY_FOOD:
-                if not normalize_package_type(s.package_type):
+            if s.verify_review_date is None:
+                errors.append(
+                    f"Sample Sr. {s.sr_no}: verification review date is required."
+                )
+            if not (s.verify_lab_code or "").strip():
+                errors.append(
+                    f"Sample Sr. {s.sr_no}: verification lab code is required."
+                )
+            if not (s.verify_sample_condition or "").strip():
+                errors.append(
+                    f"Sample Sr. {s.sr_no}: sample condition is required."
+                )
+            for field, label in (
+                (s.verify_qty_checked, "Checked for Sample Quantity"),
+                (s.verify_chemical_available, "Checked for Availability of Chemical"),
+                (s.verify_methods_available, "Checked for Availability of Methods"),
+                (s.verify_methods_informed, "Informed testing Methods to Customer"),
+                (s.verify_tat_informed, "Informed turnaround time to Customer"),
+                (s.verify_ready_to_issue, "Sample is ready to issue"),
+                (s.verify_conformity_statement, "About statement of conformity"),
+            ):
+                if field is None:
                     errors.append(
-                        f"Sample Sr. {s.sr_no}: select Parameters "
-                        "(FSSAI, Basic Nutrition, or Detailed Nutrition)."
+                        f"Sample Sr. {s.sr_no}: verification '{label}' is required."
                     )
-                elif not (s.sample_name or "").strip():
+            if category == CATEGORY_FOOD:
+                if not (s.sample_name or "").strip():
                     pass  # name error handled above
                 else:
-                    resolved = resolve_package_tests(
-                        s.sample_name,
-                        s.package_type or "",
-                        category=category,
+                    from services.test_packages import (
+                        describe_sample_package,
+                        is_other_parameters_label,
+                        parameters_label_to_package_type,
                     )
-                    if not resolved or not resolved.test_keys:
-                        ptype_label = package_type_label(s.package_type)
+
+                    params_label = (s.parameters or "").strip()
+                    if is_other_parameters_label(params_label):
                         errors.append(
-                            f"Sample Sr. {s.sr_no}: no active test package found for "
-                            f"'{s.sample_name.strip()}' — {ptype_label}. "
-                            "Create it under Test packages first."
+                            f"Sample Sr. {s.sr_no}: enter custom Parameters text for Other."
+                        )
+                    elif not params_label:
+                        errors.append(
+                            f"Sample Sr. {s.sr_no}: select a package type in Parameters "
+                            "(FSSAI, Basic Nutrition, Detailed Nutrition, or Other)."
                         )
                     else:
-                        wl = filter_keys_for_category(
-                            resolved.test_keys_with_logo, category
-                        )
-                        nwl = filter_keys_for_category(
-                            resolved.test_keys_without_logo, category
-                        )
-                        errors.extend(
-                            _validate_report_format_for_package(
-                                s.sr_no, s.report_format, wl, nwl
+                        ptype = parameters_label_to_package_type(
+                            params_label
+                        ) or normalize_package_type(s.package_type)
+                        if ptype is None:
+                            if not params_label:
+                                errors.append(
+                                    f"Sample Sr. {s.sr_no}: enter custom Parameters text."
+                                )
+                        else:
+                            desc = describe_sample_package(
+                                s.sample_name,
+                                ptype,
+                                category=category,
                             )
-                        )
+                            status = desc.get("status")
+                            if status == "inactive":
+                                errors.append(
+                                    f"Sample Sr. {s.sr_no}: test package for "
+                                    f"'{s.sample_name.strip()}' ({package_type_label(ptype)}) "
+                                    "exists but is deactivated. Activate it under Test packages."
+                                )
+                            elif status != "defined":
+                                errors.append(
+                                    f"Sample Sr. {s.sr_no}: no active test package found for "
+                                    f"'{s.sample_name.strip()}' ({package_type_label(ptype)}). "
+                                    "Create it under Test packages first."
+                                )
+                            else:
+                                resolved = resolve_package_tests(
+                                    s.sample_name,
+                                    ptype,
+                                    category=category,
+                                )
+                                wl = filter_keys_for_category(
+                                    list(s.tests_with_logo or []), category
+                                )
+                                nwl = filter_keys_for_category(
+                                    list(s.tests_without_logo or []), category
+                                )
+                                allowed = (
+                                    list(resolved.test_keys) if resolved else []
+                                )
+                                errors.extend(
+                                    _validate_intake_tests_in_package(
+                                        s.sr_no, wl + nwl, allowed
+                                    )
+                                )
+                                errors.extend(
+                                    _validate_report_format_for_package(
+                                        s.sr_no, s.report_format, wl, nwl
+                                    )
+                                )
             else:
                 available = tests_for_category(category)
                 keys = filter_keys_for_category(list(s.test_keys or []), category)

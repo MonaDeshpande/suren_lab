@@ -49,7 +49,6 @@ from services.protocols.test_catalog import (
     CATEGORY_WATER,
     TEST_CATALOG,
     WATER_MICRO_TEST_KEYS,
-    catalog_keys_for_category,
     default_water_micro_procedure,
     get_test,
     is_dry_basis_test,
@@ -60,6 +59,8 @@ from services.worksheet_preview import preview_test_calculation  # noqa: E402
 from services.samples import (  # noqa: E402
     ALLOWED_STATUSES,
     SampleRecord,
+    analyst_test_checklist_rows,
+    assigned_test_keys_for_sample,
     get_by_code,
     list_open,
     sample_scope_for_user,
@@ -353,41 +354,62 @@ def main() -> None:
         )
         st.success("Analysis date and appearance saved.")
 
-    # ----- Assigned tests + worksheet -----
+    # ----- Assigned tests -----
     cat = normalize_category(selected.category)
-    catalog_order = catalog_keys_for_category(cat)
-    keys = selected.selected_test_keys()
-    if not keys:
-        keys = catalog_order
-
-    render_section_title(
-        "4. Perform catalog test",
-        (
-            "Pick a microbiological test, enter the observed Result, then Calculate & save."
-            if normalize_category(selected.category) == CATEGORY_MICRO
-            else "Pick a test, edit inputs if needed, then Calculate & save (overwrites within 10 days)."
-        ),
-    )
-
+    is_micro = cat == CATEGORY_MICRO
     is_admin_like = not scoped
     role_keys = (
         water_analyst_test_keys(selected, scope_id, is_admin_like=is_admin_like)
         if cat == CATEGORY_WATER
         else None
     )
+    assigned = assigned_test_keys_for_sample(selected, role_keys=role_keys)
+    if role_keys is not None and not assigned:
+        st.warning(
+            "No tests are assigned to you on this water sample. "
+            "Ask reception to assign you as chemical or micro analyst."
+        )
+        st.stop()
 
-    assigned = [k for k in catalog_order if k in keys]
-    extra = [k for k in keys if k not in catalog_order]
-    assigned = assigned + extra if keys else catalog_order
-    if role_keys is not None:
-        allowed = set(role_keys)
-        assigned = [k for k in assigned if k in allowed]
-        if not assigned:
+    results = list_results(selected.id)
+    checklist_rows = analyst_test_checklist_rows(
+        selected, results, role_keys=role_keys
+    )
+    saved_count = sum(1 for row in checklist_rows if row["Status"] == "Saved")
+    total_count = len(checklist_rows)
+
+    render_section_title(
+        "4. Tests to conduct",
+        "All tests assigned by Reception for this sample. Complete each pending test "
+        "before generating the protocol document.",
+    )
+    st.caption(f"**{saved_count} of {total_count}** tests saved")
+    if checklist_rows:
+        st.dataframe(
+            pd.DataFrame(checklist_rows),
+            use_container_width=True,
+            hide_index=True,
+        )
+        pending_names = [row["Test"] for row in checklist_rows if row["Status"] == "Pending"]
+        if pending_names:
+            shown = ", ".join(pending_names[:8])
+            if len(pending_names) > 8:
+                shown += f", … (+{len(pending_names) - 8} more)"
             st.warning(
-                "No tests are assigned to you on this water sample. "
-                "Ask reception to assign you as chemical or micro analyst."
+                f"{len(pending_names)} test(s) still pending: {shown}"
             )
-            st.stop()
+    else:
+        st.caption("No catalog tests assigned for this sample.")
+
+    render_section_title(
+        "5. Perform catalog test",
+        (
+            "Pick a microbiological test, enter Result and Unit, then Calculate & save."
+            if is_micro
+            else "Pick a test, edit inputs if needed, then Calculate & save (overwrites within 10 days)."
+        ),
+    )
+
     labels = {k: get_test(k).name for k in assigned}
     choice = st.selectbox(
         "Select test",
@@ -403,7 +425,7 @@ def main() -> None:
             "then enter **Result** and save."
         )
 
-    if normalize_category(selected.category) == CATEGORY_MICRO:
+    if is_micro:
         from services.micro_report_catalog import spec_for_key
 
         micro_spec = spec_for_key(choice)
@@ -412,89 +434,10 @@ def main() -> None:
             f"**Method:** {micro_spec.method}"
         )
 
-    formula_lines = [p.strip() for p in (test.formula_display or "").split(";") if p.strip()]
-    if len(formula_lines) > 1:
-        for line in formula_lines:
-            st.info(f"**Formula:** {line}")
-    else:
-        st.info(f"**Formula:** {test.formula_display}")
-
-    # Load prior inputs if any
-    prior = {r.test_key: r for r in list_results(selected.id)}
+    prior = {r.test_key: r for r in results}
     prior_inputs = prior[choice].inputs if choice in prior else {}
-    saved_ctx = get_result_context(selected.id)
-    moisture_key = moisture_ctx_key_for(choice)
-    saved_moisture = saved_ctx.get(moisture_key) if moisture_key else None
-
-    if is_dry_basis_test(choice):
-        if saved_moisture is None and not str(prior_inputs.get("moisture_pct") or "").strip():
-            st.warning(
-                "**Moisture must be calculated and saved first.** "
-                "This test uses the Moisture % for dry-basis conversion. "
-                "Save the **Moisture** test, then return here."
-            )
-        elif saved_moisture is not None:
-            st.caption(f"Moisture from saved test: **{saved_moisture}%** (editable below if needed)")
-
-    inputs: dict = {}
-    with st.form("worksheet_form"):
-        st.markdown(f"#### Worksheet — {test.name}")
-        for field in test.inputs:
-            if field.key == "moisture_pct":
-                continue
-            default = prior_inputs.get(field.key, "")
-            if (
-                field.key == "procedure"
-                and choice in WATER_MICRO_TEST_KEYS
-                and not str(default or "").strip()
-            ):
-                default = default_water_micro_procedure(choice)
-            label = f"{field.label}" + (f" ({field.unit})" if field.unit else "")
-            if field.field_type == "choice":
-                idx = 0
-                if default in field.choices:
-                    idx = field.choices.index(str(default))
-                inputs[field.key] = st.selectbox(
-                    label, field.choices, index=idx, key=f"in_{choice}_{field.key}"
-                )
-            elif field.field_type == "text":
-                inputs[field.key] = st.text_area(
-                    label, value=str(default or ""), key=f"in_{choice}_{field.key}"
-                )
-            else:
-                inputs[field.key] = st.text_input(
-                    label, value=str(default or ""), key=f"in_{choice}_{field.key}"
-                )
-
-        if moisture_key:
-            default_moisture = prior_inputs.get("moisture_pct") or (
-                str(saved_moisture) if saved_moisture is not None else ""
-            )
-            inputs["moisture_pct"] = st.text_input(
-                "Moisture % (auto-filled from saved Moisture — editable)",
-                value=str(default_moisture or ""),
-                key=f"in_{choice}_moisture_pct",
-                help="Fetched from the saved Moisture test. Edit only if an override is required.",
-            )
-
-        btn_col1, btn_col2 = st.columns(2)
-        with btn_col1:
-            recalc_test = st.form_submit_button(
-                "Recalculate", use_container_width=True
-            )
-        with btn_col2:
-            save_test = st.form_submit_button(
-                "Calculate & save result", type="primary", use_container_width=True
-            )
-
+    prior_row = prior.get(choice)
     preview_key = f"worksheet_preview_{selected.id}_{choice}"
-
-    def _run_preview(form_inputs: dict) -> None:
-        preview = preview_test_calculation(selected.id, choice, form_inputs)
-        if preview.error:
-            show_missing_or_error(preview.error)
-        else:
-            st.session_state[preview_key] = preview
 
     def _run_save(form_inputs: dict) -> None:
         if choice == "appearance" and form_inputs.get("appearance_obs"):
@@ -513,43 +456,173 @@ def main() -> None:
         st.session_state.pop(preview_key, None)
         st.rerun()
 
-    if recalc_test:
-        try:
-            _run_preview(inputs)
-        except ValueError as exc:
-            show_missing_or_error(str(exc))
-        except Exception as exc:  # noqa: BLE001
-            st.error(str(exc))
+    if is_micro:
+        from services.catalog_specs import get_spec as get_catalog_spec
 
-    if save_test:
-        try:
-            if is_dry_basis_test(choice):
-                m_val = str(inputs.get("moisture_pct") or "").strip()
-                if not m_val and saved_moisture is None:
-                    show_missing_or_error(
-                        "MOISTURE_REQUIRED:Save the Moisture test before calculating this dry-basis test."
+        cat_spec = get_catalog_spec(choice)
+        fixed_unit = bool(cat_spec and not cat_spec.unit_editable)
+        default_unit = ""
+        if prior_row and (prior_row.unit or "").strip():
+            default_unit = prior_row.unit.strip()
+        elif cat_spec and cat_spec.default_unit:
+            default_unit = cat_spec.default_unit
+        default_value = prior_inputs.get("result_value") or (
+            prior_row.result_value if prior_row else ""
+        )
+
+        with st.form("micro_result_form"):
+            st.markdown(f"#### {test.name}")
+            micro_inputs: dict = {}
+            micro_inputs["result_value"] = st.text_input(
+                "Result",
+                value=str(default_value or ""),
+                key=f"micro_val_{choice}",
+                help="Numeric or qualitative (e.g. Absent, 3.0 x 10³).",
+            )
+            if fixed_unit:
+                unit_display = (cat_spec.default_unit if cat_spec else "") or "cfu/gm"
+                st.text_input(
+                    "Unit",
+                    value=unit_display,
+                    disabled=True,
+                    key=f"micro_unit_ro_{choice}",
+                )
+                micro_inputs["result_unit"] = unit_display
+            else:
+                micro_inputs["result_unit"] = st.text_input(
+                    "Unit",
+                    value=str(default_unit or ""),
+                    key=f"micro_unit_{choice}",
+                )
+            save_micro = st.form_submit_button(
+                "Calculate & save result", type="primary", use_container_width=True
+            )
+
+        if save_micro:
+            try:
+                _run_save(micro_inputs)
+            except ValueError as exc:
+                show_missing_or_error(str(exc))
+            except Exception as exc:  # noqa: BLE001
+                st.error(str(exc))
+    else:
+        formula_lines = [p.strip() for p in (test.formula_display or "").split(";") if p.strip()]
+        if len(formula_lines) > 1:
+            for line in formula_lines:
+                st.info(f"**Formula:** {line}")
+        else:
+            st.info(f"**Formula:** {test.formula_display}")
+
+        saved_ctx = get_result_context(selected.id)
+        moisture_key = moisture_ctx_key_for(choice)
+        saved_moisture = saved_ctx.get(moisture_key) if moisture_key else None
+
+        if is_dry_basis_test(choice):
+            if saved_moisture is None and not str(prior_inputs.get("moisture_pct") or "").strip():
+                st.warning(
+                    "**Moisture must be calculated and saved first.** "
+                    "This test uses the Moisture % for dry-basis conversion. "
+                    "Save the **Moisture** test, then return here."
+                )
+            elif saved_moisture is not None:
+                st.caption(
+                    f"Moisture from saved test: **{saved_moisture}%** (editable below if needed)"
+                )
+
+        inputs: dict = {}
+        with st.form("worksheet_form"):
+            st.markdown(f"#### Worksheet — {test.name}")
+            for field in test.inputs:
+                if field.key == "moisture_pct":
+                    continue
+                default = prior_inputs.get(field.key, "")
+                if (
+                    field.key == "procedure"
+                    and choice in WATER_MICRO_TEST_KEYS
+                    and not str(default or "").strip()
+                ):
+                    default = default_water_micro_procedure(choice)
+                label = f"{field.label}" + (f" ({field.unit})" if field.unit else "")
+                if field.field_type == "choice":
+                    idx = 0
+                    if default in field.choices:
+                        idx = field.choices.index(str(default))
+                    inputs[field.key] = st.selectbox(
+                        label, field.choices, index=idx, key=f"in_{choice}_{field.key}"
+                    )
+                elif field.field_type == "text":
+                    inputs[field.key] = st.text_area(
+                        label, value=str(default or ""), key=f"in_{choice}_{field.key}"
                     )
                 else:
-                    _run_save(inputs)
-            else:
-                _run_save(inputs)
-        except ValueError as exc:
-            show_missing_or_error(str(exc))
-        except Exception as exc:  # noqa: BLE001
-            st.error(str(exc))
+                    inputs[field.key] = st.text_input(
+                        label, value=str(default or ""), key=f"in_{choice}_{field.key}"
+                    )
 
-    preview = st.session_state.get(preview_key)
-    if preview and not preview.error:
-        st.markdown("##### Calculation preview")
-        for step in preview.steps:
-            st.write(f"**{step.label}:** {step.value}")
+            if moisture_key:
+                default_moisture = prior_inputs.get("moisture_pct") or (
+                    str(saved_moisture) if saved_moisture is not None else ""
+                )
+                inputs["moisture_pct"] = st.text_input(
+                    "Moisture % (auto-filled from saved Moisture — editable)",
+                    value=str(default_moisture or ""),
+                    key=f"in_{choice}_moisture_pct",
+                    help="Fetched from the saved Moisture test. Edit only if an override is required.",
+                )
+
+            btn_col1, btn_col2 = st.columns(2)
+            with btn_col1:
+                recalc_test = st.form_submit_button(
+                    "Recalculate", use_container_width=True
+                )
+            with btn_col2:
+                save_test = st.form_submit_button(
+                    "Calculate & save result", type="primary", use_container_width=True
+                )
+
+        def _run_preview(form_inputs: dict) -> None:
+            preview = preview_test_calculation(selected.id, choice, form_inputs)
+            if preview.error:
+                show_missing_or_error(preview.error)
+            else:
+                st.session_state[preview_key] = preview
+
+        if recalc_test:
+            try:
+                _run_preview(inputs)
+            except ValueError as exc:
+                show_missing_or_error(str(exc))
+            except Exception as exc:  # noqa: BLE001
+                st.error(str(exc))
+
+        if save_test:
+            try:
+                if is_dry_basis_test(choice):
+                    m_val = str(inputs.get("moisture_pct") or "").strip()
+                    if not m_val and saved_moisture is None:
+                        show_missing_or_error(
+                            "MOISTURE_REQUIRED:Save the Moisture test before calculating this dry-basis test."
+                        )
+                    else:
+                        _run_save(inputs)
+                else:
+                    _run_save(inputs)
+            except ValueError as exc:
+                show_missing_or_error(str(exc))
+            except Exception as exc:  # noqa: BLE001
+                st.error(str(exc))
+
+        preview = st.session_state.get(preview_key)
+        if preview and not preview.error:
+            st.markdown("##### Calculation preview")
+            for step in preview.steps:
+                st.write(f"**{step.label}:** {step.value}")
 
     # ----- Page-1 summary -----
     render_section_title(
-        "5. Page-1 result summary",
+        "6. Page-1 result summary",
         "Saved results from DB — reopen this sample anytime within 10 days to edit.",
     )
-    results = list_results(selected.id)
     if not results:
         st.caption("No test results saved yet.")
     else:
@@ -569,116 +642,116 @@ def main() -> None:
             hide_index=True,
         )
 
-    # ----- Generate protocol (Food / Water); Micro uses Reviewer final report only -----
-    is_micro = normalize_category(selected.category) == CATEGORY_MICRO
-    if is_micro:
-        render_section_title(
-            "6. Protocol document",
-            "Micro samples do not use an analyst protocol worksheet document. "
-            "Save all results, set status to completed, then the Reviewer generates "
-            "the Microbiological Test Report.",
-        )
-    else:
-        render_section_title("6. Generate final protocol")
-        header = get_protocol_header(selected.id)
-        from services.protocol_docx import test_unsaved_display_name
+    # ----- Generate protocol (Food / Water / Micro) -----
+    render_section_title(
+        "7. Generate protocol document",
+        "Micro uses reference/Micro Protocol.docx; Food and Water use their category templates.",
+    )
+    header = get_protocol_header(selected.id)
+    from services.protocol_docx import test_unsaved_display_name
+    from services.micro_protocol_docx import suggest_micro_protocol_filename
 
-        saved_keys = {
-            r.test_key
-            for r in results
-            if (r.result_value or "").strip()
-            or any(str(v).strip() for v in (r.inputs or {}).values())
-        }
-        keys_to_check = (
-            role_keys
-            if role_keys is not None
-            else selected.selected_test_keys()
+    saved_keys = {
+        r.test_key
+        for r in results
+        if (r.result_value or "").strip()
+        or any(str(v).strip() for v in (r.inputs or {}).values())
+    }
+    keys_to_check = (
+        role_keys
+        if role_keys is not None
+        else selected.selected_test_keys()
+    )
+    missing_saves = [
+        test_unsaved_display_name(k)
+        for k in keys_to_check
+        if k in TEST_CATALOG and k not in saved_keys
+    ]
+    if missing_saves:
+        st.warning(
+            "These selected tests have no saved result yet — their worksheet "
+            "Readings will be blank until you Calculate & save: "
+            + ", ".join(missing_saves)
         )
-        missing_saves = [
-            test_unsaved_display_name(k)
-            for k in keys_to_check
-            if k in TEST_CATALOG and k not in saved_keys
-        ]
-        if missing_saves:
+    if st.button("Generate protocol document", type="primary"):
+        if header is None or not (header.protocol_no or "").strip():
             st.warning(
-                "These selected tests have no saved result yet — their worksheet "
-                "Readings will be blank until you Calculate & save: "
-                + ", ".join(missing_saves)
+                "Protocol number is missing. Ask reception to enter it before generating."
             )
-        if st.button("Generate protocol document", type="primary"):
-            if header is None or not (header.protocol_no or "").strip():
-                st.warning(
-                    "Protocol number is missing. Ask reception to enter it before generating."
+        else:
+            try:
+                if missing_saves:
+                    st.info(
+                        "Generating with blank worksheets for: "
+                        + ", ".join(missing_saves)
+                    )
+                gen_by = actor_display_name(actor)
+                gen_at = format_stamp_datetime(now_lab())
+                docx_bytes, pdf_bytes, docx_name, pdf_name, pdf_error = generate_protocol_documents(
+                    selected,
+                    header,
+                    results,
+                    generated_by=gen_by,
+                    generated_at=gen_at,
                 )
-            else:
-                try:
-                    if missing_saves:
-                        st.info(
-                            "Generating with blank worksheets for: "
-                            + ", ".join(missing_saves)
-                        )
-                    gen_by = actor_display_name(actor)
-                    gen_at = format_stamp_datetime(now_lab())
-                    docx_bytes, pdf_bytes, docx_name, pdf_name, pdf_error = generate_protocol_documents(
-                        selected,
-                        header,
-                        results,
-                        generated_by=gen_by,
-                        generated_at=gen_at,
+                st.session_state["proto_docx_bytes"] = docx_bytes
+                st.session_state["proto_docx_name"] = docx_name
+                st.session_state["proto_pdf_bytes"] = pdf_bytes
+                st.session_state["proto_pdf_name"] = pdf_name
+                st.session_state["proto_pdf_error"] = pdf_error
+                log_from_user(
+                    actor,
+                    "report.protocol",
+                    "request_samples",
+                    selected.sample_code,
+                )
+                if pdf_bytes:
+                    st.success("Protocol generated. Download Word and/or PDF below.")
+                else:
+                    st.warning(
+                        "Word protocol generated. PDF conversion failed — "
+                        "see message below. You can still download the Word file."
                     )
-                    st.session_state["proto_docx_bytes"] = docx_bytes
-                    st.session_state["proto_docx_name"] = docx_name
-                    st.session_state["proto_pdf_bytes"] = pdf_bytes
-                    st.session_state["proto_pdf_name"] = pdf_name
-                    st.session_state["proto_pdf_error"] = pdf_error
-                    log_from_user(
-                        actor,
-                        "report.protocol",
-                        "request_samples",
-                        selected.sample_code,
-                    )
-                    if pdf_bytes:
-                        st.success("Protocol generated. Download Word and/or PDF below.")
-                    else:
-                        st.warning(
-                            "Word protocol generated. PDF conversion failed — "
-                            "see message below. You can still download the Word file."
-                        )
-                except Exception as exc:  # noqa: BLE001
-                    st.error(str(exc))
+            except Exception as exc:  # noqa: BLE001
+                st.error(str(exc))
 
-        if st.session_state.get("proto_docx_bytes"):
-            dl1, dl2 = st.columns(2)
-            with dl1:
+    if st.session_state.get("proto_docx_bytes"):
+        default_name = (
+            suggest_micro_protocol_filename(selected)
+            if is_micro
+            else suggest_protocol_filename(selected)
+        )
+        dl1, dl2 = st.columns(2)
+        with dl1:
+            st.download_button(
+                "Download Word protocol (.docx)",
+                data=st.session_state["proto_docx_bytes"],
+                file_name=st.session_state.get("proto_docx_name", default_name),
+                mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                use_container_width=True,
+            )
+        with dl2:
+            if st.session_state.get("proto_pdf_bytes"):
                 st.download_button(
-                    "Download Word protocol (.docx)",
-                    data=st.session_state["proto_docx_bytes"],
-                    file_name=st.session_state.get("proto_docx_name", suggest_protocol_filename(selected)),
-                    mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                    "Download PDF protocol",
+                    data=st.session_state["proto_pdf_bytes"],
+                    file_name=st.session_state.get("proto_pdf_name", "protocol.pdf"),
+                    mime="application/pdf",
                     use_container_width=True,
                 )
-            with dl2:
-                if st.session_state.get("proto_pdf_bytes"):
-                    st.download_button(
-                        "Download PDF protocol",
-                        data=st.session_state["proto_pdf_bytes"],
-                        file_name=st.session_state.get("proto_pdf_name", "protocol.pdf"),
-                        mime="application/pdf",
-                        use_container_width=True,
-                    )
+            else:
+                pdf_error = st.session_state.get("proto_pdf_error")
+                if pdf_error:
+                    st.warning(f"PDF not available: {pdf_error}")
                 else:
-                    pdf_error = st.session_state.get("proto_pdf_error")
-                    if pdf_error:
-                        st.warning(f"PDF not available: {pdf_error}")
-                    else:
-                        st.caption(
-                            "PDF not available. Install Microsoft Word or LibreOffice "
-                            "on the PC running this app, then generate again."
-                        )
+                    st.caption(
+                        "PDF not available. Install Microsoft Word or LibreOffice "
+                        "on the PC running this app, then generate again."
+                    )
 
     # ----- Status -----
     st.divider()
-    render_section_title("7. Sample status")
+    render_section_title("8. Sample status")
     with st.form("status_form"):
         # Analyst may set pending / in_progress / completed (not reported)
         analyst_statuses = [s for s in ALLOWED_STATUSES if s != "reported"]

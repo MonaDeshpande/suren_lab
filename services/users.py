@@ -123,8 +123,13 @@ def user_has_role(user_id: int, role: str) -> bool:
 
 def analyst_display_label(user: UserRow) -> str:
     """Friendly label for analyst pickers."""
-    name = (user.full_name or "").strip() or user.username
+    name = analyst_full_name(user)
     return f"{name} ({user.username})"
+
+
+def analyst_full_name(user: UserRow) -> str:
+    """Analyst display name without username suffix (protocol / reports)."""
+    return (user.full_name or "").strip() or user.username
 
 
 def list_active_analysts() -> list[UserRow]:

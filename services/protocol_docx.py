@@ -36,6 +36,12 @@ from services.branding import (
     NUTRITION_LOGO_WIDTH_IN,
 )
 from services.protocol_store import ProtocolHeader, TestResultRow
+from services.input_store import primary_inputs, recalc_inputs
+from services.number_format import (
+    format_final_number,
+    format_input_number,
+    strip_analyst_label_suffix,
+)
 from services.protocols.test_catalog import (
     CATEGORY_WATER,
     TEST_CATALOG,
@@ -681,6 +687,50 @@ def _set_row_cant_split(row) -> None:
         tr_pr.append(OxmlElement("w:cantSplit"))
 
 
+_WORKSHEET_CELL_MARGIN_TWIPS = 50
+_WORKSHEET_CELL_SPACING_TWIPS = 40
+
+
+def _set_cell_margins(cell, margin_twips: int = _WORKSHEET_CELL_MARGIN_TWIPS) -> None:
+    """Inset worksheet cell text from borders (w:tcMar)."""
+    tc_pr = cell._tc.get_or_add_tcPr()
+    existing = tc_pr.find(qn("w:tcMar"))
+    if existing is not None:
+        tc_pr.remove(existing)
+    tc_mar = OxmlElement("w:tcMar")
+    for side in ("top", "left", "bottom", "right"):
+        side_el = OxmlElement(f"w:{side}")
+        side_el.set(qn("w:w"), str(margin_twips))
+        side_el.set(qn("w:type"), "dxa")
+        tc_mar.append(side_el)
+    tc_pr.append(tc_mar)
+
+
+def _set_paragraph_cell_spacing(
+    paragraph,
+    *,
+    before: int = _WORKSHEET_CELL_SPACING_TWIPS,
+    after: int = _WORKSHEET_CELL_SPACING_TWIPS,
+) -> None:
+    """Light vertical spacing inside worksheet cells."""
+    p_pr = paragraph._element.get_or_add_pPr()
+    spacing = p_pr.find(qn("w:spacing"))
+    if spacing is None:
+        spacing = OxmlElement("w:spacing")
+        p_pr.append(spacing)
+    spacing.set(qn("w:before"), str(before))
+    spacing.set(qn("w:after"), str(after))
+
+
+def _apply_worksheet_cell_padding(table) -> None:
+    """Readable inset between cell borders and text on observation worksheets."""
+    for row in table.rows:
+        for cell in row.cells:
+            _set_cell_margins(cell)
+            for para in cell.paragraphs:
+                _set_paragraph_cell_spacing(para)
+
+
 def _make_table_inline(table) -> None:
     """Remove Word floating positioning so PDF flow matches body order."""
     tbl_pr = table._tbl.tblPr
@@ -830,6 +880,19 @@ def _delete_paragraph(paragraph: Paragraph) -> None:
 def _title_matches(text: str, patterns: list[str]) -> bool:
     upper = text.upper()
     return any(p.upper() in upper for p in patterns)
+
+
+def _suffix_unit(value: str, unit: str) -> str:
+    """Append a unit suffix when the worked value does not already include it."""
+    val = (value or "").strip()
+    u = (unit or "").strip()
+    if not val:
+        return val
+    if not u:
+        return val
+    if val.endswith(u) or val.endswith(f" {u}"):
+        return val
+    return f"{val} {u}"
 
 
 def _formula_readings_text(
@@ -1076,14 +1139,7 @@ def _formula_lines(formula_display: str) -> list[str]:
 
 def _fmt_num(value: Any, places: int = 4) -> str:
     """Format a numeric input/result for the worksheet."""
-    if value is None or str(value).strip() == "":
-        return ""
-    try:
-        n = float(value)
-    except (TypeError, ValueError):
-        return str(value).strip()
-    text = f"{n:.{places}f}".rstrip("0").rstrip(".")
-    return text if text else "0"
+    return format_input_number(value, max_places=places)
 
 
 def _input_num(inputs: dict[str, Any], key: str) -> Optional[float]:
@@ -1130,6 +1186,66 @@ def _answer_text(res: TestResultRow) -> str:
     if unit and not value.endswith(unit):
         return f"{value} {unit}"
     return value
+
+
+def _answer_from_value(value: str, unit: str) -> str:
+    val = (value or "").strip()
+    if not val:
+        return ""
+    u = (unit or "").strip()
+    if u and not val.endswith(u):
+        return f"{val} {u}"
+    return val
+
+
+def _protocol_issued_to(sample: SampleRecord, header: ProtocolHeader) -> str:
+    """Sample Issued to: analyst full name without legacy picker suffix."""
+    name = (sample.assigned_analyst_name or "").strip()
+    if name:
+        return strip_analyst_label_suffix(name)
+    return strip_analyst_label_suffix(header.issued_to or "")
+
+
+def _computed_result_value(
+    test,
+    test_key: str,
+    inputs: dict[str, Any],
+    ctx: dict[str, float],
+) -> str:
+    if not test or not inputs:
+        return ""
+    local_ctx = dict(ctx)
+    local_ctx.pop(test_key, None)
+    try:
+        display, numeric = test.calculate(inputs, local_ctx)
+        if numeric is not None:
+            return format_final_number(numeric)
+        return (display or "").strip()
+    except (ValueError, TypeError):
+        return ""
+
+
+def _fill_input_reading_cells(
+    row,
+    col: int,
+    inputs: dict[str, Any],
+    test_key: str,
+    input_key: str,
+) -> None:
+    primary = primary_inputs(inputs)
+    recalc = recalc_inputs(inputs)
+    unit = _input_field_unit(test_key, input_key)
+    p_raw = primary.get(input_key)
+    if p_raw is not None and str(p_raw).strip():
+        _set_reading_cell(row, col, _format_reading_text(p_raw, unit))
+    r_raw = recalc.get(input_key)
+    recalc_col = col + 1
+    if (
+        r_raw is not None
+        and str(r_raw).strip()
+        and recalc_col < len(row.cells)
+    ):
+        _set_reading_cell(row, recalc_col, _format_reading_text(r_raw, unit))
 
 
 def _input_field_unit(test_key: str, input_key: str) -> str:
@@ -1208,7 +1324,8 @@ def worked_formula_lines(
             if None in (w1, w2, w) or w == 0:
                 return []
             worked = (
-                f"({_fmt_num(w1)} - {_fmt_num(w2)}) × 100 / {_fmt_num(w)} = {ans}"
+                f"({_fmt_num(w1)} - {_fmt_num(w2)}) × 100 / {_fmt_num(w)} "
+                f"= {_suffix_unit(ans, '%')}"
             )
             return [worked]
 
@@ -1223,11 +1340,11 @@ def worked_formula_lines(
             dry = wet * 100.0 / (100.0 - moisture) if (100.0 - moisture) != 0 else None
             wet_line = (
                 f"({_fmt_num(w2)} - {_fmt_num(w1)}) × 100 / {_fmt_num(w)} "
-                f"= {_fmt_num(wet, 2)}"
+                f"= {_suffix_unit(_fmt_num(wet, 2), '%')}"
             )
             dry_line = (
                 f"{_fmt_num(wet, 2)} × 100 / (100 - {_fmt_num(moisture, 2)}) "
-                f"= {ans or _fmt_num(dry, 2)}"
+                f"= {_suffix_unit(ans or _fmt_num(dry, 2), '%')}"
             )
             return [wet_line, dry_line]
 
@@ -1242,11 +1359,11 @@ def worked_formula_lines(
             dry = wet * 100.0 / (100.0 - moisture) if (100.0 - moisture) != 0 else None
             wet_line = (
                 f"({_fmt_num(w1)} - {_fmt_num(w2)}) × 100 / {_fmt_num(w)} "
-                f"= {_fmt_num(wet, 2)}"
+                f"= {_suffix_unit(_fmt_num(wet, 2), '%')}"
             )
             dry_line = (
                 f"{_fmt_num(wet, 2)} × 100 / (100 - {_fmt_num(moisture, 2)}) "
-                f"= {ans or _fmt_num(dry, 2)}"
+                f"= {_suffix_unit(ans or _fmt_num(dry, 2), '%')}"
             )
             return [wet_line, dry_line]
 
@@ -1304,7 +1421,7 @@ def worked_formula_lines(
             return [
                 (
                     f"({_fmt_num(inv, 2)} - {_fmt_num(red, 2)}) × 0.95 "
-                    f"= {ans or _fmt_num((inv - red) * 0.95, 2)}"
+                    f"= {_suffix_unit(ans or _fmt_num((inv - red) * 0.95, 2), '%')}"
                 )
             ]
 
@@ -1314,7 +1431,8 @@ def worked_formula_lines(
             if None in (ug, wt) or wt == 0:
                 return []
             return [
-                f"({_fmt_num(ug)} × 10) / {_fmt_num(wt)} = {ans}"
+                f"({_fmt_num(ug)} × 10) / {_fmt_num(wt)} "
+                f"= {_suffix_unit(ans, 'ppm')}"
             ]
 
         if test_key == "tds":
@@ -2981,6 +3099,7 @@ def _apply_worksheet_page_layout(doc: Document) -> None:
             continue
 
         table = Table(child, doc)
+        _apply_worksheet_cell_padding(table)
         row_count = len(table.rows)
         for ri, row in enumerate(table.rows):
             _set_row_cant_split(row)
@@ -3001,15 +3120,21 @@ def _fill_water_chloride_readings(table, res: TestResultRow) -> None:
     if len(table.rows) < 3 or len(table.rows[2].cells) < 2:
         return
     inputs = res.inputs or {}
-    v1 = inputs.get("v1")
-    v2 = inputs.get("v2")
-    parts = []
-    if v1 is not None and str(v1).strip():
-        parts.append(f"V1={_fmt_num(v1)}")
-    if v2 is not None and str(v2).strip():
-        parts.append(f"V2={_fmt_num(v2)}")
-    if parts:
-        _set_cell(table.rows[2].cells[1], ", ".join(parts))
+    for col_idx, bucket in (
+        (1, primary_inputs(inputs)),
+        (2, recalc_inputs(inputs)),
+    ):
+        if not bucket:
+            continue
+        v1 = bucket.get("v1")
+        v2 = bucket.get("v2")
+        parts = []
+        if v1 is not None and str(v1).strip():
+            parts.append(f"V1={_fmt_num(v1)}")
+        if v2 is not None and str(v2).strip():
+            parts.append(f"V2={_fmt_num(v2)}")
+        if parts and col_idx < len(table.rows[2].cells):
+            _set_cell(table.rows[2].cells[col_idx], ", ".join(parts))
 
 
 def _fill_nutrition_sugar_formula_row(
@@ -3179,13 +3304,7 @@ def _fill_worksheet_readings(
                 row = table.rows[row_idx]
                 if len(row.cells) < 2:
                     continue
-                raw = inputs.get(input_key)
-                if raw is None or str(raw).strip() == "":
-                    continue
-                unit = _input_field_unit(test_key, input_key)
-                _set_reading_cell(
-                    row, 1, _format_reading_text(raw, unit)
-                )
+                _fill_input_reading_cells(row, 1, inputs, test_key, input_key)
             _fill_water_chloride_readings(table, res)
             continue
 
@@ -3196,11 +3315,11 @@ def _fill_worksheet_readings(
             reading_col = 2 if (is_water and len(row.cells) >= 3 and test_key in ("ph", "odor", "turbidity", "conductivity")) else 1
             if len(row.cells) <= reading_col:
                 continue
-            raw = inputs.get(input_key)
-            if raw is None or str(raw).strip() == "":
+            primary = primary_inputs(inputs)
+            recalc = recalc_inputs(inputs)
+            if primary.get(input_key) is None and recalc.get(input_key) is None:
                 continue
-            unit = _input_field_unit(test_key, input_key)
-            _set_reading_cell(row, reading_col, _format_reading_text(raw, unit))
+            _fill_input_reading_cells(row, reading_col, inputs, test_key, input_key)
 
     if is_water:
         return
@@ -3213,28 +3332,32 @@ def _fill_worksheet_readings(
             for row_idx, prefer_key, input_key in NUTRITION_SUGAR_READINGS:
                 if row_idx >= len(table.rows) or len(table.rows[row_idx].cells) < 3:
                     continue
-                raw = None
                 used_key = prefer_key
+                res = None
                 for candidate in (prefer_key, "bn_added_sugar", "bn_total_sugar"):
-                    res = by_key.get(candidate)
-                    if not res:
+                    candidate_res = by_key.get(candidate)
+                    if not candidate_res:
                         continue
-                    val = (res.inputs or {}).get(input_key)
-                    if val is not None and str(val).strip() != "":
-                        raw = val
+                    merged = candidate_res.inputs or {}
+                    primary = primary_inputs(merged)
+                    recalc = recalc_inputs(merged)
+                    has_val = (
+                        primary.get(input_key) is not None
+                        or recalc.get(input_key) is not None
+                    )
+                    if not has_val and input_key == "sample_wt":
+                        has_val = (
+                            primary.get("sample_wt") is not None
+                            or recalc.get("sample_wt") is not None
+                        )
+                    if has_val:
+                        res = candidate_res
                         used_key = candidate
                         break
-                    if input_key == "sample_wt":
-                        val = (res.inputs or {}).get("sample_wt")
-                        if val is not None and str(val).strip() != "":
-                            raw = val
-                            used_key = candidate
-                            break
-                if raw is None:
+                if res is None:
                     continue
-                unit = _input_field_unit(used_key, input_key)
-                _set_reading_cell(
-                    table.rows[row_idx], 2, _format_reading_text(raw, unit)
+                _fill_input_reading_cells(
+                    table.rows[row_idx], 2, res.inputs or {}, used_key, input_key
                 )
         return
 
@@ -3246,29 +3369,32 @@ def _fill_worksheet_readings(
         for row_idx, prefer_key, input_key in SUGAR_READINGS:
             if row_idx >= len(table.rows) or len(table.rows[row_idx].cells) < 3:
                 continue
-            raw = None
             used_key = prefer_key
+            res = None
             for candidate in (prefer_key, "invert_sugar", "reducing_sugar"):
-                res = by_key.get(candidate)
-                if not res:
+                candidate_res = by_key.get(candidate)
+                if not candidate_res:
                     continue
-                val = (res.inputs or {}).get(input_key)
-                if val is not None and str(val).strip() != "":
-                    raw = val
+                merged = candidate_res.inputs or {}
+                primary = primary_inputs(merged)
+                recalc = recalc_inputs(merged)
+                has_val = (
+                    primary.get(input_key) is not None
+                    or recalc.get(input_key) is not None
+                )
+                if not has_val and input_key == "sample_wt":
+                    has_val = (
+                        primary.get("sample_wt") is not None
+                        or recalc.get("sample_wt") is not None
+                    )
+                if has_val:
+                    res = candidate_res
                     used_key = candidate
                     break
-                # sample_wt shared — also try alternate key's sample_wt
-                if input_key == "sample_wt":
-                    val = (res.inputs or {}).get("sample_wt")
-                    if val is not None and str(val).strip() != "":
-                        raw = val
-                        used_key = candidate
-                        break
-            if raw is None:
+            if res is None:
                 continue
-            unit = _input_field_unit(used_key, input_key)
-            _set_reading_cell(
-                table.rows[row_idx], 2, _format_reading_text(raw, unit)
+            _fill_input_reading_cells(
+                table.rows[row_idx], 2, res.inputs or {}, used_key, input_key
             )
 
 
@@ -3322,38 +3448,53 @@ def _fill_worksheet_formulas(
         table = tables[t_idx]
         lines = _formula_lines(test.formula_display)
         inputs = res.inputs or {}
-        result_value = res.result_value or ""
-        worked = worked_formula_lines(
-            test_key, inputs, ctx, result_value or ""
-        )
-        answer = _answer_text(res)
+        primary = primary_inputs(inputs)
+        recalc = recalc_inputs(inputs)
         unit = (res.unit or "") or "%"
 
-        for i, ri in enumerate(row_indices):
-            if ri >= len(table.rows):
-                continue
-            row = table.rows[ri]
-            if not row.cells:
-                continue
-            symbolic = lines[i] if i < len(lines) else test.formula_display
-            existing_desc = _cell_text(row.cells[0]).strip()
-            if not existing_desc:
-                _set_cell(row.cells[0], symbolic)
-            elif not is_nutrition:
-                _set_cell(row.cells[0], symbolic)
-
-            worked_line = worked[i] if i < len(worked) else ""
-            is_final = len(row_indices) == 1 or i == len(row_indices) - 1
-            is_dual_first = len(row_indices) > 1 and i == 0
-            reading_text = _formula_readings_text(
-                worked_line,
-                answer if is_final else "",
-                unit,
-                is_final_row=is_final,
-                is_dual_first_row=is_dual_first,
+        column_sets: list[tuple[dict[str, Any], str, int]] = []
+        primary_rv = (
+            _computed_result_value(test, test_key, primary, ctx)
+            if recalc
+            else (res.result_value or "").strip()
+        )
+        column_sets.append((primary, primary_rv, 1))
+        if recalc:
+            column_sets.append(
+                (recalc, (res.result_value or "").strip(), 2)
             )
-            if reading_text:
-                _set_reading_cell(row, 1, reading_text)
+
+        for work_inputs, result_value, reading_col in column_sets:
+            worked = worked_formula_lines(
+                test_key, work_inputs, ctx, result_value or ""
+            )
+            answer = _answer_from_value(result_value, unit)
+
+            for i, ri in enumerate(row_indices):
+                if ri >= len(table.rows):
+                    continue
+                row = table.rows[ri]
+                if not row.cells:
+                    continue
+                symbolic = lines[i] if i < len(lines) else test.formula_display
+                existing_desc = _cell_text(row.cells[0]).strip()
+                if not existing_desc:
+                    _set_cell(row.cells[0], symbolic)
+                elif not is_nutrition:
+                    _set_cell(row.cells[0], symbolic)
+
+                worked_line = worked[i] if i < len(worked) else ""
+                is_final = len(row_indices) == 1 or i == len(row_indices) - 1
+                is_dual_first = len(row_indices) > 1 and i == 0
+                reading_text = _formula_readings_text(
+                    worked_line,
+                    answer if is_final else "",
+                    unit,
+                    is_final_row=is_final,
+                    is_dual_first_row=is_dual_first,
+                )
+                if reading_text:
+                    _set_reading_cell(row, reading_col, reading_text)
 
 
 def _fill_jaggery_header_and_summary(
@@ -3547,6 +3688,8 @@ def fill_protocol_docx_bytes(
     """
     Produce a filled protocol .docx for download.
     """
+    header.issued_to = _protocol_issued_to(sample, header)
+
     template = _template_path(sample)
     if not template.exists():
         raise FileNotFoundError(f"Protocol template missing: {template}")
@@ -3627,6 +3770,10 @@ def fill_protocol_docx_bytes(
     if is_water:
         _append_water_micro_observation_page(doc, sample, header, by_key)
     _remove_trailing_empty_paragraphs(doc)
+
+    from services.docx_layout import finalize_docx_document
+
+    finalize_docx_document(doc, set_qsf=False)
 
     out = io.BytesIO()
     doc.save(out)

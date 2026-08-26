@@ -814,6 +814,80 @@ def update_formula(
             actor=actor,
         )
         new_version = existing.current_version_no + 1
+
+        if definition_changed:
+            deactivate_sql = """
+                UPDATE custom_formulas
+                   SET is_active = FALSE, updated_at = NOW()
+                 WHERE id = %s
+            """
+            insert_formula = """
+                INSERT INTO custom_formulas (
+                    test_key, name, method, unit, category, package_type,
+                    formula_display, expression, use_dry_basis, moisture_input_key,
+                    protocol_family, current_version_no, is_active, is_validated,
+                    validation_trials_json
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, TRUE, TRUE, %s)
+                RETURNING id
+            """
+            insert_input = """
+                INSERT INTO custom_formula_inputs (
+                    formula_id, field_key, label, unit, required, field_type,
+                    choices_json, sort_order
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+            """
+            with get_db() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(deactivate_sql, (formula_id,))
+                    cur.execute(
+                        insert_formula,
+                        (
+                            existing.test_key,
+                            title,
+                            (method or "").strip(),
+                            (unit or "").strip(),
+                            existing.category,
+                            existing.package_type,
+                            display,
+                            expr,
+                            bool(use_dry_basis),
+                            (moisture_input_key or "").strip() or None,
+                            fam,
+                            new_version,
+                            json.dumps(existing.validation_trials),
+                        ),
+                    )
+                    new_row = cur.fetchone()
+                    new_formula_id = int(new_row[0])
+                    for order, inp in enumerate(cleaned_inputs):
+                        cur.execute(
+                            insert_input,
+                            (
+                                new_formula_id,
+                                inp.field_key,
+                                inp.label,
+                                inp.unit,
+                                inp.required,
+                                inp.field_type,
+                                json.dumps(inp.choices),
+                                order,
+                            ),
+                        )
+            invalidate_cache()
+            log_from_user(
+                actor,
+                "custom_formula.update",
+                ENTITY_TABLE,
+                new_formula_id,
+                details=f"v{new_version} from #{formula_id}",
+                edit_reason=edit_reason,
+            )
+            updated = get_formula(new_formula_id)
+            if updated is None:
+                raise RuntimeError("Formula update succeeded but reload failed.")
+            return updated
     else:
         new_version = existing.current_version_no
 

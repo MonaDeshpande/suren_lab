@@ -76,8 +76,8 @@ _SAMPLE_SELECT = """
             s.assigned_micro_analyst_id,
             COALESCE(um.full_name, um.username, '')
           FROM request_samples s
-          JOIN test_requests tr ON tr.id = s.request_id
-          JOIN customers c ON c.id = tr.customer_id
+          JOIN test_requests tr ON tr.id = s.request_id AND tr.is_active = TRUE
+          JOIN customers c ON c.id = tr.customer_id AND c.is_active = TRUE
           LEFT JOIN users ua ON ua.id = s.assigned_analyst_id
           LEFT JOIN users um ON um.id = s.assigned_micro_analyst_id
 """
@@ -184,6 +184,33 @@ def normalize_report_format(value: str) -> str:
 def report_format_label(value: str) -> str:
     """Human label for a stored report_format value."""
     return REPORT_FORMAT_LABELS.get(normalize_report_format(value), value)
+
+
+def default_test_report_no(sample: SampleRecord, *, with_logo: bool) -> str:
+    """
+    Report No for a final test report.
+
+    Uses sample_code (fallback lab_code). When report_format is Both, appends
+    /01 for the with-logo document and /02 for the without-logo document.
+    """
+    base = (sample.sample_code or sample.lab_code or "").strip().rstrip("/")
+    if not base:
+        return ""
+    fmt = normalize_report_format(sample.report_format)
+    if fmt == REPORT_FORMAT_BOTH:
+        return f"{base}/{'01' if with_logo else '02'}"
+    return base
+
+
+def report_page_label(*, with_logo: bool, page: int = 1, total: int = 1) -> str:
+    """Footer page label: 'page n of N' with logo, 'pg n of N' without."""
+    word = "page" if with_logo else "pg"
+    return f"{word} {page} of {total}"
+
+
+def default_report_with_logo(sample: SampleRecord) -> bool:
+    """True when a single-document report (not Both) should use the logo letterhead."""
+    return normalize_report_format(sample.report_format) != REPORT_FORMAT_WITHOUT_LOGO
 
 
 def water_report_keys(sample: SampleRecord) -> list[str]:
@@ -378,6 +405,7 @@ def get_by_code(
 
     sql = _SAMPLE_SELECT + """
          WHERE UPPER(s.sample_code) = %s
+           AND s.is_active = TRUE
            AND s.expires_at > NOW()
     """
     params: list = [code]
@@ -423,7 +451,7 @@ def search_open(
         raise ValueError(f"Invalid search by '{by}'. Use one of {SEARCH_BY}.")
 
     pattern = f"%{q}%"
-    sql = _SAMPLE_SELECT + "\n         WHERE s.expires_at > NOW()\n"
+    sql = _SAMPLE_SELECT + "\n         WHERE s.is_active = TRUE AND s.expires_at > NOW()\n"
     params: list = []
 
     if by == "lab_code":
@@ -469,7 +497,7 @@ def list_open(
     ----------
     status : optional filter — pending | in_progress | completed | reported
     """
-    sql = _SAMPLE_SELECT + "\n         WHERE s.expires_at > NOW()\n"
+    sql = _SAMPLE_SELECT + "\n         WHERE s.is_active = TRUE AND s.expires_at > NOW()\n"
     params: list = []
     if status and status in ALLOWED_STATUSES:
         sql += "           AND s.status = %s\n"
@@ -523,6 +551,70 @@ def water_analyst_test_keys(
     if is_micro:
         allowed.update(WATER_MICRO_TEST_KEYS)
     return [k for k in keys if k in allowed]
+
+
+def worksheet_result_is_saved(row) -> bool:
+    """True when a saved worksheet row has a result value or non-empty inputs."""
+    if (row.result_value or "").strip():
+        return True
+    return any(str(v).strip() for v in (row.inputs or {}).values())
+
+
+def assigned_test_keys_for_sample(
+    sample: SampleRecord,
+    *,
+    role_keys: list[str] | None = None,
+) -> list[str]:
+    """Catalog keys assigned to the sample, in category order (optional role filter)."""
+    cat = normalize_category(sample.category)
+    catalog_order = catalog_keys_for_category(cat)
+    keys = sample.selected_test_keys()
+    if not keys:
+        keys = catalog_order
+
+    assigned = [k for k in catalog_order if k in keys]
+    extra = [k for k in keys if k not in catalog_order]
+    assigned = assigned + extra if keys else list(catalog_order)
+    if role_keys is not None:
+        allowed = set(role_keys)
+        assigned = [k for k in assigned if k in allowed]
+    return assigned
+
+
+def analyst_test_checklist_rows(
+    sample: SampleRecord,
+    results: list,
+    *,
+    role_keys: list[str] | None = None,
+) -> list[dict]:
+    """Rows for the analyst Tests-to-conduct table (Sr, Test, Method, Status, Result)."""
+    from services.protocols.test_catalog import get_test
+
+    assigned = assigned_test_keys_for_sample(sample, role_keys=role_keys)
+    prior = {r.test_key: r for r in results}
+    rows: list[dict] = []
+    for idx, key in enumerate(assigned, start=1):
+        test = get_test(key)
+        saved_row = prior.get(key)
+        saved = saved_row is not None and worksheet_result_is_saved(saved_row)
+        result_display = "—"
+        if saved and saved_row:
+            val = (saved_row.result_value or "").strip()
+            unit = (saved_row.unit or "").strip()
+            if val:
+                result_display = f"{val} {unit}".strip()
+            else:
+                result_display = "Saved"
+        rows.append(
+            {
+                "Sr": idx,
+                "Test": test.name,
+                "Method": test.method or "—",
+                "Status": "Saved" if saved else "Pending",
+                "Result": result_display,
+            }
+        )
+    return rows
 
 
 def update_status(

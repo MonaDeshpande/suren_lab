@@ -142,8 +142,9 @@ def search_customers(query: str, limit: int = 20) -> list[Customer]:
         SELECT id, customer_name, address, contact_person,
                contact_number, email, gst_number
           FROM customers
-         WHERE gst_number ILIKE %s
-            OR customer_name ILIKE %s
+         WHERE is_active = TRUE
+           AND (gst_number ILIKE %s
+            OR customer_name ILIKE %s)
          ORDER BY customer_name
          LIMIT %s
     """
@@ -163,6 +164,7 @@ def list_recent_customers(limit: int = 20) -> list[Customer]:
         SELECT id, customer_name, address, contact_person,
                contact_number, email, gst_number
           FROM customers
+         WHERE is_active = TRUE
          ORDER BY updated_at DESC
          LIMIT %s
     """
@@ -180,7 +182,7 @@ def get_customer_by_id(customer_id: int) -> Optional[Customer]:
         SELECT id, customer_name, address, contact_person,
                contact_number, email, gst_number
           FROM customers
-         WHERE id = %s
+         WHERE id = %s AND is_active = TRUE
     """
     with get_db() as conn:
         with conn.cursor() as cur:
@@ -200,7 +202,8 @@ def get_customer_by_gst(gst_number: str) -> Optional[Customer]:
         SELECT id, customer_name, address, contact_person,
                contact_number, email, gst_number
           FROM customers
-         WHERE UPPER(TRIM(gst_number)) = UPPER(TRIM(%s))
+         WHERE is_active = TRUE
+           AND UPPER(TRIM(gst_number)) = UPPER(TRIM(%s))
     """
     with get_db() as conn:
         with conn.cursor() as cur:
@@ -221,7 +224,7 @@ def list_contacts(customer_id: Optional[int]) -> list[ContactPerson]:
     sql = """
         SELECT position, contact_name, email
           FROM customer_contacts
-         WHERE customer_id = %s
+         WHERE customer_id = %s AND is_active = TRUE
          ORDER BY position
     """
     with get_db() as conn:
@@ -391,7 +394,7 @@ def upsert_customer(
             contact_number, email, gst_number
         )
         VALUES (%s, %s, %s, %s, %s, %s)
-        ON CONFLICT (gst_number) DO UPDATE SET
+        ON CONFLICT (gst_number) WHERE is_active = TRUE DO UPDATE SET
             customer_name  = EXCLUDED.customer_name,
             address        = EXCLUDED.address,
             contact_person = EXCLUDED.contact_person,

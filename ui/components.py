@@ -23,7 +23,18 @@ from services.customers import (
     gst_ready_for_lookup,
     search_customers,
 )
-from services.requests import SampleRow, TestRequestData, assign_derived_sample_codes
+from services.requests import (
+    DELIVERY_MODE_OPTIONS,
+    STORAGE_TEMPERATURE_OPTIONS,
+    STORAGE_TEMPERATURE_OTHER,
+    SampleRow,
+    TestRequestData,
+    assign_derived_sample_codes,
+    format_delivery_modes,
+    parse_delivery_modes,
+    storage_temperature_for_save,
+    storage_temperature_select_value,
+)
 from services.versions import validate_edit_reason
 
 
@@ -31,15 +42,37 @@ from services.versions import validate_edit_reason
 STYLES_PATH = Path(__file__).resolve().parent / "styles.css"
 
 
+def _bool_to_yn_choice(value: Optional[bool]) -> str:
+    if value is True:
+        return "Yes"
+    if value is False:
+        return "No"
+    return "Not specified"
+
+
+def _yn_choice_to_bool(choice: str) -> Optional[bool]:
+    if choice == "Yes":
+        return True
+    if choice == "No":
+        return False
+    return None
+
+
 @st.cache_data(ttl=60)
-def _cached_resolve_package_tests(
+def _cached_resolve_package_for_row(
     sample_name: str,
-    ptype: str,
+    parameters_label: str,
     category: str,
 ):
-    """Cache package resolution across fragment reruns."""
-    from services.test_packages import resolve_package_tests
+    """Cache name + Parameters-type package resolution across fragment reruns."""
+    from services.test_packages import (
+        parameters_label_to_package_type,
+        resolve_package_tests,
+    )
 
+    ptype = parameters_label_to_package_type(parameters_label)
+    if not ptype:
+        return None
     return resolve_package_tests(sample_name, ptype, category=category)
 
 
@@ -62,79 +95,69 @@ def _render_food_sample_package_block(
     *,
     sr_no: int,
     sample_name: str,
-    ptype: str,
+    parameters_label: str,
     filter_category: str,
-    pinned_package_id: Optional[int] = None,
-    pinned_version_no: Optional[int] = None,
     custom_count: int = 0,
-) -> None:
-    """Show package defined/not-defined status and optional intake vs active version."""
+) -> Optional[object]:
+    """Show package status and available tests for a Food sample row."""
     from services.protocols.test_catalog import CATEGORY_FOOD, get_test, normalize_category
     from services.test_packages import (
         describe_sample_package,
         get_package,
-        package_type_label,
+        is_other_parameters_label,
+        parameters_label_to_package_type,
     )
 
     if normalize_category(filter_category) != CATEGORY_FOOD:
-        return
+        return None
+
+    st.markdown(f"**Sr. {sr_no} — Sample & tests**")
+
+    if is_other_parameters_label(parameters_label):
+        st.info(
+            "**Other** — enter custom Parameters text above; no test package is loaded."
+        )
+        return None
+
+    ptype = parameters_label_to_package_type(parameters_label)
+    if not ptype:
+        st.caption("Select a package type in Parameters to load tests.")
+        return None
 
     desc = describe_sample_package(
         sample_name,
         ptype,
         category=filter_category,
-        pinned_package_id=pinned_package_id,
-        pinned_version_no=pinned_version_no,
     )
     status = desc["status"]
     extra = f" + {custom_count} custom" if custom_count else ""
+    type_label = parameters_label or ptype
 
-    st.markdown(f"**Sr. {sr_no} — Package assignment**")
-
+    resolved = None
     if status == "defined":
-        pkg_id = desc["package_id"]
-        wl_names = ", ".join(
-            get_test(k).name for k in desc["test_keys_with_logo"]
+        resolved = _cached_resolve_package_for_row(
+            sample_name, parameters_label, filter_category
         )
-        nwl_names = ", ".join(
-            get_test(k).name for k in desc["test_keys_without_logo"]
+        test_keys = desc.get("test_keys_with_logo", []) + desc.get(
+            "test_keys_without_logo", []
         )
+        test_names = ", ".join(get_test(k).name for k in test_keys)
         st.success(
-            f"**Defined** — #{pkg_id} **{desc['display_label']}** "
-            f"(v{desc['version_no']}, active){extra} — "
-            f"WL: {desc['wl_count']} ({wl_names or '—'}); "
-            f"NWL: {desc['nwl_count']} ({nwl_names or '—'})"
+            f"**Defined** — **{sample_name}** ({type_label}) "
+            f"({len(test_keys)} tests available{extra}): {test_names or '—'}"
         )
-        if not desc["test_keys_without_logo"]:
-            st.warning(
-                f"Sr. {sr_no}: this package has **no without-logo (NWL) tests**. "
-                "Report format **B — Without Logo** or **Both** needs a separate "
-                "NWL list — edit the package under **Test packages**."
-            )
     elif status == "inactive":
-        pkg_id = desc["package_id"]
         st.warning(
-            f"**Inactive** — #{pkg_id} **{desc['display_label']}** "
-            f"(v{desc['version_no']}) exists but is deactivated. "
-            f"Activate it under **Test packages** before saving this sample."
+            f"**Inactive** — a {type_label} package for **{sample_name}** exists "
+            "but is deactivated. Activate it under **Test packages** before saving."
         )
     else:
         st.warning(
-            f"**Not defined** — no package for **{sample_name}** — "
-            f"{package_type_label(ptype)}. Create it under **Test packages**."
+            f"**Not defined** — no {type_label} package for **{sample_name}**. "
+            "Create it under **Test packages**."
         )
 
-    if pinned_package_id is not None and pinned_version_no is not None:
-        st.caption(
-            f"**Intake package:** #{pinned_package_id} v{pinned_version_no}"
-        )
-        if desc.get("version_mismatch") and desc.get("version_no") is not None:
-            st.info(
-                f"**Current active:** v{desc['version_no']}. "
-                "Saving a pending row will use the current active package version."
-            )
-
-    manage_id = desc.get("package_id") or pinned_package_id
+    manage_id = desc.get("package_id")
     if manage_id:
         pkg = get_package(int(manage_id))
         if pkg is not None:
@@ -153,6 +176,98 @@ def _render_food_sample_package_block(
                 st.session_state["reception_mode"] = "Test packages"
                 st.session_state["pkg_edit_select"] = select_label
                 st.rerun()
+
+    return resolved
+
+
+def _intake_test_label_options(test_keys: list[str]) -> tuple[list[str], dict[str, str]]:
+    """Map catalog keys to multiselect labels for intake."""
+    from services.protocols.test_catalog import get_test
+
+    labels: list[str] = []
+    label_to_key: dict[str, str] = {}
+    for key in test_keys:
+        label = get_test(key).name
+        labels.append(label)
+        label_to_key[label] = key
+    return labels, label_to_key
+
+
+def _labels_to_test_keys(labels: list[str], label_to_key: dict[str, str]) -> list[str]:
+    return [label_to_key[label] for label in labels if label in label_to_key]
+
+
+def _test_keys_to_labels(keys: list[str], label_to_key: dict[str, str]) -> list[str]:
+    key_to_label = {v: k for k, v in label_to_key.items()}
+    return [key_to_label[k] for k in keys if k in key_to_label]
+
+
+def _render_food_intake_test_selection(
+    *,
+    sr_no: int,
+    resolved: object,
+    locked: bool,
+    report_format_options: list[str],
+) -> None:
+    """Report format + with-logo / without-logo test multiselects from package pool."""
+    from services.samples import (
+        LABEL_TO_REPORT_FORMAT,
+        REPORT_FORMAT_BOTH,
+        REPORT_FORMAT_LABELS,
+        REPORT_FORMAT_WITHOUT_LOGO,
+        REPORT_FORMAT_WITH_LOGO,
+    )
+
+    st.session_state.setdefault(
+        f"workflow_report_format_{sr_no}",
+        REPORT_FORMAT_LABELS[REPORT_FORMAT_WITH_LOGO],
+    )
+    fmt_label = st.selectbox(
+        "Report format *",
+        options=report_format_options,
+        key=f"workflow_report_format_{sr_no}",
+        disabled=locked,
+        help=(
+            "A uses the with-logo test selection; B uses the without-logo selection; "
+            "Both stores both lists separately for the final report."
+        ),
+    )
+    fmt_key = LABEL_TO_REPORT_FORMAT.get(fmt_label, REPORT_FORMAT_WITH_LOGO)
+
+    labels, label_to_key = _intake_test_label_options(list(resolved.test_keys))
+    wl_key = f"intake_wl_labels_{sr_no}"
+    nwl_key = f"intake_nwl_labels_{sr_no}"
+    st.session_state.setdefault(wl_key, [])
+    st.session_state.setdefault(nwl_key, [])
+
+    if fmt_key in (REPORT_FORMAT_WITH_LOGO, REPORT_FORMAT_BOTH):
+        st.multiselect(
+            "Tests with logo *",
+            options=labels,
+            key=wl_key,
+            disabled=locked,
+            help="Select tests from the package for reports with lab letterhead.",
+        )
+    if fmt_key in (REPORT_FORMAT_WITHOUT_LOGO, REPORT_FORMAT_BOTH):
+        st.multiselect(
+            "Tests without logo *",
+            options=labels,
+            key=nwl_key,
+            disabled=locked,
+            help="Select tests from the package for reports without letterhead.",
+        )
+
+    wl_keys = _labels_to_test_keys(st.session_state.get(wl_key, []), label_to_key)
+    nwl_keys = _labels_to_test_keys(st.session_state.get(nwl_key, []), label_to_key)
+    st.session_state[f"intake_wl_keys_{sr_no}"] = wl_keys
+    st.session_state[f"intake_nwl_keys_{sr_no}"] = nwl_keys
+
+    overlap = set(wl_keys) & set(nwl_keys)
+    if overlap:
+        from services.protocols.test_catalog import get_test
+
+        names = ", ".join(get_test(k).name for k in overlap)
+        st.error(f"The same test cannot be in both lists: {names}")
 
 
 @st.cache_data(ttl=60)
@@ -209,8 +324,41 @@ def render_db_status(ok: bool, message: str) -> None:
     )
 
 
+def ctr_section_numbers(
+    *,
+    sample_first: bool,
+    include_customer_picker: bool,
+    filter_category: str,
+) -> dict[str, int]:
+    """Sequential section numbers matching on-screen display order in collect_form."""
+    from services.protocols.test_catalog import CATEGORY_FOOD, normalize_category
+
+    include_test_selection = normalize_category(filter_category) == CATEGORY_FOOD
+
+    if sample_first:
+        order = ["category", "sample_table"]
+        if include_test_selection:
+            order.append("test_selection")
+        order.append("lab_workflow")
+        if include_customer_picker:
+            order.append("customer_lookup")
+        order.extend(["customer_details", "contact_persons", "request_details"])
+    else:
+        order = ["category"]
+        if include_customer_picker:
+            order.append("customer_lookup")
+        order.extend(
+            ["customer_details", "contact_persons", "request_details", "sample_table"]
+        )
+        if include_test_selection:
+            order.append("test_selection")
+        order.append("lab_workflow")
+
+    return {name: index + 1 for index, name in enumerate(order)}
+
+
 def _refresh_customer_search() -> None:
-    """Run customer master search from the Section 1 lookup box."""
+    """Run customer master search from the customer lookup box."""
     query = str(st.session_state.get("customer_search_q") or "")
     try:
         st.session_state["customer_search_results"] = search_customers(query)
@@ -241,7 +389,7 @@ def _push_customer_to_session(
 
 
 def _on_gst_lookup() -> None:
-    """Auto-load permanent customer when a full GSTIN is entered in Section 3."""
+    """Auto-load permanent customer when a full GSTIN is entered in customer details."""
     gst_raw = str(st.session_state.get("f_gst_number") or "").strip()
     gst_norm = gst_raw.upper()
     if not gst_ready_for_lookup(gst_raw):
@@ -286,7 +434,11 @@ def _resolved_customer_id(prefill: Customer, gst_number: str) -> Optional[int]:
     return None
 
 
-def customer_picker() -> Optional[Customer]:
+def customer_picker(
+    *,
+    lookup_no: int,
+    customer_details_no: int,
+) -> Optional[Customer]:
     """
     Search / select an existing permanent customer.
 
@@ -296,9 +448,10 @@ def customer_picker() -> Optional[Customer]:
         Selected customer to autofill the form, or None if user chose "New".
     """
     render_section_title(
-        "1. Existing customer lookup",
+        f"{lookup_no}. Existing customer lookup",
         "Search by GST or customer name — results update as you type. "
-        "Or enter a full 15-character GST in Section 3 to auto-load saved details.",
+        f"Or enter a full 15-character GST in Section {customer_details_no} "
+        "to auto-load saved details.",
     )
 
     query = st.text_input(
@@ -634,9 +787,11 @@ def _current_sample_editor_df() -> pd.DataFrame:
 
 
 def _sample_row_nonempty(row: dict) -> bool:
+    if _cell_text(row.get("Name of sample")).strip():
+        return True
     return any(
         _cell_text(row.get(col)).strip()
-        for col in ("Name of sample", "Sample qty.", "Parameters")
+        for col in ("Sample qty.", "Parameters")
     )
 
 
@@ -742,8 +897,15 @@ def _sync_request_prefill(request: TestRequestData) -> None:
         st.session_state["f_sampling_choice"] = _bool_to_yn(request.sampling_by_lab)
         st.session_state["f_decision_choice"] = _bool_to_yn(request.decision_rule)
         st.session_state["f_service_type"] = request.service_type or ""
-        st.session_state["f_delivery_mode"] = request.delivery_mode or ""
-        st.session_state["f_storage_temperature"] = request.storage_temperature or ""
+        st.session_state["f_delivery_mode"] = parse_delivery_modes(
+            request.delivery_mode
+        )
+        storage_select = storage_temperature_select_value(request.storage_temperature)
+        st.session_state["f_storage_temperature"] = storage_select
+        if storage_select == STORAGE_TEMPERATURE_OTHER:
+            st.session_state["f_storage_temperature_other"] = (
+                request.storage_temperature or ""
+            ).strip()
         st.session_state["f_test_method_spec"] = request.test_method_spec or ""
         st.session_state["f_payment_details"] = request.payment_details or ""
         st.session_state["f_sample_description"] = request.sample_description or ""
@@ -756,7 +918,13 @@ def _sync_request_prefill(request: TestRequestData) -> None:
             TEST_CATALOG,
             normalize_category,
         )
-        from services.test_packages import package_type_label
+        from services.test_packages import (
+            CTR_PARAMETER_OTHER,
+            ctr_parameters_select_value,
+            normalize_package_type,
+            parameters_label_to_package_type,
+            resolve_package_tests,
+        )
         from services.samples import (
             REPORT_FORMAT_BOTH,
             REPORT_FORMAT_LABELS,
@@ -773,7 +941,17 @@ def _sync_request_prefill(request: TestRequestData) -> None:
         for s in request.samples:
             cat = normalize_category(s.category)
             if cat == CATEGORY_FOOD:
-                params_val = package_type_label(getattr(s, "package_type", None))
+                params_val = ctr_parameters_select_value(
+                    s.parameters, s.package_type
+                )
+                if params_val == CTR_PARAMETER_OTHER:
+                    custom = (s.parameters or "").strip()
+                    st.session_state[f"parameters_other_{s.sr_no}"] = custom
+                keys = list(s.test_keys or [])
+                if not keys:
+                    keys = list(s.tests_with_logo or []) + list(
+                        s.tests_without_logo or []
+                    )
             elif cat in (CATEGORY_WATER, CATEGORY_MICRO):
                 params_val = ""
             else:
@@ -801,6 +979,59 @@ def _sync_request_prefill(request: TestRequestData) -> None:
             st.session_state[f"workflow_report_format_{s.sr_no}"] = report_format_label(
                 s.report_format
             )
+            if cat == CATEGORY_FOOD:
+                ptype = parameters_label_to_package_type(
+                    params_val
+                ) or normalize_package_type(s.package_type)
+                resolved = (
+                    resolve_package_tests(s.sample_name or "", ptype, category=cat)
+                    if ptype and (s.sample_name or "").strip()
+                    else None
+                )
+                pool = list(resolved.test_keys) if resolved else keys
+                _, label_to_key = _intake_test_label_options(pool)
+                st.session_state[f"intake_wl_labels_{s.sr_no}"] = _test_keys_to_labels(
+                    list(s.tests_with_logo or []), label_to_key
+                )
+                st.session_state[f"intake_nwl_labels_{s.sr_no}"] = _test_keys_to_labels(
+                    list(s.tests_without_logo or []), label_to_key
+                )
+                st.session_state[f"intake_wl_keys_{s.sr_no}"] = list(
+                    s.tests_with_logo or []
+                )
+                st.session_state[f"intake_nwl_keys_{s.sr_no}"] = list(
+                    s.tests_without_logo or []
+                )
+            st.session_state[f"verify_review_date_{s.sr_no}"] = (
+                s.verify_review_date or request.request_date
+            )
+            st.session_state[f"verify_lab_code_{s.sr_no}"] = (
+                s.verify_lab_code or request.lab_code or ""
+            )
+            st.session_state[f"verify_sample_condition_{s.sr_no}"] = (
+                s.verify_sample_condition or ""
+            )
+            st.session_state[f"verify_qty_checked_{s.sr_no}"] = _bool_to_yn_choice(
+                s.verify_qty_checked
+            )
+            st.session_state[f"verify_chemical_available_{s.sr_no}"] = _bool_to_yn_choice(
+                s.verify_chemical_available
+            )
+            st.session_state[f"verify_methods_available_{s.sr_no}"] = _bool_to_yn_choice(
+                s.verify_methods_available
+            )
+            st.session_state[f"verify_methods_informed_{s.sr_no}"] = _bool_to_yn_choice(
+                s.verify_methods_informed
+            )
+            st.session_state[f"verify_tat_informed_{s.sr_no}"] = _bool_to_yn_choice(
+                s.verify_tat_informed
+            )
+            st.session_state[f"verify_ready_to_issue_{s.sr_no}"] = _bool_to_yn_choice(
+                s.verify_ready_to_issue
+            )
+            st.session_state[f"verify_conformity_statement_{s.sr_no}"] = _bool_to_yn_choice(
+                s.verify_conformity_statement
+            )
         if not rows:
             rows = _default_sample_rows()
         _reset_sample_editor(pd.DataFrame(rows))
@@ -809,8 +1040,6 @@ def _sync_request_prefill(request: TestRequestData) -> None:
             st.session_state["sample_category_select"] = SAMPLE_CATEGORIES.get(
                 first_cat, list(SAMPLE_CATEGORIES.values())[0]
             )
-            for s in request.samples:
-                pass  # logo test sets come from package at save time
 
 
 def apply_request_prefill(request: TestRequestData) -> None:
@@ -821,7 +1050,7 @@ def apply_request_prefill(request: TestRequestData) -> None:
 
 def clear_ctr_form_state() -> None:
     """Remove CTR intake widget keys so a fresh form can be created."""
-    prefixes = ("f_", "ctr_c", "workflow_", "custom_tests_sr_")
+    prefixes = ("f_", "ctr_c", "workflow_", "custom_tests_sr_", "intake_", "verify_")
     exact = {
         "_prefill_request_key",
         "_prefill_customer_key",
@@ -849,6 +1078,8 @@ def collect_form(
     request_prefill: Optional[TestRequestData] = None,
     *,
     edit_mode: bool = False,
+    sample_first: bool = False,
+    include_customer_picker: bool = False,
     submit_label: str = "Save & Generate Form",
 ) -> Optional[tuple[TestRequestData, str]]:
     """
@@ -874,13 +1105,13 @@ def collect_form(
         normalize_category,
     )
     from services.test_packages import (
-        PACKAGE_TYPE_LABELS,
-        normalize_package_type,
-        package_type_label,
+        CTR_PARAMETER_OPTIONS,
+        CTR_PARAMETER_OTHER,
+        is_other_parameters_label,
+        parameters_label_to_package_type,
     )
 
     report_format_options = list(REPORT_FORMAT_LABELS.values())
-    test_type_options = [""] + PACKAGE_TYPE_LABELS
 
     def _row_base_test_keys(
         row: dict,
@@ -895,29 +1126,38 @@ def collect_form(
             return default_test_keys_for_category(CATEGORY_MICRO)
         if row_category == CATEGORY_FOOD:
             sample_name = _cell_text(row.get("Name of sample")).strip()
-            ptype = normalize_package_type(_cell_text(row.get("Parameters")).strip())
-            if sample_name and ptype:
-                resolved = _cached_resolve_package_tests(
-                    sample_name, ptype, row_category
-                )
-                if resolved:
-                    fmt = report_format
-                    if fmt == REPORT_FORMAT_WITH_LOGO:
-                        return list(resolved.test_keys_with_logo)
-                    if fmt == REPORT_FORMAT_WITHOUT_LOGO:
-                        return list(resolved.test_keys_without_logo)
-                    # Both — analyst works the union; logo lists stay separate on save
-                    return list(resolved.test_keys)
-            return []
+            if not sample_name:
+                return []
+            try:
+                sr_no = int(row.get("Sr. No") or 0)
+            except (TypeError, ValueError):
+                sr_no = 0
+            parameters_label = _cell_text(row.get("Parameters")).strip()
+            resolved = _cached_resolve_package_for_row(
+                sample_name, parameters_label, row_category
+            )
+            if resolved is None:
+                return []
+            wl = list(st.session_state.get(f"intake_wl_keys_{sr_no}", []))
+            nwl = list(st.session_state.get(f"intake_nwl_keys_{sr_no}", []))
+            fmt = report_format
+            if fmt == REPORT_FORMAT_WITH_LOGO:
+                return wl
+            if fmt == REPORT_FORMAT_WITHOUT_LOGO:
+                return nwl
+            return _merge_test_keys(wl, nwl)
         return []
 
     def _custom_options_for_row(row: dict, category: str) -> dict[str, str]:
         row_category = normalize_category(category)
-        ptype = None
         ptype_key = ""
         if row_category == CATEGORY_FOOD:
-            ptype = normalize_package_type(_cell_text(row.get("Parameters")).strip())
-            ptype_key = ptype or ""
+            sample_name = _cell_text(row.get("Name of sample")).strip()
+            parameters_label = _cell_text(row.get("Parameters")).strip()
+            resolved = _cached_resolve_package_for_row(
+                sample_name, parameters_label, row_category
+            )
+            ptype_key = (resolved.package_type if resolved else "") or ""
         formulas = _cached_custom_formulas_for_scope(row_category, ptype_key)
         return {custom_formula_select_label(f): f.test_key for f in formulas}
 
@@ -953,14 +1193,16 @@ def collect_form(
         apply_request_prefill(request_prefill)
         prefill = request_prefill.customer
 
-    p = _sync_customer_prefill(prefill)
+    customer_prefill = prefill
+    if not sample_first:
+        p = _sync_customer_prefill(prefill)
 
-    # Category + Parameters guidance (Food uses Parameters column for test type).
+    # Category guidance — Food loads tests from product name + Parameters package type.
     render_section_title(
-        "2. Sample category",
+        "1. Sample category",
         "Choose Food, Water, Micro, or Cattle Feed / Fertilizer. **Food** rows "
-        "pick a product name and **Parameters** (FSSAI, Basic Nutrition, or "
-        "Detailed Nutrition) — tests load from the pre-saved package for that pair.",
+        "use the sample product name and **Parameters** package type (e.g. Jaggery + "
+        "FSSAI) — tests from that package appear for selection before customer details.",
     )
     cat_keys = list(SAMPLE_CATEGORIES.keys())
     cat_labels = [SAMPLE_CATEGORIES[k] for k in cat_keys]
@@ -972,12 +1214,18 @@ def collect_form(
         help="Applies to all sample rows in this request.",
     )
     filter_category = cat_keys[cat_labels.index(selected_cat_label)]
+    sec = ctr_section_numbers(
+        sample_first=sample_first,
+        include_customer_picker=include_customer_picker,
+        filter_category=filter_category,
+    )
 
     if filter_category == CATEGORY_WATER:
         st.info(
             "All **13 water protocol tests** are included automatically "
             "(11 chemical + 2 microbiological on the last Observation Table page). "
-            "Assign a **chemical analyst** and a **micro analyst** in Section 6."
+            f"Assign a **chemical analyst** and a **micro analyst** in "
+            f"Section {sec['lab_workflow']}."
         )
     elif filter_category == CATEGORY_MICRO:
         st.info(
@@ -987,18 +1235,15 @@ def collect_form(
         )
     elif filter_category == CATEGORY_FOOD:
         st.info(
-            "For each **Food** row: sample name (e.g. Jaggery, Masala) + **Parameters** "
-            "(FSSAI, Basic Nutrition, or Detailed Nutrition). Tests come from the "
-            "matching pre-saved package in **Test packages** — pick any Food catalog "
-            "tests for each package; the same test name can appear in multiple packages."
+            "For each **Food** row: enter sample name (e.g. Jaggery, Masala). "
+            "All tests from that product's package are shown — pick report format "
+            "and select with-logo / without-logo tests before entering customer details."
         )
     else:
         st.info(
             f"No catalog tests are defined yet for **{selected_cat_label}**. "
             "Cattle Feed / Fertilizer formulas will appear when added."
         )
-
-    contact_count = _render_contact_controls()
 
     from services.users import analyst_display_label, list_active_analysts
 
@@ -1009,142 +1254,186 @@ def collect_form(
     if not analyst_options:
         st.error("No active analyst users — create one in Admin before saving samples.")
 
-    st.markdown(
-        '<div class="sls-hint"><b>Sections 3–5 — Customer Test Request (printed form)</b> — '
-        "Fields below match the printed CTR (LLP.docx).</div>",
-        unsafe_allow_html=True,
-    )
+    p_holder: list[Optional[Customer]] = [
+        _sync_customer_prefill(prefill) if not sample_first else None
+    ]
 
-    # ----- Permanent customer block -----
-    render_section_title(
-        "3. Customer details (permanent database)",
-        "These fields are upserted into PostgreSQL using GST number as the unique key.",
-    )
-
-    c1, c2 = st.columns(2)
-    with c1:
-        st.text_input(
-            "Customer Details (Name / Company) *",
-            key="f_customer_name",
-        )
-    with c2:
-        st.text_area("Address *", height=100, key="f_address")
-
-    render_section_title(
-        "Contact persons",
-        "Up to five contacts. Contact 1 name and email are required.",
-    )
-    for i in range(1, contact_count + 1):
-        cc1, cc2 = st.columns(2)
-        with cc1:
-            st.text_input(
-                f"Contact {i} — Name" + (" *" if i == 1 else ""),
-                key=f"ctr_c{i}_name",
+    def _render_customer_sections() -> int:
+        nonlocal customer_prefill
+        if include_customer_picker:
+            picked = customer_picker(
+                lookup_no=sec["customer_lookup"],
+                customer_details_no=sec["customer_details"],
             )
-        with cc2:
+            if picked is not None:
+                customer_prefill = picked
+            st.divider()
+            if customer_prefill is not None:
+                render_section_title(
+                    "Edit reason (customer updates)",
+                    "Required if you change permanent customer details for an existing GST record.",
+                )
+                edit_reason_field(key="new_ctr_customer_edit_reason")
+
+        p_holder[0] = _sync_customer_prefill(customer_prefill)
+
+        printed_sections = (
+            f"Sections {sec['customer_details']}, {sec['request_details']}, "
+            f"and {sec['sample_table']}"
+        )
+        st.markdown(
+            f'<div class="sls-hint"><b>{printed_sections} — Customer Test Request '
+            "(printed form)</b> — Fields below match the printed CTR (LLP.docx).</div>",
+            unsafe_allow_html=True,
+        )
+
+        render_section_title(
+            f"{sec['customer_details']}. Customer details (permanent database)",
+            "These fields are upserted into PostgreSQL using GST number as the unique key.",
+        )
+
+        c1, c2 = st.columns(2)
+        with c1:
             st.text_input(
-                f"Contact {i} — Email ID" + (" *" if i == 1 else ""),
-                key=f"ctr_c{i}_email",
+                "Customer Details (Name / Company) *",
+                key="f_customer_name",
+            )
+        with c2:
+            st.text_area("Address *", height=100, key="f_address")
+
+        contact_count = _render_contact_controls()
+
+        render_section_title(
+            f"{sec['contact_persons']}. Contact persons",
+            "Up to five contacts. Contact 1 name and email are required.",
+        )
+        for i in range(1, contact_count + 1):
+            cc1, cc2 = st.columns(2)
+            with cc1:
+                st.text_input(
+                    f"Contact {i} — Name" + (" *" if i == 1 else ""),
+                    key=f"ctr_c{i}_name",
+                )
+            with cc2:
+                st.text_input(
+                    f"Contact {i} — Email ID" + (" *" if i == 1 else ""),
+                    key=f"ctr_c{i}_email",
+                )
+
+        c3, c4 = st.columns(2)
+        with c3:
+            st.text_input(
+                "Contact Number *",
+                key="f_contact_number",
+                help="Primary phone number for the customer.",
+            )
+        with c4:
+            lookup_hint = (
+                f"Section {sec['customer_lookup']}"
+                if include_customer_picker
+                else "customer lookup"
+            )
+            st.text_input(
+                "GST Number *",
+                key="f_gst_number",
+                on_change=_on_gst_lookup,
+                help=(
+                    "Permanent unique key. Enter a saved 15-character GST to auto-load "
+                    f"name, address, and contacts — or use {lookup_hint} to search by name."
+                ),
+            )
+            gst_autoload_msg = st.session_state.get("customer_gst_autoload_msg")
+            if gst_autoload_msg:
+                st.info(gst_autoload_msg)
+            if include_customer_picker:
+                st.caption(
+                    "Tip: type a full GSTIN here to load saved customer details, "
+                    f"or search by name in Section {sec['customer_lookup']}."
+                )
+            else:
+                st.caption(
+                    "Tip: type a full GSTIN here to load saved customer details."
+                )
+        return contact_count
+
+    def _render_request_details_section() -> None:
+        render_section_title(
+            f"{sec['request_details']}. Test request details",
+            "Date, sampling, service, and payment fields printed on the CTR form.",
+        )
+
+        r1, r2 = st.columns(2)
+        with r1:
+            if "f_request_date" not in st.session_state:
+                st.session_state["f_request_date"] = None
+            st.date_input(
+                "Sample received date *",
+                key="f_request_date",
+                value=None,
+                help="Date the sample was received (printed on CTR and used as Sample Received On).",
+            )
+        with r2:
+            st.number_input(
+                "Number of Samples",
+                min_value=0,
+                max_value=100,
+                value=1,
+                step=1,
+                key="f_number_of_samples",
             )
 
-    c3, c4 = st.columns(2)
-    with c3:
-        st.text_input(
-            "Contact Number *",
-            key="f_contact_number",
-            help="Primary phone number for the customer.",
-        )
-    with c4:
-        st.text_input(
-            "GST Number *",
-            key="f_gst_number",
-            on_change=_on_gst_lookup,
-            help=(
-                "Permanent unique key. Enter a saved 15-character GST to auto-load "
-                "name, address, and contacts — or use Section 1 to search by name."
-            ),
-        )
-        gst_autoload_msg = st.session_state.get("customer_gst_autoload_msg")
-        if gst_autoload_msg:
-            st.info(gst_autoload_msg)
-        st.caption(
-            "Tip: type a full GSTIN here to load saved customer details, "
-            "or search by name in Section 1."
-        )
+        r4, r5 = st.columns(2)
+        with r4:
+            st.radio(
+                "Sampling Done by Laboratory",
+                options=["Not specified", "Yes", "No"],
+                horizontal=True,
+                key="f_sampling_choice",
+            )
+            st.radio(
+                "Decision Rule required",
+                options=["Not specified", "Yes", "No"],
+                horizontal=True,
+                key="f_decision_choice",
+            )
+        with r5:
+            st.radio(
+                "Service required",
+                options=["", "Urgent", "Regular"],
+                format_func=lambda x: "Not specified" if x == "" else x,
+                horizontal=True,
+                key="f_service_type",
+            )
+            st.multiselect(
+                "Mode of report delivery",
+                options=DELIVERY_MODE_OPTIONS,
+                key="f_delivery_mode",
+            )
 
-    # ----- Request-specific block (printed CTR header fields) -----
-    render_section_title(
-        "4. Test request details",
-        "Date, sampling, service, and payment fields printed on the CTR form. "
-        "Lab Code and sample table follow in the live-preview block below.",
-    )
-
-    r1, r2 = st.columns(2)
-    with r1:
-        if "f_request_date" not in st.session_state:
-            st.session_state["f_request_date"] = None
-        st.date_input(
-            "Sample received date *",
-            key="f_request_date",
-            value=None,
-            help="Date the sample was received (printed on CTR and used as Sample Received On).",
-        )
-    with r2:
-        st.number_input(
-            "Number of Samples",
-            min_value=0,
-            max_value=100,
-            value=1,
-            step=1,
-            key="f_number_of_samples",
-        )
-
-    r4, r5 = st.columns(2)
-    with r4:
-        st.radio(
-            "Sampling Done by Laboratory",
-            options=["Not specified", "Yes", "No"],
-            horizontal=True,
-            key="f_sampling_choice",
-        )
-        st.radio(
-            "Decision Rule required",
-            options=["Not specified", "Yes", "No"],
-            horizontal=True,
-            key="f_decision_choice",
-        )
-    with r5:
-        st.radio(
-            "Service required",
-            options=["", "Urgent", "Regular"],
-            format_func=lambda x: "Not specified" if x == "" else x,
-            horizontal=True,
-            key="f_service_type",
-        )
         st.selectbox(
-            "Mode of report delivery",
-            options=["", "Collect", "Courier", "Email/Whatsapp"],
+            "Storage Temperature of sample required",
+            options=[""] + list(STORAGE_TEMPERATURE_OPTIONS),
             format_func=lambda x: "Not specified" if x == "" else x,
-            key="f_delivery_mode",
+            key="f_storage_temperature",
         )
-
-    st.text_input(
-        "Storage Temperature of sample required",
-        placeholder="e.g. Ambient / 2–8 °C / Frozen",
-        key="f_storage_temperature",
-    )
-    st.text_area(
-        "Specific test method / Specification to be followed",
-        placeholder="e.g. FSSAI / IS method references",
-        height=70,
-        key="f_test_method_spec",
-    )
-    st.text_area(
-        "Payment Details",
-        placeholder="Advance amount, UTR, billing notes…",
-        height=70,
-        key="f_payment_details",
-    )
+        if st.session_state.get("f_storage_temperature") == STORAGE_TEMPERATURE_OTHER:
+            st.text_input(
+                "Storage temperature (other) *",
+                key="f_storage_temperature_other",
+                placeholder="e.g. Frozen (-20°C)",
+            )
+        st.text_area(
+            "Specific test method / Specification to be followed",
+            placeholder="e.g. FSSAI / IS method references",
+            height=70,
+            key="f_test_method_spec",
+        )
+        st.text_area(
+            "Payment Details",
+            placeholder="Advance amount, UTR, billing notes…",
+            height=70,
+            key="f_payment_details",
+        )
 
     @st.fragment
     def _sample_workflow_fragment() -> None:
@@ -1153,14 +1442,17 @@ def collect_form(
             "Lab Code *",
             key="f_lab_code",
             placeholder="e.g. SLS/26/306",
-            help="Printed on the CTR form. Sample IDs in Section 6 are derived from this.",
+            help=(
+                "Printed on the CTR form. Sample IDs in "
+                f"Section {sec['lab_workflow']} are derived from this."
+            ),
         )
 
         render_section_title(
-            "5. Sample table",
+            f"{sec['sample_table']}. Sample table",
             "Matches the printed CTR form: Sr. No, Name of sample, Code/batch no., "
-            "Sample qty., and Parameters. Code/batch no. is optional customer reference "
-            "(may be empty or repeat across rows).",
+            "Sample qty., and Parameters (package type printed on CTR; full tests "
+            "listed below the table). Code/batch no. is optional customer reference.",
         )
 
         default_rows = _default_sample_rows()
@@ -1190,8 +1482,12 @@ def collect_form(
             parameters_column = {
                 "Parameters": st.column_config.SelectboxColumn(
                     "Parameters",
-                    options=test_type_options,
-                    help="FSSAI, Basic Nutrition, or Detailed Nutrition.",
+                    options=CTR_PARAMETER_OPTIONS,
+                    help=(
+                        "Package type printed in the CTR Parameters column "
+                        "(FSSAI, Basic Nutrition, Detailed Nutrition, or Other)."
+                    ),
+                    required=True,
                 ),
             }
         elif filter_category == CATEGORY_WATER:
@@ -1263,51 +1559,94 @@ def collect_form(
                         getattr(s, "package_version_no", None),
                     )
 
+        if normalize_category(filter_category) == CATEGORY_FOOD:
+            render_section_title(
+                f"{sec['test_selection']}. Sample & test selection",
+                "Enter sample name to load the product package, then choose report "
+                "format and tests before customer details.",
+            )
+
         for row in sample_df.to_dict(orient="records"):
             if normalize_category(filter_category) != CATEGORY_FOOD:
                 continue
             sample_name = _cell_text(row.get("Name of sample")).strip()
-            ptype = normalize_package_type(_cell_text(row.get("Parameters")).strip())
+            parameters_label = _cell_text(row.get("Parameters")).strip()
             try:
                 sr_no = int(row.get("Sr. No") or 0)
             except (TypeError, ValueError):
                 sr_no = 0
-            if not sample_name and not ptype:
-                continue
             if not sample_name:
-                st.caption(f"Sr. {sr_no}: enter sample name to load tests.")
+                if _sample_row_nonempty(row):
+                    st.caption(f"Sr. {sr_no}: enter sample name to load tests.")
                 continue
-            if not ptype:
-                st.caption(
-                    f"Sr. {sr_no}: select Parameters (test type) for **{sample_name}**."
+            if is_other_parameters_label(parameters_label):
+                st.text_input(
+                    "Parameters text for CTR *",
+                    key=f"parameters_other_{sr_no}",
+                    help="Printed in the Parameters column when Other is selected.",
                 )
-                continue
-            pinned = pinned_by_sr.get(sr_no, (None, None))
+            status = str(row.get("_status") or "pending")
+            locked = status != "pending"
             custom_count = len(
                 st.session_state.get(f"custom_tests_sr_{sr_no}", [])
             )
-            _render_food_sample_package_block(
+            resolved = _render_food_sample_package_block(
                 sr_no=sr_no,
                 sample_name=sample_name,
-                ptype=ptype,
+                parameters_label=parameters_label,
                 filter_category=filter_category,
-                pinned_package_id=pinned[0],
-                pinned_version_no=pinned[1],
                 custom_count=custom_count,
             )
+            if resolved:
+                _render_food_intake_test_selection(
+                    sr_no=sr_no,
+                    resolved=resolved,
+                    locked=locked,
+                    report_format_options=report_format_options,
+                )
+                options = _custom_options_for_row(row, filter_category)
+                if options:
+                    st.multiselect(
+                        f"Sr. {sr_no}: Additional formulas",
+                        options=list(options.keys()),
+                        key=f"custom_tests_sr_{sr_no}",
+                        disabled=locked,
+                        help="Optional custom tests from Admin for this category.",
+                    )
+                fmt_label = str(
+                    st.session_state.get(
+                        f"workflow_report_format_{sr_no}",
+                        REPORT_FORMAT_LABELS[REPORT_FORMAT_WITH_LOGO],
+                    )
+                ).strip()
+                fmt_key = LABEL_TO_REPORT_FORMAT.get(
+                    fmt_label, REPORT_FORMAT_WITH_LOGO
+                )
+                wl_keys = list(st.session_state.get(f"intake_wl_keys_{sr_no}", []))
+                nwl_keys = list(st.session_state.get(f"intake_nwl_keys_{sr_no}", []))
+                if fmt_key == REPORT_FORMAT_WITH_LOGO:
+                    names = ", ".join(get_test(k).name for k in wl_keys)
+                    st.caption(f"Tests selected (with logo): {names or '—'}")
+                elif fmt_key == REPORT_FORMAT_WITHOUT_LOGO:
+                    names = ", ".join(get_test(k).name for k in nwl_keys)
+                    st.caption(f"Tests selected (without logo): {names or '—'}")
+                else:
+                    wl = ", ".join(get_test(k).name for k in wl_keys)
+                    nwl = ", ".join(get_test(k).name for k in nwl_keys)
+                    st.caption(f"With-logo tests selected: {wl or '—'}")
+                    st.caption(f"Without-logo tests selected: {nwl or '—'}")
 
         st.markdown(
-            '<div class="sls-hint"><b>Section 6 — Lab workflow (not printed)</b> — '
-            "Sample ID, analyst assignment, and report format are for internal "
+            f'<div class="sls-hint"><b>Section {sec["lab_workflow"]} — Lab workflow '
+            "(not printed)</b> — Sample ID and analyst assignment for internal "
             "lab handoff only.</div>",
             unsafe_allow_html=True,
         )
         render_section_title(
-            "6. Lab workflow",
+            f"{sec['lab_workflow']}. Lab workflow",
             "Sample ID is auto-generated from the Lab Code "
             "(e.g. SLS/26/306/01, /02 for each sample on the request). "
-            "Enter protocol number, assign analyst, and report format below. "
-            "With-logo and without-logo use **different** package test lists.",
+            "Enter protocol number and assign analyst below.",
         )
 
         st.text_area(
@@ -1336,10 +1675,12 @@ def collect_form(
             locked = status != "pending"
             sample_label = _cell_text(row.get("Name of sample")).strip() or "(unnamed)"
 
-            st.session_state.setdefault(
-                f"workflow_report_format_{sr_no}",
-                REPORT_FORMAT_LABELS[REPORT_FORMAT_WITH_LOGO],
-            )
+            row_category = normalize_category(filter_category)
+            if row_category != CATEGORY_FOOD:
+                st.session_state.setdefault(
+                    f"workflow_report_format_{sr_no}",
+                    REPORT_FORMAT_LABELS[REPORT_FORMAT_WITH_LOGO],
+                )
 
             st.markdown(f"**Sr. {sr_no}** — {sample_label}")
             if locked and sr_no in locked_code_by_sr:
@@ -1347,26 +1688,34 @@ def collect_form(
             else:
                 sample_id_label = derived_codes.get(sr_no, "") or "—"
             st.caption(f"Sample ID: **{sample_id_label}**")
-            p_col, r_col = st.columns(2)
-            with p_col:
+            if row_category == CATEGORY_FOOD:
                 st.text_input(
                     "Protocol No *",
                     key=f"workflow_protocol_no_{sr_no}",
                     disabled=locked,
                     help="Printed on the analyst protocol document.",
                 )
-            with r_col:
-                st.selectbox(
-                    "Report format *",
-                    options=report_format_options,
-                    key=f"workflow_report_format_{sr_no}",
-                    help=(
-                        "A uses the package with-logo test set; "
-                        "B uses the without-logo set; "
-                        "Both stores both sets separately for the final report."
-                    ),
-                )
-            if normalize_category(filter_category) == CATEGORY_WATER:
+            else:
+                p_col, r_col = st.columns(2)
+                with p_col:
+                    st.text_input(
+                        "Protocol No *",
+                        key=f"workflow_protocol_no_{sr_no}",
+                        disabled=locked,
+                        help="Printed on the analyst protocol document.",
+                    )
+                with r_col:
+                    st.selectbox(
+                        "Report format *",
+                        options=report_format_options,
+                        key=f"workflow_report_format_{sr_no}",
+                        disabled=locked,
+                        help=(
+                            "A uses with-logo tests; B uses without-logo; "
+                            "Both stores both sets separately."
+                        ),
+                    )
+            if row_category == CATEGORY_WATER:
                 chem_col, micro_col = st.columns(2)
                 with chem_col:
                     st.selectbox(
@@ -1392,65 +1741,121 @@ def collect_form(
                     disabled=locked or not analyst_options,
                 )
 
-            options = _custom_options_for_row(row, filter_category)
-            if options:
-                st.multiselect(
-                    f"Sr. {sr_no}: Additional formulas",
-                    options=list(options.keys()),
-                    key=f"custom_tests_sr_{sr_no}",
-                    help="Optional custom tests from Admin for this category and test type.",
-                )
-
-            fmt_label = str(
-                st.session_state.get(
-                    f"workflow_report_format_{sr_no}",
-                    REPORT_FORMAT_LABELS[REPORT_FORMAT_WITH_LOGO],
-                )
-            ).strip()
-            fmt_key = LABEL_TO_REPORT_FORMAT.get(fmt_label, REPORT_FORMAT_WITH_LOGO)
-            if normalize_category(filter_category) == CATEGORY_FOOD:
-                sample_name = _cell_text(row.get("Name of sample")).strip()
-                ptype = normalize_package_type(
-                    _cell_text(row.get("Parameters")).strip()
-                )
-                if sample_name and ptype:
-                    pkg_preview = _cached_resolve_package_tests(
-                        sample_name, ptype, filter_category
+            if row_category != CATEGORY_FOOD:
+                options = _custom_options_for_row(row, filter_category)
+                if options:
+                    st.multiselect(
+                        f"Sr. {sr_no}: Additional formulas",
+                        options=list(options.keys()),
+                        key=f"custom_tests_sr_{sr_no}",
+                        disabled=locked,
+                        help="Optional custom tests from Admin for this category.",
                     )
-                    if pkg_preview:
-                        wl_keys = list(pkg_preview.test_keys_with_logo)
-                        nwl_keys = list(pkg_preview.test_keys_without_logo)
-                        if fmt_key == REPORT_FORMAT_WITH_LOGO:
-                            names = ", ".join(get_test(k).name for k in wl_keys)
-                            st.caption(
-                                f"Tests added (with logo only): {names or '—'}"
-                            )
-                            if not wl_keys:
-                                st.error(
-                                    "Package has no with-logo tests for format A."
-                                )
-                        elif fmt_key == REPORT_FORMAT_WITHOUT_LOGO:
-                            names = ", ".join(get_test(k).name for k in nwl_keys)
-                            st.caption(
-                                f"Tests added (without logo only): {names or '—'}"
-                            )
-                            if not nwl_keys:
-                                st.error(
-                                    "Package has no without-logo tests for format B. "
-                                    "Add an NWL list in Test packages."
-                                )
-                        else:
-                            wl = ", ".join(get_test(k).name for k in wl_keys)
-                            nwl = ", ".join(get_test(k).name for k in nwl_keys)
-                            st.caption(f"With-logo tests added: {wl or '—'}")
-                            st.caption(f"Without-logo tests added: {nwl or '—'}")
-                            if not wl_keys or not nwl_keys:
-                                st.error(
-                                    "Format Both needs **both** WL and NWL lists on the "
-                                    "package (they must be configured separately)."
-                                )
 
-    _sample_workflow_fragment()
+            if row_category != CATEGORY_FOOD:
+                fmt_label = str(
+                    st.session_state.get(
+                        f"workflow_report_format_{sr_no}",
+                        REPORT_FORMAT_LABELS[REPORT_FORMAT_WITH_LOGO],
+                    )
+                ).strip()
+                fmt_key = LABEL_TO_REPORT_FORMAT.get(
+                    fmt_label, REPORT_FORMAT_WITH_LOGO
+                )
+                row_keys = _row_test_keys(
+                    row, filter_category, report_format=fmt_key
+                )
+                names = ", ".join(get_test(k).name for k in row_keys)
+                st.caption(f"Tests included: {names or '—'}")
+
+            if f"verify_review_date_{sr_no}" not in st.session_state:
+                st.session_state[f"verify_review_date_{sr_no}"] = (
+                    st.session_state.get("f_request_date")
+                )
+            if f"verify_lab_code_{sr_no}" not in st.session_state:
+                st.session_state[f"verify_lab_code_{sr_no}"] = str(
+                    st.session_state.get("f_lab_code", "") or ""
+                )
+            st.markdown("**Sample verification (printed on checklist)**")
+            v1, v2 = st.columns(2)
+            with v1:
+                st.date_input(
+                    "Review Date *",
+                    key=f"verify_review_date_{sr_no}",
+                    disabled=locked,
+                )
+            with v2:
+                st.text_input(
+                    "Lab Code *",
+                    key=f"verify_lab_code_{sr_no}",
+                    disabled=locked,
+                )
+            st.text_input(
+                "Sample condition *",
+                key=f"verify_sample_condition_{sr_no}",
+                disabled=locked,
+            )
+            v3, v4 = st.columns(2)
+            with v3:
+                st.radio(
+                    "Checked for Sample Quantity *",
+                    options=["Not specified", "Yes", "No"],
+                    horizontal=True,
+                    key=f"verify_qty_checked_{sr_no}",
+                    disabled=locked,
+                )
+                st.radio(
+                    "Checked for Availability of Chemical *",
+                    options=["Not specified", "Yes", "No"],
+                    horizontal=True,
+                    key=f"verify_chemical_available_{sr_no}",
+                    disabled=locked,
+                )
+                st.radio(
+                    "Checked for Availability of Methods *",
+                    options=["Not specified", "Yes", "No"],
+                    horizontal=True,
+                    key=f"verify_methods_available_{sr_no}",
+                    disabled=locked,
+                )
+                st.radio(
+                    "Informed testing Methods to Customer *",
+                    options=["Not specified", "Yes", "No"],
+                    horizontal=True,
+                    key=f"verify_methods_informed_{sr_no}",
+                    disabled=locked,
+                )
+            with v4:
+                st.radio(
+                    "Informed turnaround time to Customer *",
+                    options=["Not specified", "Yes", "No"],
+                    horizontal=True,
+                    key=f"verify_tat_informed_{sr_no}",
+                    disabled=locked,
+                )
+                st.radio(
+                    "Sample is ready to issue *",
+                    options=["Not specified", "Yes", "No"],
+                    horizontal=True,
+                    key=f"verify_ready_to_issue_{sr_no}",
+                    disabled=locked,
+                )
+                st.radio(
+                    "About statement of conformity *",
+                    options=["Not specified", "Yes", "No"],
+                    horizontal=True,
+                    key=f"verify_conformity_statement_{sr_no}",
+                    disabled=locked,
+                )
+
+    if sample_first:
+        _sample_workflow_fragment()
+        contact_count = _render_customer_sections()
+        _render_request_details_section()
+    else:
+        contact_count = _render_customer_sections()
+        _render_request_details_section()
+        _sample_workflow_fragment()
 
     if edit_mode:
         edit_reason = edit_reason_field(key="ctr_edit_reason")
@@ -1479,8 +1884,11 @@ def collect_form(
     sampling_choice = str(st.session_state.get("f_sampling_choice", "Not specified") or "")
     decision_choice = str(st.session_state.get("f_decision_choice", "Not specified") or "")
     service_type = str(st.session_state.get("f_service_type", "") or "")
-    delivery_mode = str(st.session_state.get("f_delivery_mode", "") or "")
-    storage_temperature = str(st.session_state.get("f_storage_temperature", "") or "")
+    delivery_mode = format_delivery_modes(st.session_state.get("f_delivery_mode", []))
+    storage_temperature = storage_temperature_for_save(
+        str(st.session_state.get("f_storage_temperature", "") or ""),
+        str(st.session_state.get("f_storage_temperature_other", "") or ""),
+    )
     test_method_spec = str(st.session_state.get("f_test_method_spec", "") or "")
     payment_details = str(st.session_state.get("f_payment_details", "") or "")
     sample_description = str(st.session_state.get("f_sample_description", "") or "")
@@ -1512,30 +1920,32 @@ def collect_form(
         report_format = LABEL_TO_REPORT_FORMAT.get(fmt_label, REPORT_FORMAT_WITH_LOGO)
         row_keys = _row_test_keys(row, filter_category, report_format=report_format)
         params_text = _cell_text(row.get("Parameters")).strip()
-        ptype = (
-            normalize_package_type(params_text)
-            if row_category == CATEGORY_FOOD
-            else None
-        )
         resolved = None
         sample_name = _cell_text(row.get("Name of sample")).strip()
-        if row_category == CATEGORY_FOOD and sample_name and ptype:
-            resolved = _cached_resolve_package_tests(
-                sample_name,
-                ptype,
-                row_category,
+        ptype = None
+        parameters_field = params_text
+        if row_category == CATEGORY_FOOD and sample_name:
+            if is_other_parameters_label(params_text):
+                parameters_field = str(
+                    st.session_state.get(f"parameters_other_{sr_no}", "") or ""
+                ).strip()
+            resolved = _cached_resolve_package_for_row(
+                sample_name, params_text, row_category
+            )
+            ptype = (
+                resolved.package_type
+                if resolved
+                else parameters_label_to_package_type(params_text)
             )
         tests_with_logo: list[str] = []
         tests_without_logo: list[str] = []
-        if resolved:
-            display_names = resolved.display_label
-            if report_format == REPORT_FORMAT_WITH_LOGO:
-                tests_with_logo = list(resolved.test_keys_with_logo)
-            elif report_format == REPORT_FORMAT_WITHOUT_LOGO:
-                tests_without_logo = list(resolved.test_keys_without_logo)
-            else:
-                tests_with_logo = list(resolved.test_keys_with_logo)
-                tests_without_logo = list(resolved.test_keys_without_logo)
+        if row_category == CATEGORY_FOOD:
+            tests_with_logo = list(
+                st.session_state.get(f"intake_wl_keys_{sr_no}", [])
+            )
+            tests_without_logo = list(
+                st.session_state.get(f"intake_nwl_keys_{sr_no}", [])
+            )
         elif row_category == CATEGORY_WATER:
             display_names = ", ".join(get_test(k).name for k in row_keys)
             if report_format == REPORT_FORMAT_WITH_LOGO:
@@ -1554,8 +1964,6 @@ def collect_form(
             else:
                 tests_with_logo = list(row_keys)
                 tests_without_logo = list(row_keys)
-        elif row_category == CATEGORY_FOOD:
-            display_names = ", ".join(get_test(k).name for k in row_keys)
         else:
             display_names = params_text or ", ".join(
                 get_test(k).name for k in row_keys
@@ -1582,6 +1990,7 @@ def collect_form(
             if row_category == CATEGORY_WATER
             else None
         )
+        old_sample = None
         if locked and edit_mode and request_prefill is not None:
             old_sample = next(
                 (s for s in request_prefill.samples if s.sr_no == sr_no),
@@ -1592,6 +2001,58 @@ def collect_form(
             protocol_no = str(
                 st.session_state.get(f"workflow_protocol_no_{sr_no}", "") or ""
             ).strip()
+        if locked and edit_mode and old_sample is not None:
+            verify_review_date = old_sample.verify_review_date
+            verify_lab_code = old_sample.verify_lab_code or ""
+            verify_sample_condition = old_sample.verify_sample_condition or ""
+            verify_qty_checked = old_sample.verify_qty_checked
+            verify_chemical_available = old_sample.verify_chemical_available
+            verify_methods_available = old_sample.verify_methods_available
+            verify_methods_informed = old_sample.verify_methods_informed
+            verify_tat_informed = old_sample.verify_tat_informed
+            verify_ready_to_issue = old_sample.verify_ready_to_issue
+            verify_conformity_statement = old_sample.verify_conformity_statement
+        else:
+            verify_review_date = st.session_state.get(f"verify_review_date_{sr_no}")
+            verify_lab_code = str(
+                st.session_state.get(f"verify_lab_code_{sr_no}", "") or ""
+            ).strip()
+            verify_sample_condition = str(
+                st.session_state.get(f"verify_sample_condition_{sr_no}", "") or ""
+            ).strip()
+            verify_qty_checked = _yn_choice_to_bool(
+                str(st.session_state.get(f"verify_qty_checked_{sr_no}", "") or "")
+            )
+            verify_chemical_available = _yn_choice_to_bool(
+                str(
+                    st.session_state.get(f"verify_chemical_available_{sr_no}", "")
+                    or ""
+                )
+            )
+            verify_methods_available = _yn_choice_to_bool(
+                str(
+                    st.session_state.get(f"verify_methods_available_{sr_no}", "")
+                    or ""
+                )
+            )
+            verify_methods_informed = _yn_choice_to_bool(
+                str(
+                    st.session_state.get(f"verify_methods_informed_{sr_no}", "")
+                    or ""
+                )
+            )
+            verify_tat_informed = _yn_choice_to_bool(
+                str(st.session_state.get(f"verify_tat_informed_{sr_no}", "") or "")
+            )
+            verify_ready_to_issue = _yn_choice_to_bool(
+                str(st.session_state.get(f"verify_ready_to_issue_{sr_no}", "") or "")
+            )
+            verify_conformity_statement = _yn_choice_to_bool(
+                str(
+                    st.session_state.get(f"verify_conformity_statement_{sr_no}", "")
+                    or ""
+                )
+            )
         samples.append(
             SampleRow(
                 id=sample_id,
@@ -1599,7 +2060,10 @@ def collect_form(
                 sample_name=_cell_text(row.get("Name of sample")),
                 batch_code=_cell_text(row.get("Code/batch no.")),
                 quantity=_cell_text(row.get("Sample qty.")),
-                parameters=display_names,
+                parameters=parameters_field if row_category == CATEGORY_FOOD else (
+                    display_names if row_category not in (CATEGORY_WATER, CATEGORY_MICRO)
+                    else params_text
+                ),
                 test_keys=list(row_keys),
                 category=row_category,
                 status=status,
@@ -1612,11 +2076,22 @@ def collect_form(
                 package_id=resolved.package_id if resolved else None,
                 package_version_no=resolved.package_version_no if resolved else None,
                 package_type=ptype if row_category == CATEGORY_FOOD else None,
+                verify_review_date=verify_review_date,
+                verify_lab_code=verify_lab_code,
+                verify_sample_condition=verify_sample_condition,
+                verify_qty_checked=verify_qty_checked,
+                verify_chemical_available=verify_chemical_available,
+                verify_methods_available=verify_methods_available,
+                verify_methods_informed=verify_methods_informed,
+                verify_tat_informed=verify_tat_informed,
+                verify_ready_to_issue=verify_ready_to_issue,
+                verify_conformity_statement=verify_conformity_statement,
             )
         )
 
     contacts = _read_contacts_from_session(contact_count)
     primary = contacts[0] if contacts else ContactPerson()
+    p = p_holder[0] or _sync_customer_prefill(customer_prefill)
     customer = Customer(
         id=_resolved_customer_id(p, gst_number),
         customer_name=customer_name,

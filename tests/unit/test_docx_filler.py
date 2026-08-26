@@ -1,4 +1,4 @@
-"""Unit tests for CTR DOCX filler — sample table matches reference form."""
+"""Unit tests for CTR DOCX filler — per-sample pages and verification checklist."""
 
 from __future__ import annotations
 
@@ -10,6 +10,7 @@ from docx import Document
 from services.customers import Customer
 from services.docx_filler import fill_docx_bytes
 from services.requests import SampleRow, TestRequestData
+from tests.conftest import sample_verification_kwargs
 
 
 def _ctr_request() -> TestRequestData:
@@ -30,22 +31,20 @@ def _ctr_request() -> TestRequestData:
                 sample_name="Jaggery",
                 batch_code="B-01",
                 quantity="500 g",
-                parameters=(
-                    "Jaggery — FSSAI — tests to be conducted "
-                    "(Moisture, Total ash on dry basis)"
-                ),
+                parameters="FSSAI",
+                test_keys=["moisture", "total_ash"],
                 package_type="fssai",
+                **sample_verification_kwargs(verify_lab_code="LAB/CTR/26/001"),
             ),
             SampleRow(
                 sr_no=2,
                 sample_name="Honey",
                 batch_code="H-02",
                 quantity="250 g",
-                parameters=(
-                    "Honey — Nutrition Only — tests to be conducted "
-                    "(Protein, Fat)"
-                ),
+                parameters="Basic Nutrition",
+                test_keys=["bn_protein", "bn_total_fat"],
                 package_type="nutrition_only",
+                **sample_verification_kwargs(verify_lab_code="LAB/CTR/26/001"),
             ),
         ],
     )
@@ -64,9 +63,10 @@ class TestDocxSampleTable:
             "Parameters",
         ]
 
-    def test_table2_fills_sample_rows(self):
+    def test_table2_has_only_first_sample_row(self):
         doc = Document(BytesIO(fill_docx_bytes(_ctr_request())))
         t2 = doc.tables[2]
+        assert len(t2.rows) == 2
         row1 = [c.text.strip() for c in t2.rows[1].cells]
         assert row1[0] == "1"
         assert row1[1] == "Jaggery"
@@ -74,12 +74,33 @@ class TestDocxSampleTable:
         assert row1[3] == "500 g"
         assert row1[4] == "FSSAI"
 
-        row2 = [c.text.strip() for c in t2.rows[2].cells]
-        assert row2[0] == "2"
-        assert row2[1] == "Honey"
-        assert row2[2] == "H-02"
-        assert row2[3] == "250 g"
-        assert row2[4] == "Nutrition Only"
+    def test_second_sample_on_later_table_with_tests(self):
+        doc = Document(BytesIO(fill_docx_bytes(_ctr_request())))
+        body_text = "\n".join(p.text for p in doc.paragraphs)
+        assert "Tests to be performed:" in body_text
+        assert "1. Moisture" in body_text
+        assert "2. Total ash on dry basis" in body_text
+        assert "1. Protein" in body_text
+        honey_tables = [
+            t
+            for t in doc.tables
+            if len(t.rows) >= 2 and t.rows[1].cells[1].text.strip() == "Honey"
+        ]
+        assert len(honey_tables) == 1
+
+    def test_verification_checklist_tables_appended(self):
+        doc = Document(BytesIO(fill_docx_bytes(_ctr_request())))
+        checklist_tables = [
+            t
+            for t in doc.tables
+            if len(t.rows) >= 11
+            and t.rows[0].cells[1].text.strip() == "Particulars"
+        ]
+        assert len(checklist_tables) == 2
+        assert checklist_tables[0].rows[4].cells[1].text.strip() == (
+            "Checked for Sample Quantity"
+        )
+        assert "Yes ( X )" in checklist_tables[0].rows[4].cells[2].text
 
     def test_no_generator_stamp_in_ctr_docx(self):
         doc = Document(

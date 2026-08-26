@@ -50,7 +50,6 @@ from ui.components import (  # noqa: E402
     apply_request_prefill,
     clear_ctr_form_state,
     collect_form,
-    customer_picker,
     edit_reason_field,
     inject_styles,
     render_db_status,
@@ -202,22 +201,14 @@ def _render_downloads(saved, actor, gen_by: str, gen_at: str) -> None:
 
 
 def _new_request_flow(actor) -> None:
-    selected_customer = customer_picker()
-    st.divider()
-
-    if selected_customer is not None:
-        render_section_title(
-            "Edit reason (customer updates)",
-            "Required if you change permanent customer details for an existing GST record.",
-        )
-        edit_reason_field(key="new_ctr_customer_edit_reason")
-
-    result = collect_form(selected_customer)
+    result = collect_form(
+        sample_first=True,
+        include_customer_picker=True,
+    )
     if result is None:
         st.caption(
-            "Tip: fill sample name (and Parameters for Food). Sample IDs preview "
-            "live in Section 6 from the Lab Code. Code/batch no. is optional "
-            "customer reference."
+            "Tip: enter sample name to load tests, select report format and tests, "
+            "then fill customer details. Sample IDs preview live from the Lab Code."
         )
         return
 
@@ -252,9 +243,12 @@ def _new_request_flow(actor) -> None:
     except Exception as exc:  # noqa: BLE001
         st.error(f"Save failed: {exc}")
         st.info(
-            "If you see a column error, run migrations:\n\n"
-            "`docker exec -i sls_lab_db psql -U sls_user -d sls_lab "
-            "< scripts/migrate_versions.sql`"
+            "If you see a database schema error, apply pending migrations. "
+            "From the project root:\n\n"
+            "`python -c \"from db.migrate import ensure_schema; ensure_schema(force=True)\"`\n\n"
+            "Or run individual scripts, e.g. "
+            "`scripts/migrate_row_soft_delete.sql`, "
+            "`scripts/migrate_sample_verification.sql`."
         )
         return
 

@@ -40,6 +40,8 @@ from services.samples import (  # noqa: E402
     REPORT_FORMAT_WITH_LOGO,
     SampleRecord,
     SEARCH_BY,
+    default_report_with_logo,
+    default_test_report_no,
     get_by_code,
     list_open,
     logo_test_keys,
@@ -48,6 +50,12 @@ from services.samples import (  # noqa: E402
     report_format_label,
     search_open,
     update_status,
+)
+from services.report_settings import (  # noqa: E402
+    default_authorized_signatory,
+    default_checked_by,
+    load_report_settings,
+    signatory_names,
 )
 from services.test_report_micro_docx import MicroReportFillOptions  # noqa: E402
 from services.test_report_pdf import (  # noqa: E402
@@ -64,6 +72,7 @@ from services.micro_report_catalog import (  # noqa: E402
     micro_report_keys_ordered,
     spec_for_key,
 )
+from services.ulr import generate_ulr_no, lab_code_for_ulr  # noqa: E402
 from services.water_report_catalog import WaterReportLimits  # noqa: E402
 from ui.auth import require_page_access  # noqa: E402
 from ui.components import (  # noqa: E402
@@ -340,6 +349,14 @@ def main() -> None:
     report_micro_key = f"reviewer_report_micro_{selected.sample_code}"
     report_no_key = f"reviewer_report_no_{selected.sample_code}"
     customer_sid_key = f"reviewer_customer_sid_{selected.sample_code}"
+    loc_key = f"reviewer_location_{selected.sample_code}"
+    samp_method_key = f"reviewer_sampling_method_{selected.sample_code}"
+    auth_key = f"reviewer_auth_signatory_{selected.sample_code}"
+    checked_key = f"reviewer_checked_by_{selected.sample_code}"
+    remark_key = f"reviewer_remark_{selected.sample_code}"
+    disclaimer_key = f"reviewer_disclaimer_{selected.sample_code}"
+    report_settings = load_report_settings()
+    signatory_options = signatory_names(report_settings) or [""]
 
     if is_water:
         if st.session_state.get(fields_key) != selected.sample_code:
@@ -347,10 +364,14 @@ def main() -> None:
             st.session_state[cond_key] = ""
             st.session_state[appearance_key] = (header.appearance_text or "").strip()
             st.session_state[testing_at_key] = DEFAULT_TESTING_CONDUCTED_AT
-            st.session_state[ulr_key] = ""
-            base = (selected.lab_code or selected.sample_code or "").strip().rstrip("/")
-            st.session_state[report_chem_key] = f"{base}/01" if base else ""
-            st.session_state[report_micro_key] = f"{base}/02" if base else ""
+            st.session_state[ulr_key] = generate_ulr_no(
+                lab_code_for_ulr(selected.lab_code, selected.sample_code)
+            )
+            report_no = default_test_report_no(
+                selected, with_logo=default_report_with_logo(selected)
+            )
+            st.session_state[report_chem_key] = report_no
+            st.session_state[report_micro_key] = report_no
             st.session_state[customer_sid_key] = (
                 (selected.parameters or "").strip() or "Drinking Water"
             )
@@ -404,16 +425,17 @@ def main() -> None:
             )
             st.session_state[spec_key] = edited_specs
         st.caption(
-            "Microbiological section is included with blank results until the "
-            "water micro protocol is added."
+            "Microbiological results are taken from the water micro protocol "
+            "observations (Present / Absent)."
         )
     elif is_micro:
         if st.session_state.get(fields_key) != selected.sample_code:
             st.session_state[fields_key] = selected.sample_code
             st.session_state[cond_key] = ""
             st.session_state[appearance_key] = (header.appearance_text or "").strip()
-            base = (selected.lab_code or selected.sample_code or "").strip().rstrip("/")
-            st.session_state[report_no_key] = f"{base}/01" if base else ""
+            st.session_state[report_no_key] = default_test_report_no(
+                selected, with_logo=default_report_with_logo(selected)
+            )
             st.session_state[customer_sid_key] = (selected.parameters or "").strip() or (
                 selected.sample_name or ""
             )
@@ -477,6 +499,19 @@ def main() -> None:
             st.session_state[fields_key] = selected.sample_code
             st.session_state[cond_key] = ""
             st.session_state[tests_key] = preview.tests_processed
+            st.session_state[ulr_key] = generate_ulr_no(
+                lab_code_for_ulr(selected.lab_code, selected.sample_code)
+            )
+            st.session_state[loc_key] = "--"
+            st.session_state[samp_method_key] = (
+                "Laboratory sampling" if selected.sampling_by_lab else "--"
+            )
+            st.session_state[auth_key] = default_authorized_signatory(report_settings)
+            st.session_state[checked_key] = default_checked_by(report_settings)
+            st.session_state[remark_key] = report_settings.default_remark_text
+            st.session_state[disclaimer_key] = "\n".join(
+                report_settings.disclaimer_bullets
+            )
             st.session_state[spec_key] = pd.DataFrame(
                 [
                     {
@@ -506,10 +541,44 @@ def main() -> None:
             key=cond_key,
             help="Printed on the final report. Enter before generating.",
         )
+        st.text_input("ULR No", key=ulr_key)
         st.text_input(
             "Tests processed",
             key=tests_key,
             help="Printed on the final report (default: As per customer request).",
+        )
+        m1, m2 = st.columns(2)
+        with m1:
+            st.text_input("Location of sampling", key=loc_key)
+        with m2:
+            st.text_input("Sampling Method", key=samp_method_key)
+        s1, s2 = st.columns(2)
+        with s1:
+            st.selectbox(
+                "Authorized signatory",
+                options=signatory_options,
+                key=auth_key,
+            )
+        with s2:
+            checked_opts = [""] + [n for n in signatory_options if n]
+            if st.session_state.get(checked_key) not in checked_opts:
+                checked_opts.append(st.session_state.get(checked_key, ""))
+            st.selectbox(
+                "Checked by",
+                options=checked_opts,
+                key=checked_key,
+            )
+        st.text_area(
+            "Remark (optional override)",
+            key=remark_key,
+            height=100,
+            help="Leave as default or edit before generating.",
+        )
+        st.text_area(
+            "Disclaimer bullets (optional override, one per line)",
+            key=disclaimer_key,
+            height=140,
+            help="Supervisor defaults from Admin; edit here for this report only.",
         )
 
         if preview.rows:
@@ -599,6 +668,43 @@ def main() -> None:
                 ),
                 water_opts=water_opts,
                 micro_opts=micro_opts,
+                ulr_no=(
+                    st.session_state.get(ulr_key, "")
+                    if not is_micro
+                    else None
+                ),
+                location_of_sampling=(
+                    st.session_state.get(loc_key, "")
+                    if not is_water and not is_micro
+                    else None
+                ),
+                sampling_method=(
+                    st.session_state.get(samp_method_key, "")
+                    if not is_water and not is_micro
+                    else None
+                ),
+                authorized_signatory=(
+                    st.session_state.get(auth_key, "")
+                    if not is_water and not is_micro
+                    else None
+                ),
+                checked_by=(
+                    st.session_state.get(checked_key, "")
+                    if not is_water and not is_micro
+                    else None
+                ),
+                remark_text=(
+                    st.session_state.get(remark_key, "")
+                    if not is_water and not is_micro
+                    else None
+                ),
+                disclaimer_bullets=[
+                    ln.strip()
+                    for ln in (st.session_state.get(disclaimer_key, "") or "").splitlines()
+                    if ln.strip()
+                ]
+                if not is_water and not is_micro
+                else None,
             )
             note = (reviewer_note or "").strip()
             remarks = selected.analyst_remarks or ""

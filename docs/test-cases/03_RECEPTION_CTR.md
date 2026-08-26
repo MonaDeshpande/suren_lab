@@ -5,8 +5,10 @@
 **Access:** `admin`, `reception`
 
 **UI layout (sample intake):**
-- **Sections 3–5 — Printed CTR:** matches LLP.docx (customer, request header, 5-column sample table). Lab Code (`SLS/26/306`) is the primary identifier; Code/batch no. is optional customer reference.
-- **Section 6 — Lab workflow (not printed):** per-row Sample ID preview (derived from Lab Code, with `/1`, `/2` suffixes for multiple samples), assigned analyst, report format.
+- **New request flow:** sample category → sample table → package tests (report format + with-logo / without-logo multiselects) → customer lookup & details → request header fields → lab workflow.
+- **Printed CTR blocks:** customer details, request header fields, and the 5-column sample table match LLP.docx. Lab Code (`SLS/26/306`) is the primary identifier; Code/batch no. is optional customer reference. Food **Parameters** column shows the package type label (FSSAI, Basic Nutrition, Detailed Nutrition, or custom text for Other); full test names appear in the list below the sample table on the CTR. **Storage temperature** is chosen from a dropdown (2°C to 8°C, 4°C, Room Temp, or Other with free text). **Mode of report delivery** allows multiple selections (Collect, Courier, Email/Whatsapp).
+- **Lab workflow (not printed):** per-row Sample ID preview (derived from Lab Code), protocol number, assigned analyst, and **Sample verification** checklist inputs. Report format for Food is chosen in the **Sample & test selection** block.
+- **Generated CTR layout:** page 1 = request header; each sample gets its own page (one-row sample table + tests list below); final page(s) = per-sample **Sample Verification Checklist** (Sr No / Particulars / Remark).
 
 ---
 
@@ -17,7 +19,7 @@
 | **Priority** | P0 |
 | **Type** | Positive |
 | **Preconditions** | Logged in as reception; DB connected |
-| **Steps** | 1. Fill customer: name, GST, contact person, contact number, email (address optional for validator). 2. Set request date (today). 3. Add sample name; select ≥1 catalog test. 4. **Save & Generate Form**. |
+| **Steps** | 1. Enter sample name (e.g. Jaggery); select report format and ≥1 test from the product package. 2. Fill customer: name, GST, contact person, contact number, email. 3. Set request date (today). 4. **Save & Generate Form**. |
 | **Expected** | Save succeeds; sample code shown (`SLS/26/306` for single sample); PDF download available; status of sample `pending`. |
 | **Postconditions** | Rows in `customers`, `test_requests`, `request_samples`; audit `request.save` and `report.ctr` (if PDF OK). |
 
@@ -152,7 +154,7 @@
 | **Priority** | P0 |
 | **Type** | Boundary |
 | **Steps** | Set Lab Code `SLS/26/306`; save one sample; then save a CTR with two samples using the same lab code. |
-| **Expected** | Single sample → `SLS/26/306`; two samples → `SLS/26/306/1` and `SLS/26/306/2`. Section 6 previews IDs live before save. |
+| **Expected** | Single sample → `SLS/26/306`; two samples → `SLS/26/306/1` and `SLS/26/306/2`. **Lab workflow** previews IDs live before save. |
 
 ---
 
@@ -218,7 +220,7 @@
 |-------|-------|
 | **Priority** | P2 |
 | **Type** | Positive |
-| **Steps** | Fill lab code, service type Urgent, delivery Courier, storage, payment remarks; save. |
+| **Steps** | Fill lab code, service type Urgent, delivery mode (one or more of Collect / Courier / Email/Whatsapp), storage temperature (dropdown: 2°C to 8°C, 4°C, Room Temp, or Other with custom text), payment remarks; save. |
 | **Expected** | Values stored on `test_requests` and appear on generated form / reviewer reception block. |
 
 ---
@@ -274,7 +276,7 @@
 |-------|-------|
 | **Priority** | P0 |
 | **Type** | Negative |
-| **Steps** | Save CTR with sample name/code/tests but no analyst selected in **Section 6**. |
+| **Steps** | Save CTR with sample name/code/tests but no analyst selected in **Lab workflow**. |
 | **Expected** | Error: assign an analyst; no DB save. |
 
 ---
@@ -344,7 +346,7 @@
 | **Priority** | P0 |
 | **Type** | Positive |
 | **Preconditions** | Package exists for Jaggery + FSSAI |
-| **Steps** | New CTR → **Section 5** Food row: name **Jaggery**, Parameters **FSSAI**; **Section 6**: sample code, analyst, report format. Save. |
+| **Steps** | New CTR → **Sample table** Food row: name **Jaggery**, Parameters **FSSAI**; **Lab workflow**: sample code, analyst, report format. Save. |
 | **Expected** | Tests auto-loaded from package; `parameters` shows `Jaggery — FSSAI — tests to be conducted`; `package_id`, `package_version_no`, `package_type` stored on `request_samples`. |
 
 ---

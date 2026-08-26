@@ -82,6 +82,11 @@ def _cell_text(cell) -> str:
     return "\n".join(p.text for p in cell.paragraphs).strip()
 
 
+def _cell_has_tc_mar(cell) -> bool:
+    tc_pr = cell._tc.tcPr
+    return tc_pr is not None and tc_pr.find(qn("w:tcMar")) is not None
+
+
 def _summary_table_index(doc: Document) -> int | None:
     for idx, table in enumerate(doc.tables):
         if not table.rows:
@@ -854,6 +859,71 @@ class TestJaggeryWorksheetReadings:
         assert "Moisture" in desc or "W1" in desc
         assert "=" in readings
         assert "10" in readings
+        assert "%" in readings
+
+    def test_total_ash_dual_worked_lines(self):
+        sample = _sample(tests_json=json.dumps(["moisture", "total_ash"]))
+        results = [
+            TestResultRow(
+                test_key="moisture",
+                test_name="Moisture",
+                method=TEST_CATALOG["moisture"].method,
+                unit="%",
+                inputs={"w1": 55.0, "w": 5.0, "w2": 54.8235},
+                result_value="3.53",
+                result_numeric=3.53,
+            ),
+            TestResultRow(
+                test_key="total_ash",
+                test_name=TEST_CATALOG["total_ash"].name,
+                method=TEST_CATALOG["total_ash"].method,
+                unit="%",
+                inputs={
+                    "w1": 45.0,
+                    "before_ign": 50.0,
+                    "w": 5.0,
+                    "after_ign": 45.05895,
+                    "w2": 45.05895,
+                },
+                result_value="1.22",
+                result_numeric=1.22,
+            ),
+        ]
+        out = fill_protocol_docx_bytes(sample, _header(), results)
+        doc = Document(io.BytesIO(out))
+        table = _worksheet_table_with_text(doc, "Ash w/w")
+        assert table is not None
+        wet_row = table.rows[6]
+        dry_row = table.rows[7]
+        wet_read = _cell_text(wet_row.cells[1])
+        dry_read = _cell_text(dry_row.cells[1])
+        assert "=" in wet_read
+        assert "45" in wet_read
+        assert "%" in wet_read
+        assert "=" in dry_read
+        assert "1.22" in dry_read
+        assert "3.53" in dry_read
+
+    def test_worksheet_cell_padding_applied(self):
+        sample = _sample(tests_json=json.dumps(["moisture"]))
+        results = [
+            TestResultRow(
+                test_key="moisture",
+                test_name="Moisture",
+                method=TEST_CATALOG["moisture"].method,
+                unit="%",
+                inputs={"w1": 55.0, "w": 5.0, "w2": 54.5},
+                result_value="10.0",
+                result_numeric=10.0,
+            )
+        ]
+        out = fill_protocol_docx_bytes(sample, _header(), results)
+        doc = Document(io.BytesIO(out))
+        table = _worksheet_table_with_text(doc, "stainless steel dish")
+        assert table is not None
+        for row in table.rows:
+            for cell in row.cells:
+                assert _cell_has_tc_mar(cell)
 
     def test_extraneous_dual_formula_rows_split_columns(self):
         sample = _sample(tests_json=json.dumps(["extraneous_matter"]))

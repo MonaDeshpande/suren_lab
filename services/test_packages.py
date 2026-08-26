@@ -51,6 +51,14 @@ PACKAGE_TYPE_LABELS = [
 ]
 LABEL_TO_PACKAGE_TYPE = {v: k for k, v in PACKAGE_TYPES.items()}
 LABEL_TO_PACKAGE_TYPE["Nutrition Only"] = PACKAGE_TYPE_NUTRITION_ONLY
+
+CTR_PARAMETER_OTHER = "Other"
+CTR_PARAMETER_OPTIONS = [
+    PACKAGE_TYPES[PACKAGE_TYPE_FSSAI],
+    PACKAGE_TYPES[PACKAGE_TYPE_BASIC_NUTRITION],
+    PACKAGE_TYPES[PACKAGE_TYPE_DETAILED_NUTRITION],
+    CTR_PARAMETER_OTHER,
+]
 # Canonical keys after normalize (nutrition_only → basic_nutrition)
 PACKAGE_TYPE_ALIASES: dict[str, str] = {
     PACKAGE_TYPE_NUTRITION_ONLY: PACKAGE_TYPE_BASIC_NUTRITION,
@@ -116,6 +124,50 @@ class PackageVersionDiffRow:
     in_version_a: bool
     in_version_b: bool
     change: str  # unchanged | added | removed
+
+
+def is_other_parameters_label(label: Optional[str]) -> bool:
+    """True when the Parameters column selectbox is set to Other."""
+    return (label or "").strip() == CTR_PARAMETER_OTHER
+
+
+def parameters_label_to_package_type(label: Optional[str]) -> Optional[str]:
+    """Map a Parameters selectbox label to a package type key, or None for Other."""
+    text = (label or "").strip()
+    if not text or is_other_parameters_label(text):
+        return None
+    return normalize_package_type(text)
+
+
+def ctr_parameters_label_for_sample(
+    *,
+    parameters: Optional[str] = None,
+    package_type: Optional[str] = None,
+) -> str:
+    """Short text for the printed CTR Parameters column."""
+    params = (parameters or "").strip()
+    ptype = normalize_package_type(package_type) or parameters_label_to_package_type(
+        params
+    )
+    if ptype:
+        return package_type_label(ptype)
+    if params in CTR_PARAMETER_OPTIONS:
+        return params
+    return params
+
+
+def ctr_parameters_select_value(
+    parameters: Optional[str],
+    package_type: Optional[str],
+) -> str:
+    """Value for the Food Parameters selectbox when editing an existing sample."""
+    label = ctr_parameters_label_for_sample(
+        parameters=parameters,
+        package_type=package_type,
+    )
+    if label and label not in CTR_PARAMETER_OPTIONS:
+        return CTR_PARAMETER_OTHER
+    return label
 
 
 def normalize_package_type(value: Optional[str]) -> Optional[str]:
@@ -546,16 +598,172 @@ def resolve_package_tests(
     if not pkg.test_keys:
         return None
 
+    return _package_to_resolved(pkg)
+
+
+def _package_to_resolved(pkg: TestPackage) -> ResolvedPackage:
+    """Build intake lookup result from a loaded package row."""
     return ResolvedPackage(
         package_id=pkg.id,
         package_version_no=pkg.current_version_no,
         package_type=pkg.package_type,
         sample_product_name=pkg.sample_product_name,
         test_keys=list(pkg.test_keys),
-        test_keys_with_logo=wl,
-        test_keys_without_logo=nwl,
-        display_label=package_display_label(pkg.sample_product_name, pkg.package_type),
+        test_keys_with_logo=list(pkg.test_keys_with_logo),
+        test_keys_without_logo=list(pkg.test_keys_without_logo),
+        display_label=pkg.display_label,
     )
+
+
+def resolve_package_for_product(
+    sample_product_name: str,
+    *,
+    category: str = CATEGORY_FOOD,
+) -> Optional[ResolvedPackage]:
+    """
+    Find the single active package for a product name at reception intake.
+
+    Returns None when no package exists, the package has no tests, or more
+    than one active package matches (legacy duplicate types).
+    """
+    name = (sample_product_name or "").strip()
+    if not name:
+        return None
+    cat = normalize_category(category)
+    if cat != CATEGORY_FOOD:
+        return None
+
+    sql = """
+        SELECT id, sample_product_name, package_type, category,
+               current_version_no, is_active
+          FROM sample_test_packages
+         WHERE lower(trim(sample_product_name)) = lower(trim(%s))
+           AND category = %s
+           AND is_active = TRUE
+         ORDER BY package_type
+    """
+    try:
+        with get_db() as conn:
+            with conn.cursor() as cur:
+                cur.execute(sql, (name, cat))
+                rows = cur.fetchall()
+    except Exception:  # noqa: BLE001
+        return None
+
+    if len(rows) != 1:
+        return None
+
+    pkg = _header_to_package(rows[0])
+    wl, nwl = _load_test_sets(pkg.id)
+    pkg.test_keys_with_logo = wl
+    pkg.test_keys_without_logo = nwl
+    if not pkg.test_keys:
+        return None
+    return _package_to_resolved(pkg)
+
+
+def describe_sample_package_for_product(
+    sample_product_name: str,
+    *,
+    category: str = CATEGORY_FOOD,
+) -> dict[str, Any]:
+    """
+    Summarize package assignment for intake by product name only.
+
+    Status: defined | not_defined | inactive | ambiguous
+    """
+    name = (sample_product_name or "").strip()
+    cat = normalize_category(category)
+    result: dict[str, Any] = {
+        "status": "not_defined",
+        "package_id": None,
+        "version_no": None,
+        "display_label": "",
+        "is_active": False,
+        "active_count": 0,
+        "wl_count": 0,
+        "nwl_count": 0,
+        "test_keys": [],
+        "test_keys_with_logo": [],
+        "test_keys_without_logo": [],
+        "ambiguous_types": [],
+    }
+    if not name or cat != CATEGORY_FOOD:
+        return result
+
+    active = resolve_package_for_product(name, category=cat)
+    if active:
+        result.update(
+            {
+                "status": "defined",
+                "package_id": active.package_id,
+                "version_no": active.package_version_no,
+                "display_label": active.display_label,
+                "is_active": True,
+                "active_count": 1,
+                "wl_count": len(active.test_keys_with_logo),
+                "nwl_count": len(active.test_keys_without_logo),
+                "test_keys": list(active.test_keys),
+                "test_keys_with_logo": list(active.test_keys_with_logo),
+                "test_keys_without_logo": list(active.test_keys_without_logo),
+            }
+        )
+        return result
+
+    sql_active = """
+        SELECT id, sample_product_name, package_type, category,
+               current_version_no, is_active
+          FROM sample_test_packages
+         WHERE lower(trim(sample_product_name)) = lower(trim(%s))
+           AND category = %s
+           AND is_active = TRUE
+    """
+    sql_inactive = """
+        SELECT id, sample_product_name, package_type, category,
+               current_version_no, is_active
+          FROM sample_test_packages
+         WHERE lower(trim(sample_product_name)) = lower(trim(%s))
+           AND category = %s
+           AND is_active = FALSE
+         ORDER BY current_version_no DESC, id DESC
+         LIMIT 1
+    """
+    try:
+        with get_db() as conn:
+            with conn.cursor() as cur:
+                cur.execute(sql_active, (name, cat))
+                active_rows = cur.fetchall()
+                if len(active_rows) > 1:
+                    types = [
+                        PACKAGE_TYPES.get(row[2], row[2]) for row in active_rows
+                    ]
+                    result["status"] = "ambiguous"
+                    result["active_count"] = len(active_rows)
+                    result["ambiguous_types"] = types
+                    return result
+                cur.execute(sql_inactive, (name, cat))
+                inactive_row = cur.fetchone()
+    except Exception:  # noqa: BLE001
+        return result
+
+    if inactive_row:
+        pkg = _header_to_package(inactive_row)
+        wl, nwl = _load_test_sets(pkg.id)
+        result.update(
+            {
+                "status": "inactive",
+                "package_id": pkg.id,
+                "version_no": pkg.current_version_no,
+                "display_label": pkg.display_label,
+                "is_active": False,
+                "wl_count": len(wl),
+                "nwl_count": len(nwl),
+                "test_keys": list(pkg.test_keys),
+                "test_keys_with_logo": wl,
+                "test_keys_without_logo": nwl,
+            }
+        )
+    return result
 
 
 def create_package(
@@ -662,14 +870,19 @@ def update_package(
     )
 
     new_version = existing.current_version_no + 1
-    update_pkg = """
+    deactivate_sql = """
         UPDATE sample_test_packages
-           SET sample_product_name = %s,
-               current_version_no = %s,
-               updated_at = NOW()
+           SET is_active = FALSE, updated_at = NOW()
          WHERE id = %s
     """
-    delete_tests = "DELETE FROM sample_test_package_tests WHERE package_id = %s"
+    insert_pkg = """
+        INSERT INTO sample_test_packages (
+            sample_product_name, package_type, category,
+            current_version_no, is_active
+        )
+        VALUES (%s, %s, %s, %s, TRUE)
+        RETURNING id
+    """
     insert_test = """
         INSERT INTO sample_test_package_tests (
             package_id, test_key, sort_order, logo_scope
@@ -679,20 +892,28 @@ def update_package(
 
     with get_db() as conn:
         with conn.cursor() as cur:
-            cur.execute(update_pkg, (new_name, new_version, package_id))
-            cur.execute(delete_tests, (package_id,))
-            _insert_package_tests(cur, insert_test, package_id, wl, nwl)
+            cur.execute(deactivate_sql, (package_id,))
+            cur.execute(
+                insert_pkg,
+                (new_name, existing.package_type, existing.category, new_version),
+            )
+            new_row = cur.fetchone()
+            new_package_id = int(new_row[0])
+            _insert_package_tests(cur, insert_test, new_package_id, wl, nwl)
 
     total = len(wl) + len(nwl)
     log_from_user(
         actor,
         "package.update",
         ENTITY_TABLE,
-        package_id,
-        details=f"v{new_version} / WL:{len(wl)} NWL:{len(nwl)} ({total} tests)",
+        new_package_id,
+        details=(
+            f"v{new_version} from #{package_id} / "
+            f"WL:{len(wl)} NWL:{len(nwl)} ({total} tests)"
+        ),
         edit_reason=edit_reason,
     )
-    updated = get_package(package_id)
+    updated = get_package(new_package_id)
     if updated is None:
         raise RuntimeError("Package update succeeded but reload failed.")
     return updated

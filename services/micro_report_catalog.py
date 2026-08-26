@@ -4,6 +4,7 @@ services/micro_report_catalog.py
 Fixed microbiological panel: names, limits, and methods for Micro final reports.
 
 Reference: reference/Micro Test Report.htm
+Metadata is read from catalog_test_specs (DB).
 """
 
 from __future__ import annotations
@@ -11,11 +12,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Optional
 
-from services.protocols.test_catalog import MICRO_TEST_KEYS
+from services.catalog_specs import get_spec
+from services.protocols.test_catalog import MICRO_TEST_KEYS, get_test
 
 MICRO_REPORT_SECTION_TITLE = "Microbiological Test"
 
-MICRO_REPORT_QSF = "QSF No. 7.8.2"
+MICRO_REPORT_QSF = "QSF No -7.8.2"
 
 MICRO_DISCLAIMER_LINES: list[str] = [
     "1. Sample submitted by the customer in their own container.",
@@ -40,6 +42,7 @@ class MicroReportSpec:
     method: str
 
 
+# Built-in defaults — seeded into catalog_test_specs; runtime reads DB via spec_for_key().
 MICRO_REPORT_SPECS: dict[str, MicroReportSpec] = {
     "total_plate_count": MicroReportSpec(
         key="total_plate_count",
@@ -94,7 +97,30 @@ def micro_report_keys_ordered(selected: Optional[set[str]] = None) -> list[str]:
 
 
 def spec_for_key(key: str) -> MicroReportSpec:
-    """Return fixed report spec; falls back to empty limits if unknown."""
+    """Return report spec from DB catalog; falls back to built-in defaults."""
+    spec = get_spec(key)
+    if spec is not None:
+        try:
+            sr = str(MICRO_TEST_KEYS.index(key) + 1)
+        except ValueError:
+            sr = ""
+        return MicroReportSpec(
+            key=key,
+            sr_no=sr,
+            name=spec.test_name,
+            limits=spec.limits_display,
+            method=spec.method_of_analysis,
+        )
     if key in MICRO_REPORT_SPECS:
         return MICRO_REPORT_SPECS[key]
-    return MicroReportSpec(key=key, sr_no="", name=key, limits="", method="")
+    try:
+        test = get_test(key)
+    except KeyError:
+        test = None
+    return MicroReportSpec(
+        key=key,
+        sr_no="",
+        name=test.name if test else key,
+        limits="",
+        method=test.method if test else "",
+    )

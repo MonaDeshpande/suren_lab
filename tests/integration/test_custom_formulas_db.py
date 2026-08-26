@@ -15,6 +15,7 @@ from services.custom_formulas import (
     load_custom_lab_tests,
     record_validation_trial,
     reset_validation,
+    update_formula,
     validation_state,
 )
 from services.protocols.test_catalog import CATEGORY_FOOD, CATEGORY_WATER, get_test
@@ -117,3 +118,47 @@ def test_activate_blocked_until_six_trials(require_db):
 
     reset_validation(rec.id)
     deactivate_formula(rec.id)
+
+
+@pytest.mark.integration
+def test_validated_update_clones_row_and_deactivates_old(require_db):
+    invalidate_cache()
+    rec = create_formula(
+        "Copy On Write Test",
+        "Test",
+        "%",
+        CATEGORY_FOOD,
+        "fssai",
+        "Test % = ((W1 - W2) * 100) / W",
+        "((W1 - W2) * 100) / W",
+        [
+            CustomFormulaInput("W", "W", "g"),
+            CustomFormulaInput("W1", "W1", "g"),
+            CustomFormulaInput("W2", "W2", "g"),
+        ],
+    )
+    _pass_six_trials(rec.id)
+    activate_validated_formula(rec.id)
+    invalidate_cache()
+
+    updated = update_formula(
+        rec.id,
+        "Copy On Write Test v2",
+        "Test",
+        "%",
+        "Test % = W",
+        "W",
+        [CustomFormulaInput("W", "W", "g")],
+        "Changed formula definition for copy-on-write QA",
+    )
+    invalidate_cache()
+
+    assert updated.id != rec.id
+    assert updated.is_active is True
+    assert updated.current_version_no == 2
+    assert get_formula(rec.id).is_active is False
+    assert updated.test_key == rec.test_key
+    assert any(f.id == updated.id for f in custom_formulas_for_scope(CATEGORY_FOOD, "fssai"))
+
+    deactivate_formula(updated.id)
+    invalidate_cache()

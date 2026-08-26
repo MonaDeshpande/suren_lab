@@ -38,6 +38,26 @@ def db_available() -> bool:
 def require_db(db_available: bool) -> None:
     if not db_available:
         pytest.skip("PostgreSQL not available — start docker compose to run integration tests")
+
+
+def sample_verification_kwargs(**overrides) -> dict:
+    """Default per-sample verification checklist fields for unit tests."""
+    from datetime import date
+
+    base = {
+        "verify_review_date": date(2026, 7, 17),
+        "verify_lab_code": "SLS/26/306",
+        "verify_sample_condition": "Ambient",
+        "verify_qty_checked": True,
+        "verify_chemical_available": True,
+        "verify_methods_available": True,
+        "verify_methods_informed": True,
+        "verify_tat_informed": True,
+        "verify_ready_to_issue": True,
+        "verify_conformity_statement": False,
+    }
+    base.update(overrides)
+    return base
     from db.migrate import ensure_schema
 
     ensure_schema()
@@ -79,7 +99,106 @@ def _mock_resolve_package_for_unit_tests(request, monkeypatch):
             package_type=ptype,
             sample_product_name=name,
             test_keys=keys,
+            test_keys_with_logo=keys,
+            test_keys_without_logo=[],
             display_label=package_display_label(name, ptype),
         )
 
+    def fake_resolve_product(
+        sample_product_name: str,
+        *,
+        category: str = CATEGORY_FOOD,
+    ):
+        if normalize_category(category) != CATEGORY_FOOD:
+            return None
+        name = (sample_product_name or "").strip()
+        if not name:
+            return None
+        if name.lower() == "missingpackage":
+            return None
+        keys = ["moisture"]
+        if name.lower() == "mixed":
+            keys = ["moisture", "bn_protein"]
+        ptype = "fssai"
+        return ResolvedPackage(
+            package_id=99,
+            package_version_no=1,
+            package_type=ptype,
+            sample_product_name=name,
+            test_keys=keys,
+            test_keys_with_logo=keys,
+            test_keys_without_logo=[],
+            display_label=package_display_label(name, ptype),
+        )
+
+    def fake_describe_product(
+        sample_product_name: str,
+        *,
+        category: str = CATEGORY_FOOD,
+    ):
+        resolved = fake_resolve_product(sample_product_name, category=category)
+        if resolved:
+            return {
+                "status": "defined",
+                "package_id": resolved.package_id,
+                "version_no": resolved.package_version_no,
+                "display_label": resolved.display_label,
+                "is_active": True,
+                "active_count": 1,
+                "wl_count": len(resolved.test_keys_with_logo),
+                "nwl_count": len(resolved.test_keys_without_logo),
+                "test_keys": list(resolved.test_keys),
+                "test_keys_with_logo": list(resolved.test_keys_with_logo),
+                "test_keys_without_logo": list(resolved.test_keys_without_logo),
+                "ambiguous_types": [],
+            }
+        name = (sample_product_name or "").strip()
+        if name.lower() == "missingpackage":
+            return {
+                "status": "not_defined",
+                "test_keys": [],
+                "ambiguous_types": [],
+            }
+        return {
+            "status": "not_defined",
+            "test_keys": [],
+            "ambiguous_types": [],
+        }
+
+    def fake_describe_package(
+        sample_product_name: str,
+        package_type: str,
+        *,
+        category: str = CATEGORY_FOOD,
+        **kwargs,
+    ):
+        resolved = fake_resolve(
+            sample_product_name, package_type, category=category
+        )
+        if resolved:
+            return {
+                "status": "defined",
+                "package_id": resolved.package_id,
+                "version_no": resolved.package_version_no,
+                "display_label": resolved.display_label,
+                "is_active": True,
+                "wl_count": len(resolved.test_keys_with_logo),
+                "nwl_count": len(resolved.test_keys_without_logo),
+                "test_keys_with_logo": list(resolved.test_keys_with_logo),
+                "test_keys_without_logo": list(resolved.test_keys_without_logo),
+            }
+        name = (sample_product_name or "").strip()
+        if name.lower() == "missingpackage":
+            return {"status": "not_defined"}
+        return {"status": "not_defined"}
+
     monkeypatch.setattr("services.requests.resolve_package_tests", fake_resolve)
+    monkeypatch.setattr("services.requests.resolve_package_for_product", fake_resolve_product)
+    monkeypatch.setattr(
+        "services.test_packages.describe_sample_package",
+        fake_describe_package,
+    )
+    monkeypatch.setattr(
+        "services.test_packages.describe_sample_package_for_product",
+        fake_describe_product,
+    )

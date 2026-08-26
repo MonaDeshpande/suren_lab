@@ -10,6 +10,8 @@ from pathlib import Path
 import pytest
 from docx import Document
 
+from docx.oxml.ns import qn
+
 from services.protocol_store import ProtocolHeader, TestResultRow
 from services.samples import SampleRecord, water_report_keys
 from services.test_report_water_docx import (
@@ -108,18 +110,64 @@ class TestWaterReportDocx:
         out = fill_water_test_report_docx_bytes(_sample(), _header(), results)
         doc = Document(io.BytesIO(out))
         chem_table = doc.tables[1]
-        assert "7.320" in _cell_text(chem_table.rows[3].cells[2])
+        assert "07.32" in _cell_text(chem_table.rows[3].cells[2])
         assert WATER_REPORT_LIMITS["ph"].desirable in _cell_text(chem_table.rows[3].cells[3])
 
-    def test_micro_rows_present_with_blank_results(self):
-        out = fill_water_test_report_docx_bytes(_sample(), _header(), [])
+    def test_micro_rows_filled_from_protocol(self):
+        results = [
+            TestResultRow(
+                test_key="water_total_coliform",
+                test_name="Total Coliform",
+                method="",
+                unit="",
+                inputs={"result_obs": "absent"},
+                result_value="absent",
+                result_numeric=None,
+            ),
+            TestResultRow(
+                test_key="water_e_coli",
+                test_name="E. coli",
+                method="",
+                unit="",
+                inputs={"result_obs": "present"},
+                result_value="present",
+                result_numeric=None,
+            ),
+        ]
+        out = fill_water_test_report_docx_bytes(_sample(), _header(), results)
         doc = Document(io.BytesIO(out))
         micro_table = doc.tables[4]
-        assert len(micro_table.rows) >= 4
-        for i, placeholder in enumerate(WATER_MICRO_PLACEHOLDERS):
-            row = micro_table.rows[2 + i]
-            assert placeholder.name in _cell_text(row.cells[1])
-            assert _cell_text(row.cells[2]) == ""
+        assert _cell_text(micro_table.rows[2].cells[2]) == "Absent"
+        assert _cell_text(micro_table.rows[3].cells[2]) == "Present"
+
+    def test_footer_static_one_of_one(self):
+        out = fill_water_test_report_docx_bytes(_sample(), _header(), [])
+        doc = Document(io.BytesIO(out))
+        footer = doc.sections[0].footer
+        assert footer.paragraphs[0].text.strip() == "page 1 of 1"
+        assert not footer._element.findall(".//" + qn("w:instrText"))
+
+    def test_ulr_hidden_without_logo(self):
+        opts = WaterReportFillOptions(ulr_no="TC1611826000063801F")
+        out = fill_water_test_report_docx_bytes(
+            _sample(), _header(), [], opts=opts, with_logo=False
+        )
+        doc = Document(io.BytesIO(out))
+        assert doc.paragraphs[0].text.strip() == ""
+
+    def test_ulr_shown_with_logo(self):
+        opts = WaterReportFillOptions(ulr_no="TC1611826000063801F")
+        out = fill_water_test_report_docx_bytes(
+            _sample(), _header(), [], opts=opts, with_logo=True
+        )
+        doc = Document(io.BytesIO(out))
+        assert "TC1611826000063801F" in doc.paragraphs[0].text
+
+    def test_two_sections_after_fill(self):
+        out = fill_water_test_report_docx_bytes(_sample(), _header(), [])
+        doc = Document(io.BytesIO(out))
+        assert len(doc.sections) == 2
+        assert doc.sections[1].footer.paragraphs[0].text.strip() == "page 1 of 1"
 
     def test_appearance_and_customer_info_filled(self):
         opts = WaterReportFillOptions(
@@ -151,3 +199,11 @@ class TestWaterReportDocx:
         doc = Document(io.BytesIO(out))
         physical = doc.tables[3]
         assert "Agreeable" in _cell_text(physical.rows[3].cells[2])
+
+    def test_chem_and_micro_report_no_match_sample_code(self):
+        out = fill_water_test_report_docx_bytes(_sample(), _header(), [])
+        doc = Document(io.BytesIO(out))
+        joined = "\n".join(p.text for p in doc.paragraphs)
+        expected = _sample().sample_code
+        assert expected in joined
+        assert f"{_sample().lab_code}/02" not in joined

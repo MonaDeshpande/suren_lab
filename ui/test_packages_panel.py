@@ -94,9 +94,11 @@ def render_test_packages_panel(actor) -> None:
     """Manage Food test packages and compare versions."""
     render_section_title(
         "Test packages (Food)",
-        "Reception-only: save test sets from the **Food** catalog for each product name + group: "
-        "**FSSAI**, **Basic Nutrition**, or **Detailed Nutrition** "
-        "(e.g. Jaggery + FSSAI, Masala + Basic Nutrition). Use these packages when registering samples at CTR.",
+        "Reception-only: define the **master test pool** for each product name "
+        "(e.g. Jaggery). The union of with-logo and without-logo lists is the "
+        "maximum set reception can pick from at intake. **Test type** "
+        "(FSSAI / Basic / Detailed) is legacy/admin-only — intake resolves by "
+        "product name only (one active package per product).",
     )
 
     packages = list_packages(active_only=False)
@@ -122,7 +124,9 @@ def _package_select_label(pkg) -> str:
 def _render_manage_tab(actor, packages: list) -> None:
     render_section_title(
         "Create package",
-        "New product name + test type + separate with-logo / without-logo test lists.",
+        "Product name + legacy test type + with-logo / without-logo lists. "
+        "Put **all** product tests in the union of both lists — reception picks "
+        "a subset at intake.",
     )
     c1, c2 = st.columns(2)
     with c1:

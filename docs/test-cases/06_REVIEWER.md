@@ -164,7 +164,7 @@
 | **Type** | Positive |
 | **Preconditions** | Reception saved sample with report format A, B, or Both (with logo split) |
 | **Steps** | Open reviewer preview; generate Final Test Report PDF. |
-| **Expected** | Preview shows read-only **Report format** (and with/without logo test lists for Both). PDF letterhead uses logo for A, blank band for B, two sections for Both. Format not editable on Reviewer page. |
+| **Expected** | Preview shows read-only **Report format** (and with/without logo test lists for Both). PDF letterhead uses logo for A, blank band for B, two sections for Both. Format not editable on Reviewer page. **Report No** is the sample code (`SLS/26/691/01`, `SLS/26/691/02`, …). When format is Both, with-logo uses `{sample_code}/01` and without-logo uses `{sample_code}/02`. Footer is `page 1 of 1` (with logo) or `pg 1 of 1` (without logo). |
 
 ---
 
@@ -176,7 +176,7 @@
 | **Type** | Positive |
 | **Preconditions** | Water sample with protocol header + ≥1 saved result |
 | **Steps** | Open Reviewer; enter Condition, Appearance, IS 10500 limits if needed; **Generate Final Report**; download Word (and PDF if Word available). |
-| **Expected** | Output matches `reference/Water test report.docx`: Chemical + Elemental on page 1, Physical on page 2, Microbiological section with **blank results** (T. Coli form, E. coli). `calcium_caco3` not on report. IS 10500 Desirable/Permissible columns populated. Status → `reported`. |
+| **Expected** | Output matches `reference/Water test report.docx`: Chemical + Elemental on page 1, Physical on page 2, Microbiological section with **blank results** (T. Coli form, E. coli). `calcium_caco3` not on report. IS 10500 Desirable/Permissible columns populated. Chemical and Physical/Micro **Report No** fields default to the same sample code (or `{sample_code}/01` vs `/02` when format is Both). Status → `reported`. |
 | **Automated** | `test_water_report_docx.py::TestWaterReportDocx` |
 
 ---
@@ -189,5 +189,18 @@
 | **Type** | Positive |
 | **Preconditions** | Micro sample with protocol header + >=1 saved result |
 | **Steps** | Open Reviewer; enter Condition / Customer Sample ID / Report No; preview fixed Limits and Methods; **Generate Final Report**; download Word (and PDF if Word available). |
-| **Expected** | DOCX layout matches `reference/Micro Test Report.htm`: TEST REPORT title, QSF 7.8.2, metadata table, **Microbiological Test** section with 6 rows (Name / Result / Limits / Method). Limits and methods are catalog-fixed; only Results from analyst. Status -> `reported`. |
+| **Expected** | DOCX layout matches `reference/Micro Test Report.htm`: TEST REPORT title, QSF 7.8.2, metadata table, **Microbiological Test** section with 6 rows (Name / Result / Limits / Method). Limits and methods are catalog-fixed; only Results from analyst. Default **Report No** is the sample code (plus `/01` or `/02` when format is Both). Status -> `reported`. |
 | **Automated** | `test_micro_report.py` |
+
+---
+
+## TC-REV-017 — Final report pads numeric results under 10
+
+| Field | Value |
+|-------|-------|
+| **Priority** | P1 |
+| **Type** | Positive |
+| **Preconditions** | Sample with saved numeric result &lt; 10 (e.g. Moisture `1.19`) |
+| **Steps** | Generate Final Test Report (PDF or DOCX). |
+| **Expected** | Result column shows zero-padded two-decimal format (`01.19`, `09.50`). Values ≥ 10 remain unpadded (`12.34`). Qualitative values (Absent, Agreeable) unchanged. |
+| **Automated** | `test_test_report_pdf.py::test_build_test_report_data_pads_results_under_ten`, `test_number_format.py::test_format_report_number_pads_under_ten` |

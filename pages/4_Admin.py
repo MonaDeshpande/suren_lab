@@ -29,6 +29,9 @@ from services.users import (  # noqa: E402
 )
 from ui.auth import require_page_access  # noqa: E402
 from ui.custom_formulas_panel import render_custom_formulas_panel  # noqa: E402
+from ui.catalog_specs_panel import render_catalog_specs_panel  # noqa: E402
+from ui.db_browser_panel import render_db_browser_panel  # noqa: E402
+from ui.report_settings_panel import render_report_settings_panel  # noqa: E402
 from ui.components import (  # noqa: E402
     inject_styles,
     render_db_status,
@@ -52,13 +55,14 @@ def main() -> None:
 
     inject_styles()
     render_hero(
-        title="Admin — Users, formulas, audit & versions",
+        title="Admin — Users, formulas, audit, versions & database",
         subtitle=(
             "Register staff with a temporary password. They must change it "
             "at the desk on first login. Assign up to "
             f"<b>{MAX_ROLES_PER_USER} roles</b> per user "
             "(e.g. reception + analyst). Browse version history for "
-            "customer and request edits."
+            "customer and request edits. Use the database explorer to "
+            "view all tables and activate or deactivate any row."
         ),
         badge="User management",
     )
@@ -214,16 +218,21 @@ def main() -> None:
                 except ValueError as exc:
                     st.error(str(exc))
 
+    # ----- Catalog specs (methods & limits) -----
+    st.divider()
+    render_section_title("3. Test catalog (methods & limits)")
+    render_catalog_specs_panel(actor)
+
     # ----- Custom formulas (Admin CRUD) -----
     st.divider()
-    render_section_title("3. Custom formulas")
+    render_section_title("4. Custom formulas")
     render_custom_formulas_panel(actor)
 
     # ----- Built-in formulas catalog (read-only from code) -----
-    with st.expander("Built-in formula catalog (read-only)", expanded=False):
+    with st.expander("Built-in formula catalog (worksheet definitions)", expanded=False):
         st.caption(
-            "Static formulas in `services/protocols/test_catalog.py`. "
-            "Use Custom formulas above to add new tests without code changes."
+            "Worksheet formulas and inputs live in `services/protocols/test_catalog.py`. "
+            "Method, limits, and units are edited in section 3 above."
         )
         catalog_rows = []
         for test in TEST_CATALOG.values():
@@ -385,6 +394,11 @@ def main() -> None:
             ):
                 st.markdown(f"**Edit reason:** {v.edit_reason}")
                 st.json(v.snapshot())
+
+    render_report_settings_panel(actor)
+
+    st.divider()
+    render_db_browser_panel(actor)
 
 
 main()

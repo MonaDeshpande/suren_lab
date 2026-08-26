@@ -33,6 +33,9 @@ _MIGRATION_FILES = (
     "migrate_package_logo_scope.sql",
     "migrate_micro_category.sql",
     "migrate_water_micro_analyst.sql",
+    "migrate_row_soft_delete.sql",
+    "migrate_sample_verification.sql",
+    "migrate_catalog_test_specs.sql",
 )
 
 _applied = False
@@ -63,6 +66,10 @@ def ensure_schema(*, force: bool = False) -> list[str]:
             continue
         apply_sql_file(path)
         applied.append(name)
+
+    from db.seed_catalog_specs import seed_builtin_specs
+
+    seed_builtin_specs()
 
     _applied = True
     return applied
