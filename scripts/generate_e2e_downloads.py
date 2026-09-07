@@ -1,12 +1,15 @@
 """
 End-to-end document bundle: CTR + protocol + final test report for Food, Water, Micro.
 
-Uses reference-style client/sample data (no database). Writes to downloads/e2e_demo/.
+Default mode runs Reception -> Analyst -> Reviewer through PostgreSQL (same services
+as the Streamlit app). Use --offline for the legacy in-memory demo path.
+
 Run from project root: python scripts/generate_e2e_downloads.py
 """
 
 from __future__ import annotations
 
+import argparse
 import json
 import sys
 from datetime import date
@@ -664,8 +667,7 @@ def generate_food_jaggery(out: Path) -> None:
     )
 
 
-def main() -> None:
-    print(f"E2E output: {OUTPUT_ROOT}")
+def _check_templates() -> None:
     templates = [
         PROJECT_ROOT / "reference" / "Customer Test Request form LLP.docx",
         PROJECT_ROOT / "reference" / "Water protocol 2025.docx",
@@ -679,10 +681,41 @@ def main() -> None:
     if missing:
         print(f"Warning: missing templates: {', '.join(missing)}")
 
+
+def _run_offline() -> None:
     generate_water(OUTPUT_ROOT)
     generate_micro(OUTPUT_ROOT)
     generate_food(OUTPUT_ROOT)
     generate_food_jaggery(OUTPUT_ROOT)
+
+
+def _run_app_flow() -> None:
+    from services.e2e_app_flow import run_all_demo_scenarios
+
+    codes = run_all_demo_scenarios(OUTPUT_ROOT, PROJECT_ROOT)
+    print("\nDB-backed sample codes:")
+    for code in codes:
+        print(f"  - {code}")
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Generate E2E demo document bundles.")
+    parser.add_argument(
+        "--offline",
+        action="store_true",
+        help="Use legacy in-memory demo data (no database).",
+    )
+    args = parser.parse_args()
+
+    print(f"E2E output: {OUTPUT_ROOT}")
+    _check_templates()
+
+    if args.offline:
+        print("Mode: offline (in-memory demo data)")
+        _run_offline()
+    else:
+        print("Mode: app flow (Reception -> Analyst -> Reviewer via PostgreSQL)")
+        _run_app_flow()
 
     print(f"\nDone. Open: {OUTPUT_ROOT}")
 

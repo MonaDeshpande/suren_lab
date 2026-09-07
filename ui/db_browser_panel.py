@@ -36,7 +36,7 @@ def _grouped_table_options() -> list[str]:
 def render_db_browser_panel(actor) -> None:
     """Render the admin database explorer section."""
     render_section_title(
-        "6. Database explorer",
+        "8. Database explorer",
         "Browse all tables, view row data, and soft-delete (deactivate) or "
         "reactivate rows. Password hashes are never shown.",
     )

@@ -39,7 +39,7 @@ Maps product features to manual TC-IDs and automated tests.
 | Final report → reported | TC-REV-004, TC-E2E-001 | — |
 | Status warnings non-blocking | TC-REV-005…006 | — |
 | Reviewer note / stamp | TC-REV-008…009 | — |
-| 10-day retention / purge | TC-RET-001…010 | integration retention |
+| 50-day retention / purge | TC-RET-001…010 | integration retention |
 | Audit action matrix | TC-AUD-001…013 | — |
 | Full E2E smoke | TC-E2E-001…009 | `pytest` formulas + protocol flow + `test_users_admin_db.py` |
 

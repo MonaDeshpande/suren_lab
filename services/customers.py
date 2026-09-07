@@ -335,11 +335,10 @@ def upsert_customer(
     actor=None,
 ) -> Customer:
     """
-    Insert a new customer, or update the existing one matched by GST number.
+    Insert a new customer, or update an existing one.
 
-    This is how "permanent" storage works:
-      - First visit with a GST  → INSERT
-      - Later visit with same GST → UPDATE name/address/contact/email
+    When GST is provided (15-character GSTIN), match by GST number.
+    When GST is blank, update by ``customer.id`` if set, otherwise insert.
 
     Contact persons (up to five) are stored in customer_contacts; contact 1
     is mirrored on the customers row.
@@ -347,12 +346,8 @@ def upsert_customer(
     Returns
     -------
     Customer
-        The saved record including the database `id`.
+        The saved record including the database ``id``.
     """
-    gst = (customer.gst_number or "").strip()
-    if not gst:
-        raise ValueError("GST number is required to save a customer permanently.")
-
     if not (customer.customer_name or "").strip():
         raise ValueError("Customer name / details are required.")
 
@@ -361,10 +356,15 @@ def upsert_customer(
     contact_person = (primary.contact_name or customer.contact_person or "").strip()
     email = (primary.email or customer.email or "").strip()
 
-    # Normalise GST for consistent unique key storage
-    gst = gst.upper()
+    gst_raw = (customer.gst_number or "").strip()
+    gst: str | None = gst_raw.upper() if gst_raw else None
 
-    existing = get_customer_by_gst(gst)
+    existing: Customer | None = None
+    if gst and gst_ready_for_lookup(gst):
+        existing = get_customer_by_gst(gst)
+    elif customer.id is not None:
+        existing = get_customer_by_id(customer.id)
+
     proposed = Customer(
         id=existing.id if existing else customer.id,
         customer_name=customer.customer_name.strip(),
@@ -372,7 +372,7 @@ def upsert_customer(
         contact_person=contact_person,
         contact_number=(customer.contact_number or "").strip(),
         email=email,
-        gst_number=gst,
+        gst_number=gst or "",
         contacts=contacts,
     )
 
@@ -388,22 +388,6 @@ def upsert_customer(
             actor=actor,
         )
 
-    sql = """
-        INSERT INTO customers (
-            customer_name, address, contact_person,
-            contact_number, email, gst_number
-        )
-        VALUES (%s, %s, %s, %s, %s, %s)
-        ON CONFLICT (gst_number) WHERE is_active = TRUE DO UPDATE SET
-            customer_name  = EXCLUDED.customer_name,
-            address        = EXCLUDED.address,
-            contact_person = EXCLUDED.contact_person,
-            contact_number = EXCLUDED.contact_number,
-            email          = EXCLUDED.email,
-            updated_at     = NOW()
-        RETURNING id, customer_name, address, contact_person,
-                  contact_number, email, gst_number
-    """
     values = (
         proposed.customer_name,
         proposed.address,
@@ -415,19 +399,71 @@ def upsert_customer(
 
     with get_db() as conn:
         with conn.cursor() as cur:
-            cur.execute(sql, values)
+            if gst and gst_ready_for_lookup(gst):
+                cur.execute(
+                    """
+                    INSERT INTO customers (
+                        customer_name, address, contact_person,
+                        contact_number, email, gst_number
+                    )
+                    VALUES (%s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (gst_number)
+                        WHERE is_active = TRUE AND gst_number IS NOT NULL
+                    DO UPDATE SET
+                        customer_name  = EXCLUDED.customer_name,
+                        address        = EXCLUDED.address,
+                        contact_person = EXCLUDED.contact_person,
+                        contact_number = EXCLUDED.contact_number,
+                        email          = EXCLUDED.email,
+                        updated_at     = NOW()
+                    RETURNING id, customer_name, address, contact_person,
+                              contact_number, email, gst_number
+                    """,
+                    values,
+                )
+            elif is_update and existing is not None:
+                cur.execute(
+                    """
+                    UPDATE customers
+                       SET customer_name  = %s,
+                           address        = %s,
+                           contact_person = %s,
+                           contact_number = %s,
+                           email          = %s,
+                           gst_number     = %s,
+                           updated_at     = NOW()
+                     WHERE id = %s AND is_active = TRUE
+                    RETURNING id, customer_name, address, contact_person,
+                              contact_number, email, gst_number
+                    """,
+                    (*values, existing.id),
+                )
+            else:
+                cur.execute(
+                    """
+                    INSERT INTO customers (
+                        customer_name, address, contact_person,
+                        contact_number, email, gst_number
+                    )
+                    VALUES (%s, %s, %s, %s, %s, %s)
+                    RETURNING id, customer_name, address, contact_person,
+                              contact_number, email, gst_number
+                    """,
+                    values,
+                )
             row = cur.fetchone()
 
     saved = _row_to_customer(row)
     replace_contacts(saved.id, contacts, actor=actor)
     saved.contacts = list_contacts(saved.id)
+    details = f"gst={saved.gst_number}" if saved.gst_number else f"id={saved.id}"
     if changed:
         log_from_user(
             actor,
             "customer.update",
             "customers",
             saved.id,
-            details=f"gst={saved.gst_number}",
+            details=details,
             edit_reason=edit_reason,
         )
     else:
@@ -436,7 +472,7 @@ def upsert_customer(
             "customer.upsert",
             "customers",
             saved.id,
-            details=f"gst={saved.gst_number}",
+            details=details,
         )
     return saved
 

@@ -8,7 +8,12 @@ from io import BytesIO
 from pypdf import PdfReader
 
 from services.customers import Customer
-from services.pdf_generator import FOOTER_TEXT, _generate_ctr_pdf, generate_pdf_bytes
+from services.pdf_generator import (
+    FOOTER_RIGHT_TEXT,
+    _ctr_footer_left,
+    _generate_ctr_pdf,
+    generate_pdf_bytes,
+)
 from services.requests import SampleRow, TestRequestData
 from tests.conftest import sample_verification_kwargs
 
@@ -96,7 +101,22 @@ class TestCtrPdfGenerator:
         assert "Tests to be performed:" in page2
         assert "Moisture" in page2
         assert "Sample Verification Checklist" in page3
-        assert FOOTER_TEXT in page1 or "[Control copy]" in page1
+
+    def test_ctr_footer_has_reception_and_review(self):
+        left = _ctr_footer_left("Priya Reception", "30/07/2026 15:00", date(2026, 7, 30))
+        assert "Priya Reception" in left
+        assert "30/07/2026" in left
+        pdf = _generate_ctr_pdf(
+            _ctr_request(),
+            generated_by="Priya Reception",
+            generated_at="30/07/2026 15:00",
+        )
+        reader = PdfReader(BytesIO(pdf))
+        page1 = reader.pages[0].extract_text() or ""
+        assert "Priya Reception" in page1
+        assert FOOTER_RIGHT_TEXT in page1
+        assert "30/07/2026" in page1
+        assert "[Control copy]" not in page1
 
     def test_two_samples_get_separate_pages_and_checklists(self):
         req = _ctr_request(

@@ -37,10 +37,11 @@ from services.requests import (
     ctr_parameters_display,
     delivery_mode_is_selected,
 )
+from services.document_templates import CTR_TEMPLATE_PATH
+from services.docx_layout import set_ctr_signature_footer
+from services.pdf_generator import FOOTER_RIGHT_TEXT, _ctr_footer_left
 
-# Project root = parent of /services
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
-TEMPLATE_PATH = PROJECT_ROOT / "reference" / "Customer Test Request form LLP.docx"
+TEMPLATE_PATH = CTR_TEMPLATE_PATH
 
 
 def _fmt_date(d: Optional[date]) -> str:
@@ -289,6 +290,9 @@ def fill_docx_bytes(
         _add_page_break(doc)
         doc.add_paragraph(CHECKLIST_TITLE)
         _add_verification_table(doc, sample)
+
+    left_text = _ctr_footer_left(generated_by, generated_at, data.request_date)
+    set_ctr_signature_footer(doc, left_text=left_text, right_text=FOOTER_RIGHT_TEXT)
 
     out = io.BytesIO()
     doc.save(out)

@@ -13,7 +13,7 @@ ALTER TABLE request_samples
     ADD COLUMN IF NOT EXISTS analyst_remarks TEXT,
     ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT NOW(),
     ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT NOW(),
-    ADD COLUMN IF NOT EXISTS expires_at TIMESTAMPTZ DEFAULT (NOW() + INTERVAL '10 days');
+    ADD COLUMN IF NOT EXISTS expires_at TIMESTAMPTZ DEFAULT (NOW() + INTERVAL '50 days');
 
 -- Backfill sample_code for any legacy rows that lack one
 UPDATE request_samples
@@ -38,7 +38,7 @@ UPDATE request_samples
  WHERE updated_at IS NULL;
 
 UPDATE request_samples
-   SET expires_at = COALESCE(created_at, NOW()) + INTERVAL '10 days'
+   SET expires_at = COALESCE(created_at, NOW()) + INTERVAL '50 days'
  WHERE expires_at IS NULL;
 
 -- Enforce NOT NULL / defaults going forward
@@ -48,7 +48,7 @@ ALTER TABLE request_samples
     ALTER COLUMN status SET DEFAULT 'pending',
     ALTER COLUMN created_at SET DEFAULT NOW(),
     ALTER COLUMN updated_at SET DEFAULT NOW(),
-    ALTER COLUMN expires_at SET DEFAULT (NOW() + INTERVAL '10 days');
+    ALTER COLUMN expires_at SET DEFAULT (NOW() + INTERVAL '50 days');
 
 -- Unique sample codes
 DO $$

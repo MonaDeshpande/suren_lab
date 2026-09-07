@@ -3,7 +3,7 @@
 -- Customer Test Request system
 -- =============================================================================
 -- Permanent customer master + per-request intake records.
--- GST number is the unique business key for customers.
+-- GST number is the unique business key when provided (optional).
 -- =============================================================================
 
 -- ---------------------------------------------------------------------------
@@ -19,7 +19,7 @@ CREATE TABLE IF NOT EXISTS customers (
     contact_person  TEXT,                          -- Name of contact person
     contact_number  TEXT,                          -- Phone / mobile
     email           TEXT,                          -- Email ID
-    gst_number      TEXT        NOT NULL,          -- GSTIN — unique key (active rows)
+    gst_number      TEXT,                          -- GSTIN — unique when set (active rows)
     is_active       BOOLEAN     NOT NULL DEFAULT TRUE,
     created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
@@ -27,7 +27,7 @@ CREATE TABLE IF NOT EXISTS customers (
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_customers_gst_active
     ON customers (gst_number)
-    WHERE is_active = TRUE;
+    WHERE is_active = TRUE AND gst_number IS NOT NULL;
 
 -- Fast lookup by GST or partial name search
 CREATE INDEX IF NOT EXISTS idx_customers_gst
@@ -104,7 +104,6 @@ CREATE TABLE IF NOT EXISTS sample_test_packages (
 CREATE UNIQUE INDEX IF NOT EXISTS idx_sample_test_packages_unique_active
     ON sample_test_packages (
         lower(trim(sample_product_name)),
-        package_type,
         category
     )
     WHERE is_active = TRUE;
@@ -213,7 +212,7 @@ CREATE INDEX IF NOT EXISTS idx_custom_formula_inputs_order
 -- ---------------------------------------------------------------------------
 -- request_samples  (rows in the "Sample Description" table)
 -- Each sample gets a unique sample_code for analyst handoff.
--- Rows are retained for 10 days (expires_at); cleanup script deletes expired.
+-- Rows are retained for 50 days (expires_at); cleanup script deletes expired.
 -- ---------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS request_samples (
     id                  SERIAL PRIMARY KEY,
@@ -262,7 +261,7 @@ CREATE TABLE IF NOT EXISTS request_samples (
     verify_conformity_statement BOOLEAN,
     created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    expires_at          TIMESTAMPTZ NOT NULL DEFAULT (NOW() + INTERVAL '10 days'),
+    expires_at          TIMESTAMPTZ NOT NULL DEFAULT (NOW() + INTERVAL '50 days'),
     is_active           BOOLEAN     NOT NULL DEFAULT TRUE
 );
 

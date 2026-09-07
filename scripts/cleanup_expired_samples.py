@@ -1,7 +1,7 @@
 """
 scripts/cleanup_expired_samples.py
 ----------------------------------
-Delete request_samples rows whose 10-day retention window has ended.
+Delete request_samples rows whose 50-day retention window has ended.
 
 Customers and test_requests headers are kept.
 

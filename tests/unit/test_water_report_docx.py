@@ -169,6 +169,20 @@ class TestWaterReportDocx:
         assert len(doc.sections) == 2
         assert doc.sections[1].footer.paragraphs[0].text.strip() == "page 1 of 1"
 
+    def test_section_break_pgmar_uses_twips_not_emu(self):
+        import io
+        import re
+        import zipfile
+
+        out = fill_water_test_report_docx_bytes(_sample(), _header(), [])
+        with zipfile.ZipFile(io.BytesIO(out)) as zf:
+            xml = zf.read("word/document.xml").decode("utf-8", errors="replace")
+        inline = re.search(r"<w:sectPr>.*?<w:pgMar([^/]*)/>", xml, re.S)
+        assert inline is not None
+        pg_mar = inline.group(1)
+        assert 'w:top="216"' in pg_mar
+        assert 'w:top="137160"' not in pg_mar
+
     def test_appearance_and_customer_info_filled(self):
         opts = WaterReportFillOptions(
             condition_of_sample="Packed in plastic container",

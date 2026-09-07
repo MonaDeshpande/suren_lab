@@ -39,6 +39,64 @@ VALID_CATEGORIES = frozenset(SAMPLE_CATEGORIES.keys())
 PROTOCOL_FAMILY_JAGGERY = "jaggery"
 PROTOCOL_FAMILY_NUTRITION = "nutrition"
 
+PROTEIN_TITRANT_HCL = "HCl"
+PROTEIN_TITRANT_NAOH = "NaOH"
+PROTEIN_TITRANTS = (PROTEIN_TITRANT_HCL, PROTEIN_TITRANT_NAOH)
+
+# Shared symbolic formulas for all Basic / Detailed Nutrition tests (same text everywhere).
+NUTRITION_FORMULA_DISPLAY: dict[str, str] = {
+    "bn_moisture": "Moisture % = (W1 - W2) × 100 / W",
+    "bn_total_ash": "Ash % = (W2 - W1) × 100 / W",
+    "bn_total_fat": "Fat % = (W2 - W1) × 100 / W",
+    "bn_carbohydrate": "Carbohydrate (%) = 100 − (Moisture + Ash + Fat + Protein)",
+    "bn_calories": "Energy = 4×(protein + carbohydrate) + 9×fat",
+    "bn_ash_insoluble_hcl": (
+        "Ash insoluble in dil. HCl w/w (%) = (W2 − W1) × 100 / W ; "
+        "Ash on dry basis (%) = Ash × 100 / (100 − Moisture)"
+    ),
+    "bn_crude_fibre": "Crude fibre % = (W2 - W1) × 100 / W",
+    "bn_added_sugar": (
+        "Added sugar (%) = Conc × 250 × 10 / (Wt × B.R.) ; "
+        "Added sugar on dry basis (%) = Added sugar × 100 / (100 − Moisture)"
+    ),
+    "bn_total_sugar": (
+        "Total sugar (%) = Conc × 250 × 100 / (Wt × B.R.) ; "
+        "Total sugar on dry basis (%) = Total sugar × 100 / (100 − Moisture)"
+    ),
+}
+
+
+def protein_titrant_from(inputs: dict[str, Any]) -> str:
+    """Return HCl or NaOH; default NaOH for legacy saved rows without titrant."""
+    raw = str(inputs.get("titrant") or PROTEIN_TITRANT_NAOH).strip()
+    if raw.upper() in ("HCL", "HCl"):
+        return PROTEIN_TITRANT_HCL
+    return PROTEIN_TITRANT_NAOH
+
+
+def protein_normality_key(titrant: str) -> str:
+    return "n_hcl" if titrant == PROTEIN_TITRANT_HCL else "n_naoh"
+
+
+def protein_normality_label(titrant: str) -> str:
+    return "HCl" if titrant == PROTEIN_TITRANT_HCL else "NaOH"
+
+
+def protein_formula_display(titrant: str = PROTEIN_TITRANT_NAOH) -> str:
+    label = protein_normality_label(titrant)
+    return (
+        f"Nitrogen (%) = 0.014 × N({label}) × (B.R. Blank − B.R. Sample) × 100 / W ; "
+        "Total Protein (%) = Nitrogen × Factor"
+    )
+
+
+def nutrition_formula_display(test_key: str, inputs: dict[str, Any] | None = None) -> str:
+    """Human-readable formula for analyst UI and protocol (no internal bn_ keys)."""
+    if test_key == "bn_protein":
+        titrant = protein_titrant_from(inputs or {})
+        return protein_formula_display(titrant)
+    return NUTRITION_FORMULA_DISPLAY.get(test_key, "")
+
 
 @dataclass
 class InputField:
@@ -533,16 +591,21 @@ def _calc_bn_total_fat(inputs: dict, _ctx: dict) -> tuple[str, Optional[float]]:
 
 
 def _calc_bn_protein(inputs: dict, _ctx: dict) -> tuple[str, Optional[float]]:
-    # Reference: Nitrogen = 0.014 × N(NaOH) × (BR blank − BR sample) × 100 / W
+    # Reference: Nitrogen = 0.014 × N(titrant) × (BR blank − BR sample) × 100 / W
     #            Protein = Nitrogen × Factor
     w = _f(inputs, "w")
-    n_naoh = _f(inputs, "n_naoh")
+    titrant = protein_titrant_from(inputs)
+    norm_key = protein_normality_key(titrant)
+    norm_label = protein_normality_label(titrant)
+    if not str(inputs.get(norm_key) or "").strip():
+        raise ValueError(f"Normality of {norm_label} is required when titrant is {titrant}")
+    n_titrant = _f(inputs, norm_key)
     br_blank = _f(inputs, "br_blank")
     br_sample = _f(inputs, "br_sample")
     n_factor = _f(inputs, "n_factor")
     if w == 0:
         raise ValueError("Sample weight W cannot be zero")
-    nitrogen = 0.014 * n_naoh * (br_blank - br_sample) * 100.0 / w
+    nitrogen = 0.014 * n_titrant * (br_blank - br_sample) * 100.0 / w
     protein = _round(nitrogen * n_factor)
     return f"{protein}", protein
 
@@ -568,7 +631,7 @@ def _calc_bn_carbohydrate(inputs: dict, ctx: dict) -> tuple[str, Optional[float]
     ash = _macro_from_ctx_or_inputs(inputs, ctx, "bn_total_ash", "ash_pct")
     if None in (moisture, protein, fat, ash):
         raise ValueError(
-            "Need bn_moisture, bn_protein, bn_total_fat, and bn_total_ash results "
+            "Need Moisture, Protein, Total Fat, and Total Ash results "
             "(save those first, or enter overrides)"
         )
     carb = _round(100.0 - moisture - protein - fat - ash)
@@ -582,7 +645,7 @@ def _calc_bn_calories(inputs: dict, ctx: dict) -> tuple[str, Optional[float]]:
     fat = _macro_from_ctx_or_inputs(inputs, ctx, "bn_total_fat", "fat_pct")
     if None in (protein, carb, fat):
         raise ValueError(
-            "Need bn_protein, bn_carbohydrate, and bn_total_fat results "
+            "Need Protein, Carbohydrate, and Total Fat results "
             "(save those first, or enter overrides)"
         )
     kcal = _round(4.0 * (protein + carb) + 9.0 * fat, 1)
@@ -796,7 +859,7 @@ TEST_CATALOG: dict[str, LabTest] = {
         name="Moisture",
         method="Clause 5 Of IS 12711",
         unit="%",
-        formula_display="Moisture % = (W1 - W2) × 100 / W",
+        formula_display=NUTRITION_FORMULA_DISPLAY["bn_moisture"],
         inputs=[
             InputField("empty_dish", "Weight of empty stainless steel dish (gms)", "g", False),
             InputField("w1", "Weight of dish + Sample before drying (W1)", "g"),
@@ -812,7 +875,7 @@ TEST_CATALOG: dict[str, LabTest] = {
         name="Total Ash",
         method="Clause 6 Of Is 12711",
         unit="%",
-        formula_display="Ash % = (W2 - W1) × 100 / W",
+        formula_display=NUTRITION_FORMULA_DISPLAY["bn_total_ash"],
         inputs=[
             InputField("w1", "Weight of empty Crucible (W1)", "g"),
             InputField("before_ign", "Weight of Crucible + Sample before ignition", "g", False),
@@ -828,7 +891,7 @@ TEST_CATALOG: dict[str, LabTest] = {
         name="Total Fat",
         method="Clause 10 Of IS 12711",
         unit="%",
-        formula_display="Fat % = (W2 - W1) × 100 / W",
+        formula_display=NUTRITION_FORMULA_DISPLAY["bn_total_fat"],
         inputs=[
             InputField("w", "Wt. of sample taken (W)", "g"),
             InputField("w1", "Wt. of empty Evaporating Dish (W1)", "g"),
@@ -842,10 +905,18 @@ TEST_CATALOG: dict[str, LabTest] = {
         name="Protein",
         method="IS 7219",
         unit="%",
-        formula_display="Nitrogen (%) = 0.014 × N(NaOH) × (B.R. Blank − B.R. Sample) × 100 / W ; Total Protein (%) = Nitrogen × Factor",
+        formula_display=protein_formula_display(PROTEIN_TITRANT_NAOH),
         inputs=[
+            InputField(
+                "titrant",
+                "Titrant used",
+                "",
+                True,
+                "choice",
+                list(PROTEIN_TITRANTS),
+            ),
             InputField("w", "Wt. of sample taken (W)", "g"),
-            InputField("n_naoh", "Normality of NaOH", ""),
+            InputField("n_naoh", "Normality of NaOH", "", False),
             InputField("n_hcl", "Normality of HCl", "", False),
             InputField("br_blank", "B.R. For Blank", "ml"),
             InputField("br_sample", "B.R. For Sample", "ml"),
@@ -863,7 +934,7 @@ TEST_CATALOG: dict[str, LabTest] = {
         name="Carbohydrate",
         method="IS 1656",
         unit="%",
-        formula_display="Carbohydrate (%) = 100 − (Moisture + Ash + Fat + Protein)",
+        formula_display=NUTRITION_FORMULA_DISPLAY["bn_carbohydrate"],
         inputs=[
             InputField("moisture_pct", "Moisture % (if not saved)", "%", False),
             InputField("protein_pct", "Protein % (if not saved)", "%", False),
@@ -878,7 +949,7 @@ TEST_CATALOG: dict[str, LabTest] = {
         name="Calories (Energy)",
         method="IS 9487",
         unit="Kcal/100g",
-        formula_display="Energy = 4×(protein + carbohydrate) + 9×fat",
+        formula_display=NUTRITION_FORMULA_DISPLAY["bn_calories"],
         inputs=[
             InputField("protein_pct", "Protein % (if not saved)", "%", False),
             InputField("carb_pct", "Carbohydrate % (if not saved)", "%", False),
@@ -892,7 +963,7 @@ TEST_CATALOG: dict[str, LabTest] = {
         name="Ash Insoluble in HCL",
         method="IS 1797",
         unit="%",
-        formula_display="Ash insoluble in dil. HCl w/w (%) = (W2 − W1) × 100 / W ; Ash on dry basis (%) = Ash × 100 / (100 − Moisture)",
+        formula_display=NUTRITION_FORMULA_DISPLAY["bn_ash_insoluble_hcl"],
         inputs=[
             InputField("w1", "Weight of empty Crucible (W1)", "g"),
             InputField("before_ign", "Weight of Crucible + Insoluble ash before ignition", "g", False),
@@ -908,7 +979,7 @@ TEST_CATALOG: dict[str, LabTest] = {
         name="Crude Fibre",
         method="FSSAI Manual Of Cereal & Cereal Prod. 2023",
         unit="%",
-        formula_display="Crude fibre % = (W2 - W1) × 100 / W",
+        formula_display=NUTRITION_FORMULA_DISPLAY["bn_crude_fibre"],
         inputs=[
             InputField("w", "Wt. of sample taken (W)", "g"),
             InputField("w1", "Wt. of empty filter paper (W1)", "g"),
@@ -922,7 +993,7 @@ TEST_CATALOG: dict[str, LabTest] = {
         name="Added Sugar",
         method="IS 15279",
         unit="%",
-        formula_display="Added sugar (%) = Conc × 250 × 10 / (Wt × B.R.) ; Added sugar on dry basis (%) = Added sugar × 100 / (100 − Moisture)",
+        formula_display=NUTRITION_FORMULA_DISPLAY["bn_added_sugar"],
         inputs=[
             InputField("sample_wt", "Amount of sample taken (gms)", "g"),
             InputField("fehling", "Fehling solution for Reducing sugar", "ml", False),
@@ -937,7 +1008,7 @@ TEST_CATALOG: dict[str, LabTest] = {
         name="Total Sugar",
         method="IS 15279",
         unit="%",
-        formula_display="Total sugar (%) = Conc × 250 × 100 / (Wt × B.R.) ; Total sugar on dry basis (%) = Total sugar × 100 / (100 − Moisture)",
+        formula_display=NUTRITION_FORMULA_DISPLAY["bn_total_sugar"],
         inputs=[
             InputField("sample_wt", "Amount of sample taken (gms)", "g"),
             InputField("fehling", "Fehling solution for Total Invert sugar", "ml", False),
@@ -1354,15 +1425,19 @@ def default_test_keys_for_category(category: Optional[str]) -> list[str]:
 
 def normalize_category(category: Optional[str]) -> str:
     """Return a valid category key; default food."""
-    key = (category or "").strip().lower()
-    if key in VALID_CATEGORIES:
-        return key
-    return CATEGORY_FOOD
+    from services.sample_categories import normalize_sample_category
+
+    return normalize_sample_category(category)
 
 
 def category_label(category: Optional[str]) -> str:
     """Human-readable label for a category key."""
-    return SAMPLE_CATEGORIES.get(normalize_category(category), SAMPLE_CATEGORIES[CATEGORY_FOOD])
+    from services.sample_categories import all_sample_categories
+
+    key = normalize_category(category)
+    return all_sample_categories(include_inactive=True).get(
+        key, SAMPLE_CATEGORIES.get(key, SAMPLE_CATEGORIES[CATEGORY_FOOD])
+    )
 
 
 def tests_for_category(category: Optional[str]) -> list[LabTest]:
@@ -1482,6 +1557,12 @@ def missing_required_inputs(test: LabTest, inputs: dict[str, Any]) -> list[str]:
         val = inputs.get(f.key)
         if val is None or str(val).strip() == "":
             missing.append(f.label)
+    if test.key == "bn_protein":
+        titrant = protein_titrant_from(inputs)
+        norm_key = protein_normality_key(titrant)
+        norm_label = protein_normality_label(titrant)
+        if not str(inputs.get(norm_key) or "").strip():
+            missing.append(f"Normality of {norm_label}")
     return missing
 
 

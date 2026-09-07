@@ -36,6 +36,9 @@ _MIGRATION_FILES = (
     "migrate_row_soft_delete.sql",
     "migrate_sample_verification.sql",
     "migrate_catalog_test_specs.sql",
+    "migrate_sample_categories.sql",
+    "migrate_retention_50_days.sql",
+    "migrate_gst_optional.sql",
 )
 
 _applied = False

@@ -30,6 +30,7 @@ from services.users import (  # noqa: E402
 from ui.auth import require_page_access  # noqa: E402
 from ui.custom_formulas_panel import render_custom_formulas_panel  # noqa: E402
 from ui.catalog_specs_panel import render_catalog_specs_panel  # noqa: E402
+from ui.sample_categories_panel import render_sample_categories_panel  # noqa: E402
 from ui.db_browser_panel import render_db_browser_panel  # noqa: E402
 from ui.report_settings_panel import render_report_settings_panel  # noqa: E402
 from ui.components import (  # noqa: E402
@@ -223,9 +224,14 @@ def main() -> None:
     render_section_title("3. Test catalog (methods & limits)")
     render_catalog_specs_panel(actor)
 
+    # ----- Sample categories (e.g. Pharma) -----
+    st.divider()
+    render_section_title("4. Sample categories")
+    render_sample_categories_panel(actor)
+
     # ----- Custom formulas (Admin CRUD) -----
     st.divider()
-    render_section_title("4. Custom formulas")
+    render_section_title("5. Custom formulas")
     render_custom_formulas_panel(actor)
 
     # ----- Built-in formulas catalog (read-only from code) -----
@@ -290,7 +296,7 @@ def main() -> None:
     # ----- Audit log -----
     st.divider()
     render_section_title(
-        "4. Audit log",
+        "6. Audit log",
         "Who did what, with date/time (newest first).",
     )
     audit_rows = list_recent(limit=100)
@@ -325,7 +331,7 @@ def main() -> None:
     # ----- Version history -----
     st.divider()
     render_section_title(
-        "5. Version history",
+        "7. Version history",
         "Immutable snapshots before customer or request edits (newest first).",
     )
     vf1, vf2, vf3 = st.columns([2, 2, 1])

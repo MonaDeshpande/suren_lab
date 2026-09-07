@@ -33,16 +33,26 @@ class TestSampleRowEditGuards:
 
 
 class TestCtrParametersDisplay:
-    def test_food_uses_package_type_label(self):
+    def test_food_uses_stored_parameters_text(self):
         row = SampleRow(
             sr_no=1,
             sample_name="Jaggery",
             category="food",
-            parameters="Jaggery — FSSAI — tests to be conducted (Moisture)",
+            parameters="FSSAI",
             test_keys=["moisture"],
             package_type="fssai",
         )
         assert ctr_parameters_display(row) == "FSSAI"
+
+    def test_food_custom_parameters_text(self):
+        row = SampleRow(
+            sr_no=1,
+            sample_name="Jaggery",
+            category="food",
+            parameters="Organic certification scope",
+            package_type="fssai",
+        )
+        assert ctr_parameters_display(row) == "Organic certification scope"
 
     def test_food_legacy_parameters_label(self):
         row = SampleRow(

@@ -4,7 +4,7 @@ services/samples.py
 Analyst-facing sample lookups and status updates.
 
 Samples are keyed by unique sample_code (e.g. SLS-260717-0001).
-Only non-expired rows (expires_at > NOW()) are visible — 10-day retention.
+Only non-expired rows (expires_at > NOW()) are visible — 50-day retention.
 Search by lab code, sample code/name, or client name via search_open().
 """
 
@@ -29,6 +29,7 @@ from services.water_report_catalog import (
 import json
 import re
 
+SAMPLE_RETENTION_DAYS = 50
 ALLOWED_STATUSES = ("pending", "in_progress", "completed", "reported")
 
 REPORT_FORMAT_WITH_LOGO = "with_logo"
@@ -651,7 +652,8 @@ def update_status(
 
     if not row:
         raise ValueError(
-            f"Sample '{sample_code}' not found or has expired (10-day retention)."
+            f"Sample '{sample_code}' not found or has expired "
+            f"({SAMPLE_RETENTION_DAYS}-day retention)."
         )
 
     updated = get_by_code(code)

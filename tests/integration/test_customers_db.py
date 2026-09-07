@@ -63,3 +63,28 @@ class TestCustomerUpsert:
         assert loaded is not None
         assert loaded.id == first.id
         assert loaded.customer_name == "Upsert QA Co Updated"
+
+    def test_upsert_without_gst_inserts_new_customer(self, require_db):
+        name = f"No GST QA {uuid.uuid4().hex[:8]}"
+        saved = upsert_customer(
+            Customer(
+                customer_name=name,
+                address="1 Test Lane",
+                contact_person="QA User",
+                contact_number="9876543210",
+                email="",
+                gst_number="",
+            )
+        )
+        assert saved.id is not None
+        assert saved.gst_number == ""
+        try:
+            with get_db() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "DELETE FROM customer_contacts WHERE customer_id = %s",
+                        (saved.id,),
+                    )
+                    cur.execute("DELETE FROM customers WHERE id = %s", (saved.id,))
+        except Exception:  # noqa: BLE001
+            pass

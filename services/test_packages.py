@@ -423,6 +423,86 @@ def get_package(package_id: int) -> Optional[TestPackage]:
     return pkg
 
 
+def _find_active_package_by_product_name(
+    sample_product_name: str,
+    *,
+    category: str = CATEGORY_FOOD,
+) -> Optional[TestPackage]:
+    """Return the single active package for a product name, or None if zero/many."""
+    name = (sample_product_name or "").strip()
+    if not name:
+        return None
+    cat = normalize_category(category)
+    if cat != CATEGORY_FOOD:
+        return None
+
+    sql = """
+        SELECT id, sample_product_name, package_type, category,
+               current_version_no, is_active
+          FROM sample_test_packages
+         WHERE lower(trim(sample_product_name)) = lower(trim(%s))
+           AND category = %s
+           AND is_active = TRUE
+         ORDER BY id DESC
+    """
+    try:
+        with get_db() as conn:
+            with conn.cursor() as cur:
+                cur.execute(sql, (name, cat))
+                rows = cur.fetchall()
+    except Exception:  # noqa: BLE001
+        return None
+
+    if len(rows) != 1:
+        return None
+
+    pkg = _header_to_package(rows[0])
+    wl, nwl = _load_test_sets(pkg.id)
+    pkg.test_keys_with_logo = wl
+    pkg.test_keys_without_logo = nwl
+    return pkg
+
+
+def _list_active_packages_by_product_name(
+    sample_product_name: str,
+    *,
+    category: str = CATEGORY_FOOD,
+) -> list[TestPackage]:
+    """All active packages matching a product name (legacy duplicates)."""
+    name = (sample_product_name or "").strip()
+    if not name:
+        return []
+    cat = normalize_category(category)
+    if cat != CATEGORY_FOOD:
+        return []
+
+    sql = """
+        SELECT id, sample_product_name, package_type, category,
+               current_version_no, is_active
+          FROM sample_test_packages
+         WHERE lower(trim(sample_product_name)) = lower(trim(%s))
+           AND category = %s
+           AND is_active = TRUE
+         ORDER BY id DESC
+    """
+    try:
+        with get_db() as conn:
+            with conn.cursor() as cur:
+                cur.execute(sql, (name, cat))
+                rows = cur.fetchall()
+    except Exception:  # noqa: BLE001
+        return []
+
+    packages: list[TestPackage] = []
+    for row in rows:
+        pkg = _header_to_package(row)
+        wl, nwl = _load_test_sets(pkg.id)
+        pkg.test_keys_with_logo = wl
+        pkg.test_keys_without_logo = nwl
+        packages.append(pkg)
+    return packages
+
+
 def _find_package_by_name_type(
     sample_product_name: str,
     package_type: str,
@@ -551,6 +631,8 @@ def package_status_label(desc: dict[str, Any]) -> str:
         return "Defined"
     if status == "inactive":
         return "Inactive"
+    if status in ("ambiguous", "duplicate"):
+        return "Duplicate"
     return "Not defined"
 
 
@@ -662,6 +744,95 @@ def resolve_package_for_product(
     return _package_to_resolved(pkg)
 
 
+def _normalize_product_name(name: str) -> str:
+    """Lowercase and collapse whitespace for product-name comparison."""
+    return " ".join((name or "").strip().lower().split())
+
+
+def _similarity_score(query: str, candidate: str) -> tuple[int, str] | None:
+    """
+    Score similarity between entered name and a registered product name.
+
+    Returns (score, reason) with higher scores preferred, or None if no match.
+    Reasons: prefix | contains | word
+    """
+    q = _normalize_product_name(query)
+    c = _normalize_product_name(candidate)
+    if not q or not c or q == c:
+        return None
+
+    shorter, longer = (q, c) if len(q) <= len(c) else (c, q)
+    if len(shorter) < 3:
+        return None
+
+    if longer.startswith(shorter) or shorter.startswith(longer):
+        return (3, "prefix")
+
+    if shorter in longer or longer in shorter:
+        return (2, "contains")
+
+    shorter_words = shorter.split()
+    longer_words = set(longer.split())
+    for word in shorter_words:
+        if len(word) >= 3 and word in longer_words:
+            return (1, "word")
+
+    return None
+
+
+def find_similar_packages(
+    sample_name: str,
+    *,
+    category: str = CATEGORY_FOOD,
+    limit: int = 3,
+) -> list[dict[str, Any]]:
+    """Rank active packages similar to the entered product name (not exact)."""
+    name = (sample_name or "").strip()
+    cat = normalize_category(category)
+    if not name or cat != CATEGORY_FOOD:
+        return []
+
+    norm_query = _normalize_product_name(name)
+    scored: list[tuple[int, str, TestPackage]] = []
+
+    for pkg in list_packages(active_only=True):
+        if normalize_category(pkg.category) != cat:
+            continue
+        if _normalize_product_name(pkg.sample_product_name) == norm_query:
+            continue
+        match = _similarity_score(name, pkg.sample_product_name)
+        if match is None:
+            continue
+        score, reason = match
+        scored.append((score, reason, pkg))
+
+    scored.sort(
+        key=lambda item: (
+            -item[0],
+            item[2].sample_product_name.lower(),
+            item[2].id,
+        )
+    )
+
+    results: list[dict[str, Any]] = []
+    for score, reason, pkg in scored[: max(1, limit)]:
+        wl_count = len(pkg.test_keys_with_logo)
+        nwl_count = len(pkg.test_keys_without_logo)
+        results.append(
+            {
+                "package_id": pkg.id,
+                "sample_product_name": pkg.sample_product_name,
+                "display_label": pkg.display_label,
+                "wl_count": wl_count,
+                "nwl_count": nwl_count,
+                "test_count": wl_count + nwl_count,
+                "match_reason": reason,
+                "match_score": score,
+            }
+        )
+    return results
+
+
 def describe_sample_package_for_product(
     sample_product_name: str,
     *,
@@ -670,7 +841,7 @@ def describe_sample_package_for_product(
     """
     Summarize package assignment for intake by product name only.
 
-    Status: defined | not_defined | inactive | ambiguous
+    Status: defined | not_defined | inactive | ambiguous | duplicate
     """
     name = (sample_product_name or "").strip()
     cat = normalize_category(category)
@@ -687,6 +858,8 @@ def describe_sample_package_for_product(
         "test_keys_with_logo": [],
         "test_keys_without_logo": [],
         "ambiguous_types": [],
+        "duplicate_package_ids": [],
+        "similar_packages": [],
     }
     if not name or cat != CATEGORY_FOOD:
         return result
@@ -737,9 +910,10 @@ def describe_sample_package_for_product(
                     types = [
                         PACKAGE_TYPES.get(row[2], row[2]) for row in active_rows
                     ]
-                    result["status"] = "ambiguous"
+                    result["status"] = "duplicate"
                     result["active_count"] = len(active_rows)
                     result["ambiguous_types"] = types
+                    result["duplicate_package_ids"] = [int(row[0]) for row in active_rows]
                     return result
                 cur.execute(sql_inactive, (name, cat))
                 inactive_row = cur.fetchone()
@@ -763,7 +937,58 @@ def describe_sample_package_for_product(
                 "test_keys_without_logo": nwl,
             }
         )
+        return result
+
+    result["similar_packages"] = find_similar_packages(name, category=cat)
     return result
+
+
+def create_package_from_source(
+    new_product_name: str,
+    source_package_id: int,
+    *,
+    category: str = CATEGORY_FOOD,
+    actor=None,
+) -> TestPackage:
+    """Create a new package by copying tests from a similar registered product."""
+    name = (new_product_name or "").strip()
+    if not name:
+        raise ValueError("Sample product name is required.")
+
+    source = get_package(int(source_package_id))
+    if source is None:
+        raise ValueError(f"Source package #{source_package_id} was not found.")
+    if not source.is_active:
+        raise ValueError("Source package must be active.")
+
+    cat = normalize_category(category)
+    if resolve_package_for_product(name, category=cat) is not None:
+        raise ValueError(
+            f"An active package already exists for '{name}'. "
+            "Edit it or deactivate it first."
+        )
+
+    pkg = create_package(
+        name,
+        source.package_type,
+        list(source.test_keys_with_logo),
+        list(source.test_keys_without_logo),
+        category=cat,
+        actor=actor,
+    )
+    log_from_user(
+        actor,
+        "package.create_from_similar",
+        ENTITY_TABLE,
+        pkg.id,
+        details=(
+            f"{name} copied from #{source.id} "
+            f"({source.sample_product_name}) / "
+            f"WL:{len(pkg.test_keys_with_logo)} "
+            f"NWL:{len(pkg.test_keys_without_logo)}"
+        ),
+    )
+    return pkg
 
 
 def create_package(
@@ -788,6 +1013,14 @@ def create_package(
         test_keys_without_logo or [],
         cat,
     )
+
+    existing = _find_active_package_by_product_name(name, category=cat)
+    if existing is not None:
+        raise ValueError(
+            f"An active package already exists for '{name}' "
+            f"(#{existing.id}, {existing.package_type_label}). "
+            "Edit it or deactivate it first."
+        )
 
     insert_pkg = """
         INSERT INTO sample_test_packages (
@@ -969,16 +1202,15 @@ def activate_package(package_id: int, edit_reason: str, *, actor=None) -> TestPa
     if existing.is_active:
         raise ValueError("Package is already active.")
 
-    conflict = _find_package_by_name_type(
+    conflict = _find_active_package_by_product_name(
         existing.sample_product_name,
-        existing.package_type,
         category=existing.category,
-        active_only=True,
     )
     if conflict is not None and conflict.id != package_id:
         raise ValueError(
             f"Cannot activate: an active package already exists for "
-            f"'{existing.sample_product_name}' ({existing.package_type_label})."
+            f"'{existing.sample_product_name}' (#{conflict.id}, "
+            f"{conflict.package_type_label}). Deactivate it first."
         )
 
     save_version(

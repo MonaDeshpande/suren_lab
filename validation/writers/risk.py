@@ -107,7 +107,7 @@ def _risk_rows(inv: SystemInventory) -> list[tuple[str, ...]]:
         "Sample retention purge",
         "Premature purge or failure to purge",
         "Loss of needed sample records OR stale PII/sample clutter",
-        "10-day expires_at; cleanup script + app-open purge; customers permanent",
+        "50-day expires_at; cleanup script + app-open purge; customers permanent",
     )
     r(
         "RA-009",

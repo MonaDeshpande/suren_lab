@@ -334,7 +334,7 @@ Reception assigns tests → Analyst finds sample → saves header → reviews **
 | **Priority** | P1 |
 | **Type** | Positive |
 | **Steps** | Generate protocol PDF/DOCX; inspect signature area and footer. |
-| **Expected** | Footer shows Prepared by / Reviewed & Issued by / Approved by rows (director name/signature blank for pen sign-off). No body Analyzed By / Checked By blocks. No Generated-by stamp in protocol body. No in-app digital signature. |
+| **Expected** | Footer shows Prepared by / Reviewed & Issued by / Approved by rows (director name/signature blank for pen sign-off). After the last worksheet, **two blank lines**, then a three-line signature block (Analysed By / Checked By, analyst name / Technical Manager, analysis date / Dated Signature) aligned like the printed protocol — no section numbers (8., 10., etc.) and **no dot leaders before Technical Manager**. Letterhead from `reference/protocol.docx` shows logo, total page count (NUMPAGES), and no protocol number in the header row. Document must not end with a blank trailing page after the signature block. No Generated-by stamp in protocol body. No in-app digital signature. |
 | **Automated** | `test_protocol_flow.py::TestOfflineSignature` |
 
 ---

@@ -393,7 +393,7 @@ def _derive_features(inv: SystemInventory) -> list[str]:
         "Admin user management (create, role, activate, reset password)",
         "Audit trail for meaningful write actions",
         "Generator stamps on CTR / Protocol / Final reports",
-        "10-day sample retention with purge",
+        "50-day sample retention with purge",
         "Document generation: CTR PDF/DOCX, Protocol PDF/DOCX, Final Report PDF",
     ]
     for page in inv.pages:

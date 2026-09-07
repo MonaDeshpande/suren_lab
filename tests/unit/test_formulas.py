@@ -348,8 +348,38 @@ class TestBasicNutritionMoisture:
 
 
 class TestBasicNutritionProtein:
-    def test_happy(self):
+    def test_happy_naoh(self):
         # Nitrogen = 0.014 × 1.0 × (10 - 5) × 100 / 5 = 1.4 ; Protein = 1.4 × 6.25 = 8.75
+        display, numeric = get_test("bn_protein").calculate(
+            {
+                "titrant": "NaOH",
+                "w": 5.0,
+                "n_naoh": 1.0,
+                "br_blank": 10.0,
+                "br_sample": 5.0,
+                "n_factor": 6.25,
+            },
+            {},
+        )
+        assert display == "8.75"
+        assert numeric == 8.75
+
+    def test_happy_hcl(self):
+        display, numeric = get_test("bn_protein").calculate(
+            {
+                "titrant": "HCl",
+                "w": 5.0,
+                "n_hcl": 0.5,
+                "br_blank": 10.0,
+                "br_sample": 5.0,
+                "n_factor": 6.25,
+            },
+            {},
+        )
+        assert display == "4.38"
+        assert numeric == 4.38
+
+    def test_legacy_defaults_to_naoh(self):
         display, numeric = get_test("bn_protein").calculate(
             {
                 "w": 5.0,
@@ -360,7 +390,6 @@ class TestBasicNutritionProtein:
             },
             {},
         )
-        assert display == "8.75"
         assert numeric == 8.75
 
 

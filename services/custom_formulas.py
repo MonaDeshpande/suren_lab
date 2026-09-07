@@ -15,13 +15,13 @@ from typing import Any, Optional
 from db.connection import get_db
 from services.audit import log_from_user
 from services.formula_eval import calculate_custom
+from services.sample_categories import normalize_sample_category
 from services.protocols.test_catalog import (
     CATEGORY_FOOD,
     InputField,
     LabTest,
     PROTOCOL_FAMILY_JAGGERY,
     PROTOCOL_FAMILY_NUTRITION,
-    normalize_category,
 )
 from services.test_packages import (
     PACKAGE_TYPES,
@@ -133,9 +133,11 @@ def _validate_inputs(inputs: list[CustomFormulaInput]) -> list[CustomFormulaInpu
 
 
 def _validate_scope(category: str, package_type: Optional[str]) -> tuple[str, Optional[str]]:
-    cat = normalize_category(category)
+    from services.sample_categories import is_food_category, normalize_sample_category
+
+    cat = normalize_sample_category(category)
     ptype = normalize_package_type(package_type) if package_type else None
-    if cat == CATEGORY_FOOD:
+    if is_food_category(cat):
         if not ptype:
             raise ValueError("Package type is required for Food custom formulas.")
     else:
@@ -320,7 +322,7 @@ def list_formulas(
         clauses.append("is_validated = TRUE")
     if category:
         clauses.append("category = %s")
-        params.append(normalize_category(category))
+        params.append(normalize_sample_category(category))
     ptype = normalize_package_type(package_type) if package_type else None
     if ptype:
         clauses.append("package_type = %s")
@@ -357,7 +359,7 @@ def custom_formulas_for_scope(
     package_type: Optional[str] = None,
 ) -> list[CustomFormula]:
     """Active custom formulas matching a Reception sample row scope."""
-    cat = normalize_category(category)
+    cat = normalize_sample_category(category)
     ptype = normalize_package_type(package_type) if package_type else None
     if cat == CATEGORY_FOOD:
         if not ptype:

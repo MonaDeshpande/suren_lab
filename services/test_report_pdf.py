@@ -209,6 +209,8 @@ class TestReportData:
     is_nutrition: bool = False
     authorized_signatory: str = ""
     checked_by: str = ""
+    authorized_signatory_role: str = ""
+    checked_by_role: str = ""
     disclaimer_bullets: list[str] = field(default_factory=list)
 
 
@@ -276,6 +278,23 @@ def _report_keys(
     if row_filter is not None:
         chem_keys = [k for k in chem_keys if k in row_filter]
     return chem_keys
+
+
+def default_checked_by_analysts(sample: SampleRecord) -> str:
+    """Full name(s) of assigned analyst(s) for the final report Checked by block."""
+    cat = normalize_category(sample.category)
+    if cat == CATEGORY_WATER:
+        names: list[str] = []
+        if (sample.assigned_analyst_name or "").strip():
+            names.append(sample.assigned_analyst_name.strip())
+        if (sample.assigned_micro_analyst_name or "").strip():
+            micro = sample.assigned_micro_analyst_name.strip()
+            if micro not in names:
+                names.append(micro)
+        return "\n".join(names)
+    if cat == CATEGORY_MICRO:
+        return (sample.assigned_micro_analyst_name or "").strip()
+    return (sample.assigned_analyst_name or "").strip()
 
 
 def build_test_report_data(
@@ -381,15 +400,17 @@ def build_test_report_data(
         )
     from services.report_settings import (
         default_authorized_signatory,
-        default_checked_by,
         load_report_settings,
+        signatory_role,
     )
 
     settings = load_report_settings()
     auth_name = (authorized_signatory or "").strip() or default_authorized_signatory(
         settings
     )
-    check_name = (checked_by or "").strip() or default_checked_by(settings)
+    check_name = (checked_by or "").strip() or default_checked_by_analysts(sample)
+    auth_role = signatory_role(auth_name, settings) or "Director"
+    check_role = "Analyst" if check_name else "Quality Manager"
     bullets = (
         list(disclaimer_bullets)
         if disclaimer_bullets
@@ -435,6 +456,8 @@ def build_test_report_data(
         is_nutrition=is_nutrition,
         authorized_signatory=auth_name,
         checked_by=check_name,
+        authorized_signatory_role=auth_role,
+        checked_by_role=check_role,
         disclaimer_bullets=bullets,
     )
 
@@ -742,29 +765,40 @@ def _build_report_story(
     story.append(Spacer(1, 4))
 
     # ----- ULR / Date / Report No -----
-    id_tbl = Table(
-        [
+    if include_logo:
+        id_rows = [
             [_p(f"ULR No: {data.ulr_no}", small)],
             [
                 _p(f"Date: {data.report_date or '--/--/----'}", small),
                 _p(f"Report No: {data.report_no or '---/26/---/--/--'}", small),
             ],
-        ],
-        colWidths=[usable * 0.5, usable * 0.5],
-    )
-    id_tbl.setStyle(
-        TableStyle(
+        ]
+        id_style = [
+            ("SPAN", (0, 0), (1, 0)),
+            ("VALIGN", (0, 0), (-1, -1), "TOP"),
+            ("LEFTPADDING", (0, 0), (-1, -1), 0),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 0),
+            ("TOPPADDING", (0, 0), (-1, -1), 1),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 1),
+            ("ALIGN", (1, 1), (1, 1), "RIGHT"),
+        ]
+    else:
+        id_rows = [
             [
-                ("SPAN", (0, 0), (1, 0)),
-                ("VALIGN", (0, 0), (-1, -1), "TOP"),
-                ("LEFTPADDING", (0, 0), (-1, -1), 0),
-                ("RIGHTPADDING", (0, 0), (-1, -1), 0),
-                ("TOPPADDING", (0, 0), (-1, -1), 1),
-                ("BOTTOMPADDING", (0, 0), (-1, -1), 1),
-                ("ALIGN", (1, 1), (1, 1), "RIGHT"),
-            ]
-        )
-    )
+                _p(f"Date: {data.report_date or '--/--/----'}", small),
+                _p(f"Report No: {data.report_no or '---/26/---/--/--'}", small),
+            ],
+        ]
+        id_style = [
+            ("VALIGN", (0, 0), (-1, -1), "TOP"),
+            ("LEFTPADDING", (0, 0), (-1, -1), 0),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 0),
+            ("TOPPADDING", (0, 0), (-1, -1), 1),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 1),
+            ("ALIGN", (1, 0), (1, 0), "RIGHT"),
+        ]
+    id_tbl = Table(id_rows, colWidths=[usable * 0.5, usable * 0.5])
+    id_tbl.setStyle(TableStyle(id_style))
     story.append(id_tbl)
     story.append(Spacer(1, 4))
 
@@ -923,13 +957,22 @@ def _build_report_story(
     # ----- Signature block -----
     auth = (data.authorized_signatory or "xxx").strip()
     checked = (data.checked_by or "").strip()
+    auth_role = (data.authorized_signatory_role or "Director").strip()
+    checked_role = (data.checked_by_role or "Quality Manager").strip()
     sign_left = (
         f"{auth}<br/>"
-        "Director<br/>"
+        f"{auth_role}<br/>"
         "Authorized signatory<br/>"
         f"For, {LAB_SHORT_NAME}"
     )
-    sign_right = f"Checked by: {checked}" if checked else "Checked by:"
+    sign_right = (
+        f"{checked}<br/>"
+        f"{checked_role}<br/>"
+        "Authorized Signatory<br/>"
+        f"For {LAB_SHORT_NAME}"
+        if checked
+        else "Checked by:"
+    )
     sign_tbl = Table(
         [
             [

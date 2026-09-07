@@ -14,6 +14,7 @@ from services.test_report_pdf import (
     REMARK_TEXT,
     SPECS_HEADER,
     build_test_report_data,
+    default_checked_by_analysts,
     generate_test_report_pdf_bytes,
 )
 
@@ -84,6 +85,28 @@ def test_build_test_report_data_defaults():
     assert data.rows[0].specification == "Not more than 7 %"
     assert data.remark_text == REMARK_TEXT
     assert data.specs_header == SPECS_HEADER
+    assert data.checked_by == ""
+
+
+def test_default_checked_by_analysts_food_and_water():
+    food = _sample(assigned_analyst_name="S. Ambilwade")
+    assert default_checked_by_analysts(food) == "S. Ambilwade"
+    water = _sample(
+        category="water",
+        assigned_analyst_name="Chem Analyst",
+        assigned_micro_analyst_name="Micro Analyst",
+    )
+    assert default_checked_by_analysts(water) == "Chem Analyst\nMicro Analyst"
+
+
+def test_build_test_report_data_uses_assigned_analyst_checked_by():
+    data = build_test_report_data(
+        _sample(assigned_analyst_name="S. Ambilwade"),
+        _header(),
+        [_moisture_result()],
+    )
+    assert data.checked_by == "S. Ambilwade"
+    assert data.checked_by_role == "Analyst"
 
 
 def test_build_test_report_data_reviewer_overrides():

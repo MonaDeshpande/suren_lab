@@ -12,13 +12,17 @@ from __future__ import annotations
 import io
 import logging
 from datetime import date
-from pathlib import Path
 from typing import Optional
 
+from services.document_templates import (
+    FOOD_REPORT_TEMPLATE_PATH,
+    final_report_template_path,
+)
 from services.docx_layout import (
-    clear_header_images,
     combine_docx_bytes,
+    compact_single_page_document,
     delete_table_rows_range,
+    fill_report_signature_block,
     finalize_docx_document,
     insert_table_row_before,
     load_template,
@@ -45,13 +49,8 @@ from services.test_report_pdf import (
 
 logger = logging.getLogger(__name__)
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
-FOOD_REPORT_TEMPLATE_PATH = PROJECT_ROOT / "reference" / "Test Report Format.docx"
-
 HEADER_ROW_COUNT = 2
 FIRST_DATA_ROW = 2
-SIGNATORY_MARKER = "{{AUTHORIZED_SIGNATORY}}"
-CHECKED_BY_MARKER = "{{CHECKED_BY}}"
 
 
 def _metadata_table(doc) -> object | None:
@@ -147,8 +146,17 @@ def _fill_results_table(table, data: TestReportData) -> None:
     set_cell_text(table.rows[remark_row_index].cells[1], f"Remark: {remark_body}")
 
 
-def _fill_identity_paragraphs(doc, data: TestReportData) -> None:
-    set_paragraph_by_marker(doc, "ULR No", f"ULR No: {data.ulr_no}")
+def _fill_identity_paragraphs(
+    doc, data: TestReportData, *, with_logo: bool
+) -> None:
+    if with_logo:
+        set_paragraph_by_marker(doc, "ULR No", f"ULR No: {data.ulr_no}")
+    else:
+        set_paragraph_by_marker(doc, "ULR No", "")
+        for para in doc.paragraphs:
+            if (para.text or "").strip().startswith("ULR No"):
+                set_paragraph_text(para, "")
+                break
     for para in doc.paragraphs:
         text = para.text or ""
         if text.startswith("Date:") and "Report No:" in text:
@@ -162,19 +170,13 @@ def _fill_identity_paragraphs(doc, data: TestReportData) -> None:
 
 
 def _fill_signature_block(doc, data: TestReportData) -> None:
-    auth = (data.authorized_signatory or "").strip()
-    checked = (data.checked_by or "").strip()
-    checked_text = f"Checked by: {checked}" if checked else "Checked by:"
-    for para in doc.paragraphs:
-        text = para.text or ""
-        if SIGNATORY_MARKER in text or CHECKED_BY_MARKER in text:
-            new_text = text.replace(SIGNATORY_MARKER, auth)
-            new_text = new_text.replace(CHECKED_BY_MARKER, checked)
-            if CHECKED_BY_MARKER not in text and "Checked by:" in text:
-                new_text = new_text.replace("Checked by:", checked_text, 1)
-            set_paragraph_text(para, new_text)
-        elif text.startswith("Dr.") or text.startswith("Mrs."):
-            set_paragraph_text(para, auth)
+    fill_report_signature_block(
+        doc,
+        authorized_name=data.authorized_signatory,
+        authorized_role=data.authorized_signatory_role,
+        checked_name=data.checked_by,
+        checked_role=data.checked_by_role,
+    )
 
 
 def _fill_disclaimer(doc, data: TestReportData) -> None:
@@ -220,12 +222,12 @@ def fill_food_test_report_docx_bytes(
     disclaimer_bullets: list[str] | None = None,
 ) -> bytes:
     """Produce a filled food test report .docx from the reference template."""
-    if not FOOD_REPORT_TEMPLATE_PATH.exists():
-        raise FileNotFoundError(
-            f"Food test report template missing: {FOOD_REPORT_TEMPLATE_PATH}"
-        )
-
     logo_flag = default_report_with_logo(sample) if with_logo is None else with_logo
+    template_path = final_report_template_path(sample.category, with_logo=logo_flag)
+    if not template_path.exists():
+        raise FileNotFoundError(
+            f"Food test report template missing: {template_path}"
+        )
     data = build_test_report_data(
         sample,
         header,
@@ -247,11 +249,9 @@ def fill_food_test_report_docx_bytes(
         disclaimer_bullets=disclaimer_bullets,
     )
 
-    doc = load_template(FOOD_REPORT_TEMPLATE_PATH)
-    if not logo_flag:
-        clear_header_images(doc)
+    doc = load_template(template_path)
 
-    _fill_identity_paragraphs(doc, data)
+    _fill_identity_paragraphs(doc, data, with_logo=logo_flag)
 
     meta = _metadata_table(doc)
     if meta is not None:
@@ -264,7 +264,8 @@ def fill_food_test_report_docx_bytes(
     _fill_signature_block(doc, data)
     _fill_disclaimer(doc, data)
 
-    set_report_footer(doc, with_logo=logo_flag)
+    compact_single_page_document(doc)
+    set_report_footer(doc, with_logo=logo_flag, static_one_of_one=True)
 
     finalize_docx_document(doc, set_qsf=True)
 
@@ -309,7 +310,11 @@ def generate_food_test_report_pdf_bytes(
             )
             logo_flags.append(False)
         docx_bytes = (
-            combine_docx_bytes(parts, with_logo_per_section=logo_flags)
+            combine_docx_bytes(
+                parts,
+                with_logo_per_section=logo_flags,
+                static_one_of_one=True,
+            )
             if parts
             else fill_food_test_report_docx_bytes(sample, header, results, **kwargs)
         )

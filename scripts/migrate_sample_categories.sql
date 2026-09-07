@@ -1,12 +1,29 @@
--- Migration: add Micro sample category
+-- Migration: admin-defined sample categories (e.g. pharma) + relax category CHECKs
 -- Safe to re-run.
---   docker exec -i sls_lab_db psql -U sls_user -d sls_lab < scripts/migrate_micro_category.sql
+--   docker exec -i sls_lab_db psql -U sls_user -d sls_lab < scripts/migrate_sample_categories.sql
+
+CREATE TABLE IF NOT EXISTS sample_categories (
+    category_key  TEXT        PRIMARY KEY,
+    label         TEXT        NOT NULL,
+    is_builtin    BOOLEAN     NOT NULL DEFAULT FALSE,
+    is_active     BOOLEAN     NOT NULL DEFAULT TRUE,
+    sort_order    INTEGER     NOT NULL DEFAULT 100,
+    created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+INSERT INTO sample_categories (category_key, label, is_builtin, is_active, sort_order)
+VALUES
+    ('food', 'Food', TRUE, TRUE, 10),
+    ('water', 'Water', TRUE, TRUE, 20),
+    ('cattle_feed_fertilizer', 'Cattle Feed / Fertilizer', TRUE, TRUE, 30),
+    ('micro', 'Micro', TRUE, TRUE, 40)
+ON CONFLICT (category_key) DO NOTHING;
 
 DO $$
 DECLARE
     r RECORD;
 BEGIN
-    -- Drop any existing category CHECK constraints on these tables
     FOR r IN
         SELECT c.conname, c.conrelid::regclass AS tbl
         FROM pg_constraint c

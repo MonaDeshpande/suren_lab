@@ -20,9 +20,14 @@ from docx.oxml.table import CT_Row
 from docx.table import Table, _Row
 from docx.text.paragraph import Paragraph
 
+from docx.shared import Pt
+
 from services.samples import report_page_label
 
 REPORT_QSF_LABEL = "QSF No -7.8.2"
+AUTHORIZED_SIGNATORY_MARKER = "{{AUTHORIZED_SIGNATORY}}"
+CHECKED_BY_MARKER = "{{CHECKED_BY}}"
+LAB_SHORT_NAME = "SLS"
 
 _SUBSCRIPT_CHARS = "₀₁₂₃₄₅₆₇₈₉"
 _SUPERSCRIPT_CHARS = "⁰¹²³⁴⁵⁶⁷⁸⁹"
@@ -326,6 +331,79 @@ def _set_footer_static_one_of_one(footer, *, with_logo: bool) -> None:
     para.add_run(report_page_label(with_logo=with_logo))
 
 
+def compact_single_page_document(doc: Document) -> None:
+    """Tighten vertical spacing so typical food/micro reports stay on one page."""
+    for para in _iter_all_paragraphs(doc):
+        text = (para.text or "").strip()
+        pf = para.paragraph_format
+        if text in (
+            "Disclaimer",
+            "End of Report",
+            "CHEMICAL TEST REPORT",
+            "Microbiological Test",
+            "TEST REPORT",
+        ) or text.startswith(("Remark:", "Disclaimer")):
+            pf.space_before = Pt(2)
+            pf.space_after = Pt(2)
+        else:
+            if pf.space_before is not None and pf.space_before.pt > 6:
+                pf.space_before = Pt(3)
+            if pf.space_after is not None and pf.space_after.pt > 6:
+                pf.space_after = Pt(3)
+
+
+def fill_report_signature_block(
+    doc: Document,
+    *,
+    authorized_name: str = "",
+    authorized_role: str = "",
+    checked_name: str = "",
+    checked_role: str = "",
+    lab_short_name: str = LAB_SHORT_NAME,
+) -> None:
+    """Fill authorized / checked-by blocks on final report templates."""
+    auth = (authorized_name or "").strip()
+    auth_role = (authorized_role or "Director").strip()
+    checked = (checked_name or "").strip()
+    checked_role_text = (checked_role or "Quality Manager").strip()
+    checked_line = f"Checked by: {checked}" if checked else "Checked by:"
+
+    for para in doc.paragraphs:
+        text = para.text or ""
+        if AUTHORIZED_SIGNATORY_MARKER in text or CHECKED_BY_MARKER in text:
+            new_text = text.replace(AUTHORIZED_SIGNATORY_MARKER, auth)
+            new_text = new_text.replace(CHECKED_BY_MARKER, checked)
+            if CHECKED_BY_MARKER not in text and "Checked by:" in text:
+                new_text = new_text.replace("Checked by:", checked_line, 1)
+            set_paragraph_text(para, new_text)
+        elif text.startswith("Dr.") or text.startswith("Mrs."):
+            set_paragraph_text(para, auth)
+        elif text.strip() == "Director" and auth_role:
+            set_paragraph_text(para, auth_role)
+        elif text.strip() == "Quality Manager" and checked_role_text:
+            set_paragraph_text(para, checked_role_text)
+        elif text.strip().startswith("Checked by"):
+            set_paragraph_text(para, checked_line)
+
+
+def set_ctr_signature_footer(
+    doc: Document,
+    *,
+    left_text: str,
+    right_text: str = "Review",
+) -> None:
+    """Stamp Reception name/date (left) and Review (right) on every page footer."""
+    for section in doc.sections:
+        for footer_part in _section_footer_parts(section):
+            _clear_footer_part(footer_part)
+            left_para = footer_part.add_paragraph()
+            left_para.alignment = WD_ALIGN_PARAGRAPH.LEFT
+            left_para.add_run(left_text or "")
+            right_para = footer_part.add_paragraph()
+            right_para.alignment = WD_ALIGN_PARAGRAPH.RIGHT
+            right_para.add_run(right_text)
+
+
 def set_report_footer(
     doc: Document,
     *,
@@ -355,7 +433,7 @@ def set_report_footer(
 
 
 def clear_header_images(doc: Document) -> None:
-    """Remove drawings from headers (without-logo letterhead)."""
+    """Remove drawings from headers (legacy helper — final reports use separate templates)."""
     for section in doc.sections:
         header = section.header
         for para in header.paragraphs:

@@ -52,7 +52,36 @@ FONT = "Helvetica"
 FONT_BOLD = "Helvetica-Bold"
 FONT_SIZE = 11  # Word template labels ~12 pt
 SMALL = 9
-FOOTER_TEXT = "[Control copy]"
+FOOTER_RIGHT_TEXT = "Review"
+
+
+def _ctr_footer_left(
+    generated_by: str,
+    generated_at: str,
+    request_date: date | None,
+) -> str:
+    name = (generated_by or "Reception").strip()
+    stamp = (generated_at or "").strip()
+    if stamp and " " in stamp:
+        date_part = stamp.split()[0]
+    elif request_date is not None:
+        date_part = request_date.strftime("%d/%m/%Y")
+    elif stamp:
+        date_part = stamp
+    else:
+        date_part = ""
+    return f"{name}  {date_part}".strip()
+
+
+def _draw_footer(canvas, doc, *, left_text: str = "", right_text: str = FOOTER_RIGHT_TEXT) -> None:
+    """Reception name/date left; Review right — on every CTR page."""
+    canvas.saveState()
+    canvas.setFont(FONT, 9)
+    canvas.drawString(doc.leftMargin, 0.45 * inch, left_text or "")
+    canvas.drawRightString(doc.pagesize[0] - doc.rightMargin, 0.45 * inch, right_text)
+    canvas.restoreState()
+
+
 SAMPLE_HEADER_HEIGHT = 0.35 * inch
 SAMPLE_ROW_HEIGHT = 0.30 * inch
 
@@ -110,14 +139,6 @@ def _lv_br(label: str, value: str, style: ParagraphStyle) -> Paragraph:
     """Bold label, line break, then escaped value (may contain newlines)."""
     val = _escape(value).replace("\n", "<br/>")
     return Paragraph(f"<b>{_escape(label)}</b><br/>{val}", style)
-
-
-def _draw_footer(canvas, doc) -> None:
-    """Match LLP.docx footer on every page."""
-    canvas.saveState()
-    canvas.setFont(FONT, 10)
-    canvas.drawString(doc.leftMargin, 0.45 * inch, FOOTER_TEXT)
-    canvas.restoreState()
 
 
 def _sample_col_widths(usable: float) -> list[float]:
@@ -233,10 +254,10 @@ def _generate_ctr_pdf(
     """
     Letter-size CTR: header page, one sample per page, checklist per sample.
 
-    generated_by / generated_at are accepted for API compatibility but are
-    not printed on the CTR form (pen signatures stay on template blanks).
+    Footer on every page: Reception name + date (left), Review (right).
     """
     buffer = io.BytesIO()
+    footer_left = _ctr_footer_left(generated_by, generated_at, data.request_date)
 
     doc = SimpleDocTemplate(
         buffer,
@@ -439,7 +460,10 @@ def _generate_ctr_pdf(
         story.append(Paragraph(CHECKLIST_TITLE, section_style))
         story.append(_build_verification_table(sample, usable, th_style, td_style))
 
-    doc.build(story, onFirstPage=_draw_footer, onLaterPages=_draw_footer)
+    def _on_page(canvas, doc_obj) -> None:
+        _draw_footer(canvas, doc_obj, left_text=footer_left)
+
+    doc.build(story, onFirstPage=_on_page, onLaterPages=_on_page)
     return buffer.getvalue()
 
 

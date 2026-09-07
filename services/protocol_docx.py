@@ -14,6 +14,7 @@ Worksheets for every catalog test stay in the template; we fill what we can.
 from __future__ import annotations
 
 import io
+import logging
 import re
 from copy import deepcopy
 from datetime import date
@@ -24,16 +25,16 @@ from docx import Document
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
-from docx.shared import Inches
 from docx.table import Table
 from docx.text.paragraph import Paragraph
 
-from services.branding import (
-    LOGO_HEIGHT_IN,
-    LOGO_PATH,
-    LOGO_WIDTH_IN,
-    NUTRITION_LOGO_HEIGHT_IN,
-    NUTRITION_LOGO_WIDTH_IN,
+from services.document_templates import (
+    JAGGERY_PROTOCOL_PATH,
+    MICRO_PROTOCOL_PATH,
+    NUTRITION_PROTOCOL_PATH,
+    PROTOCOL_HEADER_FOOTER_PATH,
+    PROTOCOL_LETTERHEAD_LOGO_PATH,
+    WATER_PROTOCOL_PATH,
 )
 from services.protocol_store import ProtocolHeader, TestResultRow
 from services.input_store import primary_inputs, recalc_inputs
@@ -49,16 +50,32 @@ from services.protocols.test_catalog import (
     default_water_micro_procedure,
     get_test,
     normalize_category,
+    nutrition_formula_display,
+    protein_normality_key,
+    protein_normality_label,
+    protein_titrant_from,
     test_unsaved_display_name,
     uses_nutrition_template,
 )
 from services.test_packages import is_nutrition_package_type, normalize_package_type
 from services.samples import SampleRecord
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
-JAGGERY_TEMPLATE_PATH = PROJECT_ROOT / "reference" / "Jaggery Protocol LLP.docx"
-WATER_TEMPLATE_PATH = PROJECT_ROOT / "reference" / "Water protocol 2025.docx"
-NUTRITION_TEMPLATE_PATH = PROJECT_ROOT / "reference" / "Basic Nutrition Protocol 2026.docx"
+JAGGERY_TEMPLATE_PATH = JAGGERY_PROTOCOL_PATH
+WATER_TEMPLATE_PATH = WATER_PROTOCOL_PATH
+NUTRITION_TEMPLATE_PATH = NUTRITION_PROTOCOL_PATH
+
+logger = logging.getLogger(__name__)
+
+
+def _protocol_layout_reference_path() -> Path:
+    """Canonical client header/footer reference; falls back to nutrition template."""
+    if PROTOCOL_HEADER_FOOTER_PATH.exists():
+        return PROTOCOL_HEADER_FOOTER_PATH
+    logger.warning(
+        "Protocol header/footer reference missing: %s — using nutrition template.",
+        PROTOCOL_HEADER_FOOTER_PATH,
+    )
+    return NUTRITION_TEMPLATE_PATH
 
 # Legacy alias
 TEMPLATE_PATH = JAGGERY_TEMPLATE_PATH
@@ -249,6 +266,11 @@ NUTRITION_WORKSHEET_FORMULAS: dict[str, tuple[int, list[int]]] = {
     "bn_added_sugar": (10, [6]),
     "bn_total_sugar": (10, [6]),
 }
+
+# Tests whose worked math lives in body paragraphs (not worksheet table rows).
+NUTRITION_PARAGRAPH_FORMULA_TESTS = frozenset(
+    {"bn_protein", "bn_carbohydrate", "bn_calories"}
+)
 
 NUTRITION_WORKSHEET_READINGS: dict[str, tuple[int, list[tuple[int, str]]]] = {
     "bn_moisture": (
@@ -904,14 +926,11 @@ def _formula_readings_text(
     is_dual_first_row: bool,
 ) -> str:
     """Build Readings column: worked calculation + answer with unit."""
+    del is_dual_first_row  # wet-row result is already on worked_line after "="
     parts: list[str] = []
     if worked_line:
-        parts.append(worked_line)
-    if is_dual_first_row and worked_line and "=" in worked_line:
-        mid = worked_line.rsplit("=", 1)[-1].strip()
-        u = unit or "%"
-        parts.append(f"{mid} {u}".strip())
-    elif is_final_row and answer:
+        parts.append(_format_worksheet_reading_line(worked_line))
+    if is_final_row and answer:
         tail = (
             worked_line.rsplit("=", 1)[-1].strip()
             if worked_line and "=" in worked_line
@@ -919,9 +938,9 @@ def _formula_readings_text(
         )
         ans_val = answer.split()[0] if answer else ""
         if ans_val and tail.replace("%", "").strip() != ans_val:
-            parts.append(answer)
+            parts.append(_format_worksheet_reading_line(answer))
         elif not worked_line:
-            parts.append(answer)
+            parts.append(_format_worksheet_reading_line(answer))
     return "\n".join(parts)
 
 
@@ -1134,7 +1153,34 @@ def _fill_sugar_formula_cell(cell, by_key: dict[str, TestResultRow], ctx: dict[s
 def _formula_lines(formula_display: str) -> list[str]:
     """Split dual formulas on ';' into one line per worksheet row."""
     parts = [p.strip() for p in (formula_display or "").split(";")]
-    return [p for p in parts if p]
+    return [_format_worksheet_formula_description(p) for p in parts if p]
+
+
+def _format_worksheet_formula_description(symbolic: str) -> str:
+    """Break long dry-basis formulas so (100 − Moisture) stays on one line."""
+    text = (symbolic or "").strip()
+    if not text:
+        return text
+    text = _format_worksheet_reading_line(text)
+    if " = " in text and "moisture" in text.lower():
+        label, rhs = text.split(" = ", 1)
+        return f"{label} =\n{rhs.strip()}"
+    return text
+
+
+def _format_worksheet_reading_line(text: str) -> str:
+    """Keep (100 − Moisture) on one line in worksheet Readings cells."""
+    if not text:
+        return text
+    nb_moisture = "(100\u00a0−\u00a0Moisture)"
+    out = text.replace("(100 − Moisture)", nb_moisture)
+    out = out.replace("(100 - Moisture)", nb_moisture)
+    out = re.sub(
+        r"\(100\s*-\s*([Mm]oisture)\)",
+        lambda m: f"(100\u00a0−\u00a0{m.group(1)})",
+        out,
+    )
+    return out
 
 
 def _fmt_num(value: Any, places: int = 4) -> str:
@@ -1284,7 +1330,9 @@ def _set_reading_cell(row, reading_col: int, text: str) -> None:
     """
     if not text or not row.cells or reading_col >= len(row.cells):
         return
+    text = _format_worksheet_reading_line(text)
     _set_cell(row.cells[reading_col], text)
+    _set_cell_no_wrap(row.cells[reading_col])
     # Clear adjacent bare unit cell when value already includes the unit
     for sibling in (reading_col + 1, reading_col - 1):
         if sibling < 0 or sibling >= len(row.cells) or sibling == 0:
@@ -1342,7 +1390,7 @@ def worked_formula_lines(
                 f"({_fmt_num(w2)} - {_fmt_num(w1)}) × 100 / {_fmt_num(w)} "
                 f"= {_suffix_unit(_fmt_num(wet, 2), '%')}"
             )
-            dry_line = (
+            dry_line = _format_worksheet_reading_line(
                 f"{_fmt_num(wet, 2)} × 100 / (100 - {_fmt_num(moisture, 2)}) "
                 f"= {_suffix_unit(ans or _fmt_num(dry, 2), '%')}"
             )
@@ -1361,7 +1409,7 @@ def worked_formula_lines(
                 f"({_fmt_num(w1)} - {_fmt_num(w2)}) × 100 / {_fmt_num(w)} "
                 f"= {_suffix_unit(_fmt_num(wet, 2), '%')}"
             )
-            dry_line = (
+            dry_line = _format_worksheet_reading_line(
                 f"{_fmt_num(wet, 2)} × 100 / (100 - {_fmt_num(moisture, 2)}) "
                 f"= {_suffix_unit(ans or _fmt_num(dry, 2), '%')}"
             )
@@ -1529,18 +1577,26 @@ def worked_formula_lines(
             return [f"({_fmt_num(w2)} - {_fmt_num(w1)}) × 100 / {_fmt_num(w)} = {ans}"]
 
         if test_key == "bn_protein":
+            from services.protocols.test_catalog import protein_formula_display
+
             w = _input_num(inputs, "w")
-            n_naoh = _input_num(inputs, "n_naoh")
+            titrant = protein_titrant_from(inputs)
+            norm_key = protein_normality_key(titrant)
+            n_titrant = _input_num(inputs, norm_key)
             br_blank = _input_num(inputs, "br_blank")
             br_sample = _input_num(inputs, "br_sample")
             n_factor = _input_num(inputs, "n_factor")
-            if None in (w, n_naoh, br_blank, br_sample, n_factor) or w == 0:
+            if None in (w, n_titrant, br_blank, br_sample, n_factor) or w == 0:
                 return []
-            nitrogen = 0.014 * n_naoh * (br_blank - br_sample) * 100.0 / w
+            nitrogen = 0.014 * n_titrant * (br_blank - br_sample) * 100.0 / w
             protein = nitrogen * n_factor
+            norm_label = protein_normality_label(titrant)
+            symbolic = protein_formula_display(titrant)
             nitrogen_line = (
-                f"0.014 × {_fmt_num(n_naoh)} × ({_fmt_num(br_blank)} - {_fmt_num(br_sample)}) "
-                f"× 100 / {_fmt_num(w)} = {_fmt_num(nitrogen, 2)}"
+                f"{symbolic.split(';')[0].strip()}\n"
+                f"0.014 × {_fmt_num(n_titrant)} (N({norm_label})) × "
+                f"({_fmt_num(br_blank)} - {_fmt_num(br_sample)}) × 100 / {_fmt_num(w)} "
+                f"= {_fmt_num(nitrogen, 2)}"
             )
             protein_line = (
                 f"{_fmt_num(nitrogen, 2)} × {_fmt_num(n_factor)} "
@@ -1604,13 +1660,11 @@ def worked_formula_lines(
             protein = ctx.get("bn_protein")
             fat = ctx.get("bn_total_fat")
             ash = ctx.get("bn_total_ash")
-            fibre = ctx.get("bn_crude_fibre")
             for key, val in (
                 ("moisture_pct", moisture),
                 ("protein_pct", protein),
                 ("fat_pct", fat),
                 ("ash_pct", ash),
-                ("fibre_pct", fibre),
             ):
                 if val is None:
                     val = _input_num(inputs, key)
@@ -1620,16 +1674,14 @@ def worked_formula_lines(
                     protein = val
                 elif key == "fat_pct":
                     fat = val
-                elif key == "ash_pct":
-                    ash = val
                 else:
-                    fibre = val
-            if None in (moisture, protein, fat, ash, fibre):
+                    ash = val
+            if None in (moisture, protein, fat, ash):
                 return []
-            worked = 100.0 - moisture - protein - fat - ash - fibre
+            worked = 100.0 - moisture - protein - fat - ash
             return [
                 f"100 - {_fmt_num(moisture, 2)} - {_fmt_num(protein, 2)} - "
-                f"{_fmt_num(fat, 2)} - {_fmt_num(ash, 2)} - {_fmt_num(fibre, 2)} "
+                f"{_fmt_num(fat, 2)} - {_fmt_num(ash, 2)} "
                 f"= {ans or _fmt_num(worked, 2)}"
             ]
 
@@ -1745,10 +1797,11 @@ def _blank_director_approval(doc: Document) -> None:
 
 
 def _nutrition_footer_table_xml():
-    """Clone the Basic Nutrition approval footer table (Prepared / Reviewed / Approved)."""
-    if not NUTRITION_TEMPLATE_PATH.exists():
+    """Clone the protocol reference approval footer table (Prepared / Reviewed / Approved)."""
+    ref_path = _protocol_layout_reference_path()
+    if not ref_path.exists():
         return None
-    ref = Document(str(NUTRITION_TEMPLATE_PATH))
+    ref = Document(str(ref_path))
     if not ref.sections[0].footer.tables:
         return None
     return deepcopy(ref.sections[0].footer.tables[0]._tbl)
@@ -1771,8 +1824,9 @@ def _is_body_signature_paragraph(text: str) -> bool:
     stripped = (text or "").strip()
     if not stripped:
         return False
-    lower = stripped.lower()
-    if lower.startswith("analyzed by"):
+    first = _strip_section_title_number(stripped.split("\n", 1)[0])
+    lower = first.lower()
+    if lower.startswith("analyzed by") or lower.startswith("analysed by"):
         return True
     if lower.startswith("checked by"):
         return True
@@ -1780,7 +1834,7 @@ def _is_body_signature_paragraph(text: str) -> bool:
         return True
     if lower.startswith("dated signature"):
         return True
-    if stripped.startswith("Name") and "technical manager" in lower:
+    if first.startswith("Name") and "technical manager" in lower:
         return True
     return False
 
@@ -1790,6 +1844,140 @@ def _remove_body_signature_blocks(doc: Document) -> None:
     for paragraph in list(doc.paragraphs):
         if _is_body_signature_paragraph(paragraph.text or ""):
             _delete_paragraph(paragraph)
+
+
+def _signature_reference_layout() -> tuple[list[Any], int]:
+    """Clone signature paragraph XML and line width from the nutrition template."""
+    if not NUTRITION_TEMPLATE_PATH.exists():
+        return [], 115
+    ref = Document(str(NUTRITION_TEMPLATE_PATH))
+    paras = [deepcopy(ref.paragraphs[i]._p) for i in (7, 8, 9)]
+    width = len(ref.paragraphs[7].text or "") or 115
+    return paras, width
+
+
+def _two_column_signature_line(left: str, right: str, width: int) -> str:
+    """Pad left/right columns to match the printed protocol signature block."""
+    pad = max(2, width - len(left) - len(right))
+    return f"{left}{' ' * pad}{right}"
+
+
+def _last_worksheet_body_element(doc: Document):
+    """Return the body element for the last worksheet / appearance table."""
+    last = None
+    for child in doc.element.body:
+        if not child.tag.endswith("tbl"):
+            continue
+        table = Table(child, doc)
+        if _is_worksheet_table(table) or _is_appearance_only_table(table):
+            last = child
+    return last
+
+
+def _clear_paragraph_tabs(paragraph: Paragraph) -> None:
+    """Remove tab stops (dot leaders) from cloned signature paragraphs."""
+    p_pr = paragraph._element.get_or_add_pPr()
+    tabs = p_pr.find(qn("w:tabs"))
+    if tabs is not None:
+        p_pr.remove(tabs)
+
+
+def _insert_blank_paragraph_after(doc: Document, after_el) -> Paragraph:
+    """Insert an empty body paragraph after *after_el*."""
+    new_p = OxmlElement("w:p")
+    after_el.addnext(new_p)
+    return Paragraph(new_p, doc)
+
+
+def _insert_signature_paragraphs_after(
+    doc: Document,
+    after_el,
+    para_xml_list: list[Any],
+    texts: list[str],
+) -> list[Paragraph]:
+    """Insert cloned signature paragraphs after *after_el* and set line text."""
+    inserted: list[Paragraph] = []
+    current = after_el
+    for para_xml, line_text in zip(para_xml_list, texts):
+        new_el = deepcopy(para_xml)
+        current.addnext(new_el)
+        para = Paragraph(new_el, doc)
+        _clear_paragraph_numbering(para)
+        _clear_paragraph_tabs(para)
+        _set_paragraph_text(para, line_text)
+        inserted.append(para)
+        current = new_el
+    return inserted
+
+
+def _clear_paragraph_keep_with_next(paragraph: Paragraph) -> None:
+    p_pr = paragraph._element.get_or_add_pPr()
+    keep = p_pr.find(qn("w:keepNext"))
+    if keep is not None:
+        p_pr.remove(keep)
+
+
+def _keep_signature_lines_together(sig_paras: list[Paragraph]) -> None:
+    """Chain signature lines only — do not glue them to the last worksheet."""
+    if not sig_paras:
+        return
+    for para in sig_paras[:-1]:
+        _set_paragraph_keep_with_next(para)
+    _clear_paragraph_keep_with_next(sig_paras[-1])
+
+
+def _apply_protocol_end_signatures(
+    doc: Document,
+    sample: SampleRecord,
+    header: ProtocolHeader,
+) -> None:
+    """
+    End-of-protocol analyst / checker block matching the printed protocol sheet.
+
+    Two blank lines after the last worksheet, then three wide left/right lines.
+    """
+    _remove_body_signature_blocks(doc)
+
+    para_xml, width = _signature_reference_layout()
+    if not para_xml:
+        return
+
+    analyst = _protocol_issued_to(sample, header)
+    date_str = _fmt_date(header.date_of_analysis)
+
+    lines = [
+        _two_column_signature_line("Analysed By:", "Checked By:", width),
+        _two_column_signature_line(analyst or "Name", "Technical Manager:", width),
+        _two_column_signature_line(
+            date_str or "Dated signature:",
+            "Dated Signature:",
+            width,
+        ),
+    ]
+
+    anchor = _last_worksheet_body_element(doc)
+    if anchor is None:
+        anchor = doc.element.body[-1] if len(doc.element.body) else None
+    if anchor is None:
+        return
+
+    insert_after = anchor
+    next_el = insert_after.getnext()
+    while next_el is not None and next_el.tag.endswith("p"):
+        para = Paragraph(next_el, doc)
+        if (para.text or "").strip() or _paragraph_has_page_break(next_el):
+            break
+        to_remove = next_el
+        next_el = next_el.getnext()
+        parent = to_remove.getparent()
+        if parent is not None:
+            parent.remove(to_remove)
+
+    for _ in range(2):
+        insert_after = _insert_blank_paragraph_after(doc, insert_after)._element
+
+    sig_paras = _insert_signature_paragraphs_after(doc, insert_after, para_xml, lines)
+    _keep_signature_lines_together(sig_paras)
 
 
 def _consolidate_to_single_section(doc: Document) -> None:
@@ -1936,10 +2124,11 @@ def _paragraph_has_page_break(paragraph_el) -> bool:
 
 
 def _apply_reference_page_margins(doc: Document) -> None:
-    """Normalize section margins to match Basic Nutrition Protocol 2026.docx."""
-    if not NUTRITION_TEMPLATE_PATH.exists():
+    """Normalize section margins to match the protocol header/footer reference."""
+    ref_path = _protocol_layout_reference_path()
+    if not ref_path.exists():
         return
-    ref_sec = Document(str(NUTRITION_TEMPLATE_PATH)).sections[0]
+    ref_sec = Document(str(ref_path)).sections[0]
     for section in doc.sections:
         section.left_margin = ref_sec.left_margin
         section.right_margin = ref_sec.right_margin
@@ -2475,13 +2664,107 @@ def _nutrition_page1_header_table_xml():
 
 
 def _nutrition_repeating_header_table_xml():
-    """Clone the Basic Nutrition section-header identity table."""
+    """Clone the nutrition section-header identity table (Protocol No row)."""
     if not NUTRITION_TEMPLATE_PATH.exists():
         return None
     ref = Document(str(NUTRITION_TEMPLATE_PATH))
     if not ref.sections[0].header.tables:
         return None
     return deepcopy(ref.sections[0].header.tables[0]._tbl)
+
+
+def _remap_embedded_images(
+    source_part,
+    target_part,
+    element,
+    r_id_map: dict[str, str] | None = None,
+) -> None:
+    """Copy inline header/footer images when cloning XML into another document."""
+    if r_id_map is None:
+        r_id_map = {}
+    embed_attr = qn("r:embed")
+    for blip in element.iter():
+        if blip.tag != qn("a:blip"):
+            continue
+        old_r_id = blip.get(embed_attr)
+        if not old_r_id:
+            continue
+        if old_r_id in r_id_map:
+            blip.set(embed_attr, r_id_map[old_r_id])
+            continue
+        try:
+            source_image = source_part.related_parts[old_r_id]
+        except KeyError:
+            continue
+        new_r_id = target_part.relate_to(source_image, source_image.content_type)
+        r_id_map[old_r_id] = new_r_id
+        blip.set(embed_attr, new_r_id)
+
+
+def _fill_letterhead_pages_count(header) -> None:
+    """Replace static Pages value with a Word NUMPAGES field (total page count)."""
+    from services.docx_layout import _append_field_run
+
+    for table in header.tables:
+        for row in table.rows:
+            cells = row.cells
+            for idx, cell in enumerate(cells):
+                label = (cell.text or "").strip().lower()
+                if not label.startswith("pages"):
+                    continue
+                value_cell = cells[idx + 1] if idx + 1 < len(cells) else cell
+                para = value_cell.paragraphs[0] if value_cell.paragraphs else value_cell.add_paragraph()
+                _set_paragraph_text(para, "")
+                _append_field_run(para, " NUMPAGES ", placeholder="1")
+                return
+
+
+def _apply_letterhead_logo_blob(header) -> None:
+    """Swap header image bytes for the circular Surendra Laboratories logo."""
+    if not PROTOCOL_LETTERHEAD_LOGO_PATH.exists():
+        return
+    blob = PROTOCOL_LETTERHEAD_LOGO_PATH.read_bytes()
+    for rel in header.part.rels.values():
+        if "image" in rel.reltype:
+            rel.target_part._blob = blob
+
+
+def _copy_protocol_letterhead_header(doc: Document) -> bool:
+    """Clone letterhead header from reference/protocol.docx with logo images intact."""
+    if not PROTOCOL_HEADER_FOOTER_PATH.exists():
+        return False
+    ref_doc = Document(str(PROTOCOL_HEADER_FOOTER_PATH))
+    ref_header = ref_doc.sections[0].header
+    ref_part = ref_header.part
+
+    for section in doc.sections:
+        header = section.header
+        header.is_linked_to_previous = False
+        hdr_el = header._element
+        for child in list(hdr_el):
+            hdr_el.remove(child)
+        r_id_map: dict[str, str] = {}
+        for child in ref_header._element:
+            new_child = deepcopy(child)
+            _remap_embedded_images(ref_part, header.part, new_child, r_id_map)
+            hdr_el.append(new_child)
+        _apply_letterhead_logo_blob(header)
+        _fill_letterhead_pages_count(header)
+    return True
+
+
+def _protocol_letterhead_header_children_xml() -> list[Any]:
+    """Legacy helper — prefer _copy_protocol_letterhead_header()."""
+    if not PROTOCOL_HEADER_FOOTER_PATH.exists():
+        return []
+    ref_hdr = Document(str(PROTOCOL_HEADER_FOOTER_PATH)).sections[0].header._element
+    return [deepcopy(child) for child in ref_hdr]
+
+
+def _fill_protocol_letterhead_header(header, proto_header: ProtocolHeader) -> None:
+    """Fill dynamic letterhead fields (page count only; no protocol number in header)."""
+    del proto_header
+    _fill_letterhead_pages_count(header)
 
 
 def _is_legacy_page1_header_table(table) -> bool:
@@ -2618,11 +2901,18 @@ def _normalize_food_protocol_section_header_spacing(doc: Document) -> None:
             hdr_el.append(deepcopy(para_xml))
 
 
-def _apply_repeating_protocol_header(doc: Document, header: ProtocolHeader) -> None:
-    """Add Protocol No / issued-to / issued-by table to every page header."""
+def _apply_repeating_protocol_header(doc: Document, header: ProtocolHeader) -> bool:
+    """
+    Apply section header from protocol.docx letterhead or nutrition identity row.
+
+    Returns True when the protocol.docx letterhead (logo + NUMPAGES) was applied.
+    """
+    if _copy_protocol_letterhead_header(doc):
+        return True
+
     tbl_xml = _nutrition_repeating_header_table_xml()
     if tbl_xml is None:
-        return
+        return False
     for section in doc.sections:
         hdr = section.header
         for table in list(hdr.tables):
@@ -2636,6 +2926,7 @@ def _apply_repeating_protocol_header(doc: Document, header: ProtocolHeader) -> N
             _set_cell(cells[1], header.protocol_no or "")
             _set_cell(cells[3], header.issued_to or "")
             _set_cell(cells[5], header.issued_by or "")
+    return False
 
 
 def _appearance_result_text(
@@ -2774,6 +3065,8 @@ def _renumber_worksheet_section_titles(doc: Document, conducted: set[str]) -> No
                 continue
             if not seen_observation or text == "Result Table:":
                 continue
+            if _is_body_signature_paragraph(text):
+                continue
             first_line = text.split("\n", 1)[0].strip()
             if not first_line.endswith(":"):
                 continue
@@ -2802,68 +3095,31 @@ def _renumber_worksheet_section_titles(doc: Document, conducted: set[str]) -> No
             _set_cell(cell, new_text)
 
 
+def _paragraph_is_page_break_only(paragraph_el) -> bool:
+    """True when a paragraph has no visible text and contains a page break."""
+    if paragraph_el is None or not paragraph_el.tag.endswith("p"):
+        return False
+    texts = paragraph_el.findall(".//" + qn("w:t"))
+    if any((t.text or "").strip() for t in texts):
+        return False
+    return any(br.get(qn("w:type")) == "page" for br in paragraph_el.findall(".//" + qn("w:br")))
+
+
 def _remove_trailing_empty_paragraphs(doc: Document) -> None:
-    """Strip empty paragraphs from the document tail."""
+    """Strip empty or page-break-only paragraphs from the document tail."""
     body = doc.element.body
     for child in reversed(list(body)):
         if not child.tag.endswith("p"):
             break
         para = Paragraph(child, doc)
-        if (para.text or "").strip():
+        empty = not (para.text or "").strip()
+        if not empty and not _paragraph_is_page_break_only(child):
+            break
+        if not empty:
             break
         parent = child.getparent()
         if parent is not None:
             parent.remove(child)
-
-
-def _inject_letterhead_logo(
-    doc: Document,
-    *,
-    nutrition_house_style: bool = False,
-) -> None:
-    """
-    Place assets/logo.png in the section header.
-
-    Food protocols use the scaled Nutrition house-style letterhead; Jaggery-wide
-    logo is kept for legacy wide-margin templates (e.g. water unchanged path).
-    """
-    if not LOGO_PATH.exists():
-        return
-
-    if nutrition_house_style:
-        logo_w = NUTRITION_LOGO_WIDTH_IN
-        logo_h = NUTRITION_LOGO_HEIGHT_IN
-    else:
-        logo_w = LOGO_WIDTH_IN
-        logo_h = LOGO_HEIGHT_IN
-
-    for section in doc.sections:
-        header = section.header
-        # Keep first paragraph; clear leftover empty letterhead shapes
-        if header.paragraphs:
-            paragraph = header.paragraphs[0]
-        else:
-            paragraph = header.add_paragraph()
-
-        _clear_paragraph_drawings(paragraph)
-        for run in paragraph.runs:
-            run.text = ""
-
-        # Drop extra empty paragraphs left by the template
-        for extra in header.paragraphs[1:]:
-            _clear_paragraph_drawings(extra)
-            p_el = extra._element
-            parent = p_el.getparent()
-            if parent is not None:
-                parent.remove(p_el)
-
-        paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
-        run = paragraph.add_run()
-        run.add_picture(
-            str(LOGO_PATH),
-            width=Inches(logo_w),
-            height=Inches(logo_h),
-        )
 
 
 def _keys_for_formulas(
@@ -2872,7 +3128,14 @@ def _keys_for_formulas(
 ) -> set[str]:
     """Only tests with saved results get worksheet formula/readings fill."""
     formulas = _worksheet_formulas_for(sample)
-    return {k for k in by_key if k in formulas and k in TEST_CATALOG}
+    keys = {k for k in by_key if k in formulas and k in TEST_CATALOG}
+    if _is_nutrition_sample(sample):
+        keys |= {
+            k
+            for k in by_key
+            if k in NUTRITION_PARAGRAPH_FORMULA_TESTS and k in TEST_CATALOG
+        }
+    return keys
 
 
 def _conducted_keys(results: list[TestResultRow]) -> set[str]:
@@ -3206,19 +3469,30 @@ def _fill_nutrition_paragraph_formulas(
     """
     Fill worked calculation lines for protein / carbohydrate / energy paragraphs.
 
-    Keeps the template's symbolic formula wording; appends typed worked math.
+    Template stores these formulas as body paragraphs between worksheet tables.
     """
     if "bn_protein" in by_key:
         res = by_key["bn_protein"]
+        inputs = res.inputs or {}
         worked = worked_formula_lines(
-            "bn_protein", res.inputs or {}, ctx, res.result_value or ""
+            "bn_protein", inputs, ctx, res.result_value or ""
         )
-        for para in doc.paragraphs:
-            text = para.text or ""
-            if "Wt. of sample take" in text and worked:
-                _set_paragraph_text(para, worked[0])
-            elif text.strip().startswith("Total Protein =") and len(worked) > 1:
-                _set_paragraph_text(para, f"{text.strip()}\n{worked[1]}")
+        if worked:
+            for para in doc.paragraphs:
+                text = para.text or ""
+                lower = text.lower()
+                if (
+                    "nitrogen content" in lower
+                    or "normality of naoh" in lower
+                    or "normality of hcl" in lower
+                ):
+                    _set_paragraph_text(para, worked[0])
+                    break
+            for para in doc.paragraphs:
+                text = para.text or ""
+                if text.strip().lower().startswith("total protein") and len(worked) > 1:
+                    _set_paragraph_text(para, f"{text.strip()}\n{worked[1]}")
+                    break
 
     if "bn_carbohydrate" in by_key:
         res = by_key["bn_carbohydrate"]
@@ -3228,8 +3502,9 @@ def _fill_nutrition_paragraph_formulas(
         if worked:
             for para in doc.paragraphs:
                 text = para.text or ""
-                if "Moisture + Ash + Fat + Protein" in text:
-                    _set_paragraph_text(para, f"{text.strip()}\n{worked[0]}")
+                if "moisture + ash + fat + protein" in text.lower():
+                    symbolic = nutrition_formula_display("bn_carbohydrate")
+                    _set_paragraph_text(para, f"{symbolic}\n{worked[0]}")
                     break
 
     if "bn_calories" in by_key:
@@ -3240,8 +3515,12 @@ def _fill_nutrition_paragraph_formulas(
         if worked:
             for para in doc.paragraphs:
                 text = para.text or ""
-                if "(Protein + Carbohydrate)" in text and "x 4" in text:
-                    _set_paragraph_text(para, f"{text.strip()}\n{worked[0]}")
+                lower = text.lower()
+                if "(protein + carbohydrate)" in lower or (
+                    "protein" in lower and "carbohydrate" in lower and "x 4" in lower
+                ):
+                    symbolic = nutrition_formula_display("bn_calories")
+                    _set_paragraph_text(para, f"{symbolic}\n{worked[0]}")
                     break
 
 
@@ -3359,6 +3638,17 @@ def _fill_worksheet_readings(
                 _fill_input_reading_cells(
                     table.rows[row_idx], 2, res.inputs or {}, used_key, input_key
                 )
+        if "bn_protein" in by_key and len(tables) > 6:
+            res = by_key["bn_protein"]
+            inputs = res.inputs or {}
+            titrant = protein_titrant_from(inputs)
+            norm_key = protein_normality_key(titrant)
+            table = tables[6]
+            norm_row = 2 if titrant == "NaOH" else 3
+            if norm_row < len(table.rows) and len(table.rows[norm_row].cells) > 1:
+                _fill_input_reading_cells(
+                    table.rows[norm_row], 1, inputs, "bn_protein", norm_key
+                )
         return
 
     # Shared sugar readings table (Jaggery only)
@@ -3434,19 +3724,29 @@ def _fill_worksheet_formulas(
                 _fill_sugar_formula_row(table.rows[6], by_key, ctx)
 
     for test_key in keys:
+        if test_key in NUTRITION_PARAGRAPH_FORMULA_TESTS:
+            continue
         if test_key in ("invert_sugar", "reducing_sugar", "bn_added_sugar", "bn_total_sugar"):
             continue
         spec = formulas_map.get(test_key)
-        test = TEST_CATALOG.get(test_key)
+        try:
+            test = get_test(test_key)
+        except KeyError:
+            continue
         res = by_key.get(test_key)
         # Only overwrite worksheet formula/answer rows when a result was saved
-        if not spec or not test or not res:
+        if not spec or not res:
             continue
         t_idx, row_indices = spec
         if t_idx >= len(tables):
             continue
         table = tables[t_idx]
-        lines = _formula_lines(test.formula_display)
+        display_formula = (
+            nutrition_formula_display(test_key, res.inputs or {})
+            if test_key.startswith("bn_")
+            else test.formula_display
+        )
+        lines = _formula_lines(display_formula)
         inputs = res.inputs or {}
         primary = primary_inputs(inputs)
         recalc = recalc_inputs(inputs)
@@ -3476,12 +3776,15 @@ def _fill_worksheet_formulas(
                 row = table.rows[ri]
                 if not row.cells:
                     continue
-                symbolic = lines[i] if i < len(lines) else test.formula_display
+                symbolic = lines[i] if i < len(lines) else display_formula
                 existing_desc = _cell_text(row.cells[0]).strip()
                 if not existing_desc:
                     _set_cell(row.cells[0], symbolic)
                 elif not is_nutrition:
                     _set_cell(row.cells[0], symbolic)
+                elif len(row_indices) > 1 and i == len(row_indices) - 1:
+                    _set_cell(row.cells[0], symbolic)
+                _set_cell_no_wrap(row.cells[0])
 
                 worked_line = worked[i] if i < len(worked) else ""
                 is_final = len(row_indices) == 1 or i == len(row_indices) - 1
@@ -3701,11 +4004,6 @@ def fill_protocol_docx_bytes(
     is_nutrition = _is_nutrition_sample(sample)
     is_food_house_style = not is_water
 
-    if is_food_house_style:
-        _inject_letterhead_logo(doc, nutrition_house_style=True)
-    else:
-        _inject_letterhead_logo(doc, nutrition_house_style=False)
-
     if is_water:
         _fill_water_header_and_summary(tables, sample, header, by_key)
     elif is_nutrition:
@@ -3737,11 +4035,12 @@ def fill_protocol_docx_bytes(
 
     _remove_repeat_protocol_headers(doc)
     _consolidate_to_single_section(doc)
-    _remove_body_signature_blocks(doc)
+    letterhead_applied = False
     if is_food_house_style:
         _replace_page1_body_with_reference_layout(doc, sample, header)
-        _apply_repeating_protocol_header(doc, header)
-        _normalize_food_protocol_section_header_spacing(doc)
+        letterhead_applied = _apply_repeating_protocol_header(doc, header)
+        if not letterhead_applied:
+            _normalize_food_protocol_section_header_spacing(doc)
     _fill_appearance_worksheet_block(doc, header, by_key)
     _clean_bare_unit_placeholders(doc)
     if is_food_house_style:
@@ -3754,10 +4053,14 @@ def fill_protocol_docx_bytes(
         _normalize_food_worksheet_headers(doc, sample)
     _keep_page1_block_together(doc)
     _ensure_observation_section_starts_page_2(doc)
+    if is_food_house_style:
+        _remove_body_signature_blocks(doc)
     _renumber_worksheet_section_titles(doc, conducted)
     if is_nutrition:
         _fill_nutrition_paragraph_formulas(doc, by_key, _result_context(by_key))
     _apply_worksheet_page_layout(doc)
+    if is_food_house_style:
+        _apply_protocol_end_signatures(doc, sample, header)
     if is_food_house_style:
         _normalize_food_protocol_table_widths(doc)
         _normalize_food_protocol_visual_layout(doc)

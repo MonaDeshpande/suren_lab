@@ -7,6 +7,7 @@ LibreOffice headless fallback.
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import shutil
@@ -19,6 +20,25 @@ from pathlib import Path
 from services.docx_layout import rewrite_unicode_scripts_in_docx_bytes
 
 logger = logging.getLogger(__name__)
+_DEBUG_LOG_PATH = Path(__file__).resolve().parent.parent / "debug-3467ee.log"
+
+
+def _debug_log(*, hypothesis_id: str, location: str, message: str, data: dict) -> None:
+    # region agent log
+    try:
+        payload = {
+            "sessionId": "3467ee",
+            "hypothesisId": hypothesis_id,
+            "location": location,
+            "message": message,
+            "data": data,
+            "timestamp": int(time.time() * 1000),
+        }
+        with _DEBUG_LOG_PATH.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(payload) + "\n")
+    except OSError:
+        pass
+    # endregion
 
 # RPC_E_CALL_REJECTED — Word busy / dialog open / reused instance not responding.
 _WORD_CALL_REJECTED_MARKERS = (
@@ -230,6 +250,16 @@ def convert_docx_bytes_to_pdf(docx_bytes: bytes) -> tuple[bytes | None, str | No
 
         if sys.platform == "win32":
             word_err = _convert_with_word_subprocess(docx_path, pdf_path)
+            _debug_log(
+                hypothesis_id="B",
+                location="docx_to_pdf.py:convert_docx_bytes_to_pdf",
+                message="word conversion attempt 1",
+                data={
+                    "docx_bytes": len(docx_bytes),
+                    "word_err": word_err,
+                    "pdf_created": pdf_path.is_file(),
+                },
+            )
             if word_err is None and pdf_path.is_file():
                 return pdf_path.read_bytes(), None
             if word_err:

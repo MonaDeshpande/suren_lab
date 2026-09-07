@@ -23,7 +23,12 @@ from services.audit import (  # noqa: E402
     now_lab,
 )
 from services.auth import get_session_user  # noqa: E402
-from services.customers import customer_data_changed, get_customer_by_gst  # noqa: E402
+from services.customers import (
+    customer_data_changed,
+    get_customer_by_gst,
+    get_customer_by_id,
+    gst_ready_for_lookup,
+)  # noqa: E402
 from services.docx_filler import fill_docx_bytes, suggest_docx_filename  # noqa: E402
 from services.pdf_generator import generate_pdf_bytes, suggest_pdf_filename  # noqa: E402
 from services.requests import (  # noqa: E402
@@ -47,9 +52,11 @@ from services.test_packages import (  # noqa: E402
 )
 from ui.auth import require_page_access  # noqa: E402
 from ui.components import (  # noqa: E402
+    RECEPTION_MODE_EDIT,
+    RECEPTION_MODE_NEW,
     apply_request_prefill,
-    clear_ctr_form_state,
     collect_form,
+    handle_reception_mode_change,
     edit_reason_field,
     inject_styles,
     render_db_status,
@@ -61,7 +68,7 @@ from ui.components import (  # noqa: E402
 _MODE_NEW = "New request"
 _MODE_EDIT = "Edit existing request"
 _MODE_PACKAGES = "Test packages"
-_RECEPTION_MODES = (_MODE_NEW, _MODE_EDIT, _MODE_PACKAGES)
+_RECEPTION_MODES = (_MODE_PACKAGES, _MODE_NEW, _MODE_EDIT)
 
 st.set_page_config(
     page_title="S Testing Laboratory — Reception",
@@ -101,7 +108,13 @@ def _render_downloads(saved, actor, gen_by: str, gen_at: str) -> None:
     render_section_title("Saved — sample codes & downloads")
     st.success(
         f"Request saved (ID #{saved.request_id}). "
-        f"Customer ID #{saved.customer.id} (GST {saved.customer.gst_number})."
+        f"Customer ID #{saved.customer.id}"
+        + (
+            f" (GST {saved.customer.gst_number})"
+            if (saved.customer.gst_number or "").strip()
+            else ""
+        )
+        + "."
     )
     st.caption(
         "Download filled PDF or Word (.docx). Both match the Customer Test Request form."
@@ -204,11 +217,12 @@ def _new_request_flow(actor) -> None:
     result = collect_form(
         sample_first=True,
         include_customer_picker=True,
+        actor=actor,
     )
     if result is None:
         st.caption(
-            "Tip: enter sample name to load tests, select report format and tests, "
-            "then fill customer details. Sample IDs preview live from the Lab Code."
+            "Tip: fill customer details and lab code, then enter samples and select tests. "
+            "Sample IDs preview live from the Lab Code."
         )
         return
 
@@ -229,7 +243,11 @@ def _new_request_flow(actor) -> None:
             st.session_state.get("new_ctr_customer_edit_reason", "") or ""
         ).strip()
 
-    existing = get_customer_by_gst(data.customer.gst_number)
+    existing = None
+    if gst_ready_for_lookup(data.customer.gst_number):
+        existing = get_customer_by_gst(data.customer.gst_number)
+    elif data.customer.id is not None:
+        existing = get_customer_by_id(data.customer.id)
     if existing and customer_data_changed(existing, data.customer):
         if not require_edit_reason(edit_reason):
             return
@@ -256,7 +274,7 @@ def _new_request_flow(actor) -> None:
 
 
 def _on_reception_mode_change() -> None:
-    clear_ctr_form_state()
+    handle_reception_mode_change()
 
 
 def _edit_request_option_label(result) -> str:
@@ -339,6 +357,7 @@ def _edit_request_flow(actor) -> None:
         request_prefill=request_data,
         edit_mode=True,
         submit_label="Save changes & regenerate form",
+        actor=actor,
     )
     if result is None:
         return
@@ -397,6 +416,11 @@ def main() -> None:
         except Exception:  # noqa: BLE001
             pass
         st.session_state["_reception_purged"] = True
+
+    if "_reception_mode_last" not in st.session_state:
+        st.session_state["_reception_mode_last"] = st.session_state.get(
+            "reception_mode", _MODE_NEW
+        )
 
     mode = st.radio(
         "Workspace",

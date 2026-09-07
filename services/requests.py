@@ -6,7 +6,7 @@ Save a full Customer Test Request (header + sample rows) after the form is submi
 Flow:
   1. Upsert permanent customer (see customers.py)
   2. Insert one test_requests row
-  3. Insert request_samples rows with reception-entered sample_code (10-day expiry)
+  3. Insert request_samples rows with reception-entered sample_code (50-day expiry)
 """
 
 from __future__ import annotations
@@ -18,7 +18,7 @@ import json
 
 from db.connection import get_db
 from services.audit import actor_display_name, log_from_user
-from services.customers import Customer, get_customer_by_id, upsert_customer
+from services.customers import Customer, get_customer_by_id, upsert_customer, gst_ready_for_lookup
 from services.samples import (
     REPORT_FORMAT_BOTH,
     REPORT_FORMAT_WITHOUT_LOGO,
@@ -87,6 +87,7 @@ class SampleRow:
     package_id: Optional[int] = None
     package_version_no: Optional[int] = None
     package_type: Optional[str] = None
+    parameters_select: str = ""  # UI selectbox value (FSSAI / Other / …); not stored in DB
 
     # Sample verification checklist (per sample, printed on last CTR page(s))
     verify_review_date: Optional[date] = None
@@ -125,7 +126,7 @@ def ctr_parameters_display(sample: SampleRow) -> str:
     if cat == CATEGORY_FOOD:
         return ctr_parameters_label_for_sample(
             parameters=sample.parameters,
-            package_type=sample.package_type,
+            package_type=None,
         )
     if cat == CATEGORY_WATER:
         return ""
@@ -421,6 +422,17 @@ def _validate_intake_tests_in_package(
     ]
 
 
+def _resolved_food_package(sample: SampleRow):
+    """Resolve the test package for a Food sample (product name + optional package_type)."""
+    name = (sample.sample_name or "").strip()
+    if not name:
+        return None
+    ptype = normalize_package_type(sample.package_type)
+    if ptype:
+        return resolve_package_tests(name, ptype, category=CATEGORY_FOOD)
+    return resolve_package_for_product(name, category=CATEGORY_FOOD)
+
+
 def _resolve_sample_tests(
     sample: SampleRow,
     category: str,
@@ -439,78 +451,53 @@ def _resolve_sample_tests(
     """
     cat = normalize_category(category)
     if cat == CATEGORY_FOOD:
-        params_label = (sample.parameters or "").strip()
-        ptype = parameters_label_to_package_type(
-            params_label
-        ) or normalize_package_type(sample.package_type)
         wl = filter_keys_for_category(list(sample.tests_with_logo or []), cat)
         nwl = filter_keys_for_category(list(sample.tests_without_logo or []), cat)
+        parameters_display = ctr_parameters_label_for_sample(
+            parameters=sample.parameters,
+            package_type=None,
+        )
 
-        if is_other_parameters_label(params_label) or (
-            ptype is None
-            and params_label
-            and normalize_package_type(sample.package_type) is None
-        ):
-            keys = filter_keys_for_category(
-                [k for k in (sample.test_keys or []) if k in TEST_CATALOG],
-                cat,
-            )
-            if keys and (wl or nwl):
-                keys = _apply_package_report_format_sets(sample, wl, nwl)
-            names = [TEST_CATALOG[k].name for k in keys if k in TEST_CATALOG]
-            tests_to_perform = ", ".join(names) if names else ""
-            parameters_display = ctr_parameters_label_for_sample(
-                parameters=sample.parameters,
-                package_type=None,
-            )
-            return keys, parameters_display, tests_to_perform, None, None, None
-
-        resolved = None
-        if ptype and (sample.sample_name or "").strip():
-            resolved = resolve_package_tests(
-                sample.sample_name, ptype, category=cat
-            )
-        if resolved is None and (sample.sample_name or "").strip():
-            resolved = resolve_package_for_product(sample.sample_name, category=cat)
-
+        resolved = _resolved_food_package(sample)
         if resolved:
             keys = _apply_package_report_format_sets(sample, wl, nwl)
             names = [TEST_CATALOG[k].name for k in keys if k in TEST_CATALOG]
             tests_to_perform = ", ".join(names) if names else ""
-            parameters_display = package_type_label(ptype or resolved.package_type)
+            pkg_type = normalize_package_type(sample.package_type) or resolved.package_type
             return (
                 keys,
                 parameters_display,
                 tests_to_perform,
                 resolved.package_id,
                 resolved.package_version_no,
-                ptype or resolved.package_type,
+                pkg_type,
             )
 
         keys = filter_keys_for_category(
             [k for k in (sample.test_keys or []) if k in TEST_CATALOG],
             cat,
         )
+        if keys and (wl or nwl):
+            keys = _apply_package_report_format_sets(sample, wl, nwl)
         if keys:
             names = [TEST_CATALOG[k].name for k in keys]
             tests_to_perform = ", ".join(names)
-            parameters_display = ctr_parameters_label_for_sample(
-                parameters=sample.parameters,
-                package_type=sample.package_type,
-            )
             return (
                 keys,
                 parameters_display,
                 tests_to_perform,
                 sample.package_id,
                 sample.package_version_no,
-                sample.package_type,
+                normalize_package_type(sample.package_type),
             )
-        parameters_display = ctr_parameters_label_for_sample(
-            parameters=sample.parameters,
-            package_type=sample.package_type,
+        return (
+            [],
+            parameters_display,
+            "",
+            None,
+            None,
+            normalize_package_type(sample.package_type),
         )
-        return [], parameters_display, "", None, None, sample.package_type
 
     keys = filter_keys_for_category(
         [k for k in (sample.test_keys or []) if k in TEST_CATALOG],
@@ -557,7 +544,7 @@ def save_test_request(
       - auto-derived sample_code from lab code (+ /01, /02 for each sample)
       - tests_to_perform from parameters
       - status = pending
-      - expires_at = NOW() + 10 days
+      - expires_at = NOW() + 50 days
 
     Returns
     -------
@@ -626,7 +613,7 @@ def save_test_request(
             %s, %s, %s, %s, 'pending', %s, %s, %s, %s, %s,
             %s, %s, %s, %s,
             %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-            NOW() + INTERVAL '10 days'
+            NOW() + INTERVAL '50 days'
         )
         RETURNING id, sample_code
     """
@@ -1027,7 +1014,7 @@ def update_test_request(
             %s, %s, %s, %s, 'pending', %s, %s, %s, %s, %s,
             %s, %s, %s, %s,
             %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-            NOW() + INTERVAL '10 days'
+            NOW() + INTERVAL '50 days'
         )
         RETURNING id, sample_code
     """
@@ -1253,14 +1240,15 @@ def validate_request(data: TestRequestData) -> list[str]:
 
     if not (c.customer_name or "").strip():
         errors.append("Customer details (name) are required.")
-    if not (c.gst_number or "").strip():
-        errors.append("GST number is required (used as permanent customer key).")
+    gst = (c.gst_number or "").strip()
+    if gst and not gst_ready_for_lookup(gst):
+        errors.append(
+            "GST number must be 15 alphanumeric characters when provided."
+        )
     if not (c.contact_person or "").strip():
         errors.append("Name of contact person is required (Contact 1).")
     if not (c.contact_number or "").strip():
         errors.append("Contact number is required.")
-    if not (c.email or "").strip():
-        errors.append("Email ID is required (Contact 1).")
 
     contacts = c.resolved_contacts()
     if len(contacts) > 5:
@@ -1268,8 +1256,6 @@ def validate_request(data: TestRequestData) -> list[str]:
     for i, contact in enumerate(contacts, start=1):
         has_name = bool((contact.contact_name or "").strip())
         has_email = bool((contact.email or "").strip())
-        if has_name and not has_email:
-            errors.append(f"Contact {i}: email is required when name is provided.")
         if has_email and not has_name:
             errors.append(f"Contact {i}: name is required when email is provided.")
 
@@ -1350,74 +1336,74 @@ def validate_request(data: TestRequestData) -> list[str]:
                     pass  # name error handled above
                 else:
                     from services.test_packages import (
-                        describe_sample_package,
+                        CTR_PARAMETER_OPTIONS,
+                        describe_sample_package_for_product,
                         is_other_parameters_label,
-                        parameters_label_to_package_type,
                     )
 
-                    params_label = (s.parameters or "").strip()
-                    if is_other_parameters_label(params_label):
+                    params_select = (s.parameters_select or "").strip()
+                    if not params_select and (s.parameters or "").strip() in CTR_PARAMETER_OPTIONS:
+                        params_select = (s.parameters or "").strip()
+                    if is_other_parameters_label(params_select):
+                        if not (s.parameters or "").strip():
+                            errors.append(
+                                f"Sample Sr. {s.sr_no}: enter custom Parameters text for Other."
+                            )
+                    elif not params_select:
                         errors.append(
-                            f"Sample Sr. {s.sr_no}: enter custom Parameters text for Other."
-                        )
-                    elif not params_label:
-                        errors.append(
-                            f"Sample Sr. {s.sr_no}: select a package type in Parameters "
+                            f"Sample Sr. {s.sr_no}: select a value in Parameters "
                             "(FSSAI, Basic Nutrition, Detailed Nutrition, or Other)."
                         )
+
+                    desc = describe_sample_package_for_product(
+                        s.sample_name,
+                        category=category,
+                    )
+                    status = desc.get("status")
+                    ptype = normalize_package_type(s.package_type)
+                    if status == "ambiguous" and not ptype:
+                        types = ", ".join(desc.get("ambiguous_types") or [])
+                        errors.append(
+                            f"Sample Sr. {s.sr_no}: multiple test packages exist for "
+                            f"'{s.sample_name.strip()}' ({types}). "
+                            "Select a test package below the sample table."
+                        )
+                    elif status == "inactive":
+                        errors.append(
+                            f"Sample Sr. {s.sr_no}: test package for "
+                            f"'{s.sample_name.strip()}' exists but is deactivated. "
+                            "Activate it under Test packages."
+                        )
+                    elif status == "not_defined":
+                        errors.append(
+                            f"Sample Sr. {s.sr_no}: no active test package found for "
+                            f"'{s.sample_name.strip()}'. Create it under Test packages first."
+                        )
                     else:
-                        ptype = parameters_label_to_package_type(
-                            params_label
-                        ) or normalize_package_type(s.package_type)
-                        if ptype is None:
-                            if not params_label:
-                                errors.append(
-                                    f"Sample Sr. {s.sr_no}: enter custom Parameters text."
-                                )
-                        else:
-                            desc = describe_sample_package(
-                                s.sample_name,
-                                ptype,
-                                category=category,
+                        resolved = _resolved_food_package(s)
+                        if resolved is None and status != "ambiguous":
+                            errors.append(
+                                f"Sample Sr. {s.sr_no}: could not load test package for "
+                                f"'{s.sample_name.strip()}'."
                             )
-                            status = desc.get("status")
-                            if status == "inactive":
-                                errors.append(
-                                    f"Sample Sr. {s.sr_no}: test package for "
-                                    f"'{s.sample_name.strip()}' ({package_type_label(ptype)}) "
-                                    "exists but is deactivated. Activate it under Test packages."
+                        elif resolved is not None:
+                            wl = filter_keys_for_category(
+                                list(s.tests_with_logo or []), category
+                            )
+                            nwl = filter_keys_for_category(
+                                list(s.tests_without_logo or []), category
+                            )
+                            allowed = list(resolved.test_keys)
+                            errors.extend(
+                                _validate_intake_tests_in_package(
+                                    s.sr_no, wl + nwl, allowed
                                 )
-                            elif status != "defined":
-                                errors.append(
-                                    f"Sample Sr. {s.sr_no}: no active test package found for "
-                                    f"'{s.sample_name.strip()}' ({package_type_label(ptype)}). "
-                                    "Create it under Test packages first."
+                            )
+                            errors.extend(
+                                _validate_report_format_for_package(
+                                    s.sr_no, s.report_format, wl, nwl
                                 )
-                            else:
-                                resolved = resolve_package_tests(
-                                    s.sample_name,
-                                    ptype,
-                                    category=category,
-                                )
-                                wl = filter_keys_for_category(
-                                    list(s.tests_with_logo or []), category
-                                )
-                                nwl = filter_keys_for_category(
-                                    list(s.tests_without_logo or []), category
-                                )
-                                allowed = (
-                                    list(resolved.test_keys) if resolved else []
-                                )
-                                errors.extend(
-                                    _validate_intake_tests_in_package(
-                                        s.sr_no, wl + nwl, allowed
-                                    )
-                                )
-                                errors.extend(
-                                    _validate_report_format_for_package(
-                                        s.sr_no, s.report_format, wl, nwl
-                                    )
-                                )
+                            )
             else:
                 available = tests_for_category(category)
                 keys = filter_keys_for_category(list(s.test_keys or []), category)
@@ -1452,6 +1438,11 @@ def validate_request(data: TestRequestData) -> list[str]:
 def validation_warnings(data: TestRequestData) -> list[str]:
     """Non-blocking warnings (e.g. mixed Jaggery + Basic Nutrition on one sample)."""
     warnings: list[str] = []
+    gst = (data.customer.gst_number or "").strip()
+    if gst and not gst_ready_for_lookup(gst):
+        warnings.append(
+            "GST number should be 15 alphanumeric characters when provided."
+        )
     for s in data.samples:
         if s.is_empty():
             continue

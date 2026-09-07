@@ -33,6 +33,7 @@ def _food_sample(**overrides) -> SampleRow:
         sr_no=1,
         sample_name="Jaggery",
         parameters="FSSAI",
+        parameters_select="FSSAI",
         test_keys=["moisture"],
         tests_with_logo=["moisture"],
         assigned_analyst_id=_VALID_ANALYST_ID,
@@ -72,11 +73,16 @@ class TestValidateRequest:
         errors = validate_request(data)
         assert any("name" in e.lower() for e in errors)
 
-    def test_missing_gst(self):
+    def test_empty_gst_ok(self):
         data = _valid_request()
         data.customer.gst_number = ""
+        assert validate_request(data) == []
+
+    def test_partial_gst_rejected(self):
+        data = _valid_request()
+        data.customer.gst_number = "27AAAAA"
         errors = validate_request(data)
-        assert any("GST" in e for e in errors)
+        assert any("15 alphanumeric" in e for e in errors)
 
     def test_missing_contact_person(self):
         data = _valid_request()
@@ -88,10 +94,10 @@ class TestValidateRequest:
         data.customer.contact_number = ""
         assert any("Contact number" in e for e in validate_request(data))
 
-    def test_missing_email(self):
+    def test_empty_email_ok(self):
         data = _valid_request()
         data.customer.email = ""
-        assert any("Email" in e for e in validate_request(data))
+        assert validate_request(data) == []
 
     def test_missing_date(self):
         data = _valid_request(request_date=None)
@@ -185,7 +191,7 @@ class TestValidateRequest:
             ]
         )
         errors = validate_request(data)
-        assert any("package type" in e.lower() for e in errors)
+        assert any("parameters" in e.lower() for e in errors)
 
     def test_missing_package_blocks_save(self):
         data = _valid_request(
@@ -379,14 +385,44 @@ class TestValidateRequest:
         assert len(warnings) == 1
         assert "protocol templates" in warnings[0].lower()
 
-    def test_contact_two_requires_email_when_named(self):
+    def test_contact_two_email_optional_when_named(self):
         data = _valid_request()
         data.customer.contacts = [
             ContactPerson(position=1, contact_name="Ravi", email="ravi@example.com"),
             ContactPerson(position=2, contact_name="Priya", email=""),
         ]
+        assert validate_request(data) == []
+
+    def test_other_parameters_requires_custom_text(self):
+        data = _valid_request(
+            samples=[
+                _food_sample(
+                    parameters="",
+                    parameters_select="Other",
+                    package_type="fssai",
+                )
+            ]
+        )
         errors = validate_request(data)
-        assert any("Contact 2" in e and "email" in e.lower() for e in errors)
+        assert any("custom Parameters text" in e for e in errors)
+
+    def test_other_parameters_custom_text_ok(self):
+        data = _valid_request(
+            samples=[
+                _food_sample(
+                    parameters="Organic certification scope",
+                    parameters_select="Other",
+                    package_type="fssai",
+                )
+            ]
+        )
+        assert validate_request(data) == []
+
+    def test_ctr_parameters_display_custom_text(self):
+        from services.requests import ctr_parameters_display
+
+        sample = _food_sample(parameters="Organic certification scope")
+        assert ctr_parameters_display(sample) == "Organic certification scope"
 
     def test_duplicate_sample_codes_rejected(self, monkeypatch):
         monkeypatch.setattr(

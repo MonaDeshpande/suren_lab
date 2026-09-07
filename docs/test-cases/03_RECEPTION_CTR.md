@@ -180,14 +180,14 @@
 
 ---
 
-## TC-REC-016 — Sample expires_at is ~10 days
+## TC-REC-016 — Sample expires_at is ~50 days
 
 | Field | Value |
 |-------|-------|
 | **Priority** | P1 |
 | **Type** | Positive |
 | **Steps** | Save CTR; inspect DB `request_samples.expires_at` (or note creation time). |
-| **Expected** | `expires_at` ≈ `created_at + 10 days`. Initial status `pending`. |
+| **Expected** | `expires_at` ≈ `created_at + 50 days`. Initial status `pending`. |
 
 ---
 

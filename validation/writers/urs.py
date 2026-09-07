@@ -137,7 +137,7 @@ def _req_rows(inv: SystemInventory) -> list[tuple[str, str, str, str]]:
         )
     add(
         "Retention",
-        "Sample rows shall expire after 10 days and be purgeable via app open "
+        "Sample rows shall expire after 50 days and be purgeable via app open "
         "cleanup and/or scripts/cleanup_expired_samples.py; customers remain permanent.",
         "services/samples.py, scripts/cleanup_expired_samples.py",
     )

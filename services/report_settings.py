@@ -89,3 +89,12 @@ def default_checked_by(settings: ReportSettings | None = None) -> str:
     if len(cfg.signatories) > 1:
         return cfg.signatories[1]["name"]
     return ""
+
+
+def signatory_role(name: str, settings: ReportSettings | None = None) -> str:
+    cfg = settings or load_report_settings()
+    target = (name or "").strip().lower()
+    for entry in cfg.signatories:
+        if (entry.get("name") or "").strip().lower() == target:
+            return (entry.get("role") or "").strip()
+    return ""

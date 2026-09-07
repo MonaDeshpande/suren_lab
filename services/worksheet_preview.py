@@ -14,6 +14,9 @@ from services.protocols.test_catalog import (
     get_test,
     is_dry_basis_test,
     moisture_ctx_key_for,
+    protein_normality_key,
+    protein_normality_label,
+    protein_titrant_from,
     wet_value_for_test,
 )
 
@@ -93,12 +96,17 @@ def preview_test_calculation(
     elif test_key == "bn_protein":
         try:
             w = float(inputs["w"])
-            n_naoh = float(inputs["n_naoh"])
+            titrant = protein_titrant_from(inputs)
+            norm_key = protein_normality_key(titrant)
+            n_titrant = float(inputs[norm_key])
             br_blank = float(inputs["br_blank"])
             br_sample = float(inputs["br_sample"])
             n_factor = float(inputs["n_factor"])
-            nitrogen = round(0.014 * n_naoh * (br_blank - br_sample) * 100.0 / w, 2)
-            preview.steps.append(CalculationStep("Nitrogen (%)", f"{nitrogen}"))
+            norm_label = protein_normality_label(titrant)
+            nitrogen = round(0.014 * n_titrant * (br_blank - br_sample) * 100.0 / w, 2)
+            preview.steps.append(
+                CalculationStep(f"Nitrogen (%) [N({norm_label})]", f"{nitrogen}")
+            )
             preview.steps.append(CalculationStep("Total Protein (%)", f"{display}"))
         except (KeyError, TypeError, ValueError):
             preview.steps.append(CalculationStep("Result", f"{display}"))

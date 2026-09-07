@@ -12,7 +12,7 @@
 1. Verify end-to-end lab workflow: Reception CTR → Analyst protocol → Reviewer Final Test Report.
 2. Verify role-based access for `admin`, `reception`, `analyst`, `reviewer`.
 3. Verify shared lab formula library (11 tests) for correct math and error handling.
-4. Verify 10-day sample retention, purge behaviour, and audit trail.
+4. Verify 50-day sample retention, purge behaviour, and audit trail.
 5. Provide a repeatable regression pack for releases.
 
 ---
@@ -163,7 +163,7 @@ See `tests/` for formula, validation, auth-hash, and optional DB integration cov
 pending → in_progress → completed → reported
 ```
 
-- Reception creates samples as `pending` (`expires_at = now + 10 days`).
+- Reception creates samples as `pending` (`expires_at = now + 50 days`).
 - Analyst first saved result auto-moves `pending` → `in_progress`.
 - Analyst sets `completed` manually.
 - Reviewer **Generate Final Report** sets `reported`.

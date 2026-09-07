@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import io
 import json
+import re
 from datetime import date
 from pathlib import Path
 
@@ -28,6 +29,7 @@ from services.protocol_docx import (
     fill_protocol_docx_bytes,
     unsaved_selected_test_names,
 )
+from services.document_templates import PROTOCOL_HEADER_FOOTER_PATH
 from services.protocol_store import ProtocolHeader, TestResultRow
 from services.protocols.test_catalog import (
     CATEGORY_WATER,
@@ -540,7 +542,11 @@ class TestNutritionWorksheetReadings:
         wet_row = table.rows[6]
         dry_row = table.rows[7]
         assert "45.097" in _cell_text(wet_row.cells[1])
+        assert "% %" not in _cell_text(wet_row.cells[1])
         assert "0.023" in _cell_text(dry_row.cells[1])
+        dry_desc = _cell_text(dry_row.cells[0])
+        assert "Moisture" in dry_desc
+        assert "(100 −\nMoisture)" not in dry_desc.replace("\u00a0", " ")
         assert "96.79" in _cell_text(dry_row.cells[1]) or "3.21" in _cell_text(
             dry_row.cells[1]
         )
@@ -557,6 +563,7 @@ class TestNutritionWorksheetReadings:
                 method=TEST_CATALOG["bn_protein"].method,
                 unit="%",
                 inputs={
+                    "titrant": "NaOH",
                     "w": 1.5,
                     "n_naoh": 0.1,
                     "br_blank": 10.0,
@@ -573,6 +580,117 @@ class TestNutritionWorksheetReadings:
         assert "0.014" in body
         assert "6.5" in body
         assert "× 6.25" in body or "x 6.25" in body.lower()
+
+    def test_bn_protein_hcl_formula_uses_hcl_normality(self):
+        sample = _sample(
+            tests_json=json.dumps(["bn_protein"]),
+            package_type="basic_nutrition",
+        )
+        results = [
+            TestResultRow(
+                test_key="bn_protein",
+                test_name="Protein",
+                method=TEST_CATALOG["bn_protein"].method,
+                unit="%",
+                inputs={
+                    "titrant": "HCl",
+                    "w": 1.5,
+                    "n_hcl": 0.1,
+                    "br_blank": 10.0,
+                    "br_sample": 8.5,
+                    "n_factor": 6.25,
+                },
+                result_value="6.5",
+                result_numeric=6.5,
+            )
+        ]
+        out = fill_protocol_docx_bytes(sample, _header(), results)
+        doc = Document(io.BytesIO(out))
+        body = "\n".join(p.text for p in doc.paragraphs)
+        assert "N(HCl)" in body or "Normality of HCl" in body
+
+    def test_nutrition_full_panel_worksheets_and_calculations(self):
+        sample = _sample(
+            tests_json=json.dumps(
+                [
+                    "bn_moisture",
+                    "bn_total_ash",
+                    "bn_total_fat",
+                    "bn_protein",
+                    "bn_carbohydrate",
+                    "bn_calories",
+                ]
+            ),
+            package_type="basic_nutrition",
+        )
+        results = [
+            *self._nutrition_moisture_results(),
+            TestResultRow(
+                test_key="bn_total_ash",
+                test_name="Total Ash",
+                method=TEST_CATALOG["bn_total_ash"].method,
+                unit="%",
+                inputs={"w1": 45.0, "w": 5.0, "w2": 45.1},
+                result_value="2.0",
+                result_numeric=2.0,
+            ),
+            TestResultRow(
+                test_key="bn_total_fat",
+                test_name="Total Fat",
+                method=TEST_CATALOG["bn_total_fat"].method,
+                unit="%",
+                inputs={"w": 5.0, "w1": 10.0, "w2": 10.5},
+                result_value="10.0",
+                result_numeric=10.0,
+            ),
+            TestResultRow(
+                test_key="bn_protein",
+                test_name="Protein",
+                method=TEST_CATALOG["bn_protein"].method,
+                unit="%",
+                inputs={
+                    "titrant": "NaOH",
+                    "w": 1.5,
+                    "n_naoh": 0.1,
+                    "br_blank": 10.0,
+                    "br_sample": 8.5,
+                    "n_factor": 6.25,
+                },
+                result_value="6.5",
+                result_numeric=6.5,
+            ),
+            TestResultRow(
+                test_key="bn_carbohydrate",
+                test_name="Carbohydrate",
+                method=TEST_CATALOG["bn_carbohydrate"].method,
+                unit="%",
+                inputs={},
+                result_value="71.5",
+                result_numeric=71.5,
+            ),
+            TestResultRow(
+                test_key="bn_calories",
+                test_name="Calories (Energy)",
+                method=TEST_CATALOG["bn_calories"].method,
+                unit="Kcal/100g",
+                inputs={},
+                result_value="416.0",
+                result_numeric=416.0,
+            ),
+        ]
+        out = fill_protocol_docx_bytes(sample, _header(), results)
+        doc = Document(io.BytesIO(out))
+        moisture = _worksheet_table_with_text(doc, "stainless steel dish")
+        ash = _worksheet_table_with_text(doc, "empty Crucible")
+        fat = _worksheet_table_with_text(doc, "Evaporating Dish")
+        assert moisture is not None and ash is not None and fat is not None
+        assert "3.21" in _cell_text(moisture.rows[7].cells[1])
+        assert "2.0" in _cell_text(ash.rows[7].cells[1])
+        assert "10.0" in _cell_text(fat.rows[4].cells[1])
+        body = "\n".join(p.text for p in doc.paragraphs)
+        assert "0.014" in body
+        assert "71.5" in body
+        assert "416" in body
 
     def test_bn_sugar_readings_and_formula(self):
         sample = _sample(
@@ -712,10 +830,10 @@ class TestHeaderValueColumns:
         assert _cell_text(t0.rows[0].cells[3]) == "21/07/2026"
         assert _cell_text(t0.rows[1].cells[1]) == "LAB/CTR/26/077"
         assert _cell_text(t0.rows[1].cells[3]) == "21/07/2026"
-        hdr = doc.sections[0].header.tables[0]
-        assert _cell_text(hdr.rows[0].cells[1]) == "P-001"
-        assert _cell_text(hdr.rows[0].cells[3]) == "Analyst A"
-        assert _cell_text(hdr.rows[0].cells[5]) == "Reception"
+        if PROTOCOL_HEADER_FOOTER_PATH.exists():
+            assert _header_has_logo(doc)
+            assert "P-001" not in _header_text(doc)
+            assert "Protocol No" not in _header_text(doc)
 
 
 def _footer_text(doc: Document) -> str:
@@ -730,6 +848,88 @@ def _footer_text(doc: Document) -> str:
     return text
 
 
+def _header_text(doc: Document) -> str:
+    text = ""
+    for section in doc.sections:
+        for table in section.header.tables:
+            for row in table.rows:
+                for cell in row.cells:
+                    text += "\n" + _cell_text(cell)
+        for para in section.header.paragraphs:
+            text += "\n" + (para.text or "")
+    return text
+
+
+def _header_has_logo(doc: Document) -> bool:
+    for section in doc.sections:
+        if section.header._element.findall(".//" + qn("w:drawing")):
+            return True
+    return False
+
+
+def _last_worksheet_table_index(doc: Document) -> int | None:
+    last_idx = None
+    siblings = list(doc.element.body)
+    for idx, child in enumerate(siblings):
+        if not child.tag.endswith("tbl"):
+            continue
+        from docx.table import Table
+
+        table = Table(child, doc)
+        hdr = " ".join((c.text or "").strip() for c in table.rows[0].cells).lower()
+        is_worksheet = (
+            "description" in hdr
+            or "sr. no" in hdr
+            or "sr no" in hdr
+            or "parameter" in hdr
+        )
+        is_appearance = len(table.rows) == 1 and len(table.rows[0].cells) == 1
+        if is_worksheet or (
+            is_appearance and "appearance" in (table.rows[0].cells[0].text or "").lower()
+        ):
+            last_idx = idx
+    return last_idx
+
+
+def _empty_paragraphs_after_element(doc: Document, element) -> int:
+    count = 0
+    next_el = element.getnext()
+    while next_el is not None and next_el.tag.endswith("p"):
+        para = Paragraph(next_el, doc)
+        if (para.text or "").strip():
+            break
+        count += 1
+        next_el = next_el.getnext()
+    return count
+
+
+def _technical_manager_paragraph(doc: Document) -> Paragraph | None:
+    for paragraph in doc.paragraphs:
+        if "Technical Manager" in (paragraph.text or ""):
+            return paragraph
+    return None
+
+
+def _trailing_body_is_signature_block(doc: Document) -> bool:
+    siblings = [c for c in doc.element.body if not c.tag.endswith("sectPr")]
+    for child in reversed(siblings):
+        if child.tag.endswith("tbl"):
+            return False
+        if not child.tag.endswith("p"):
+            continue
+        text = (Paragraph(child, doc).text or "").strip()
+        if not text:
+            continue
+        lower = text.lower()
+        return (
+            "technical manager" in lower
+            or "dated signature" in lower
+            or "analysed by" in lower
+            or "analyzed by" in lower
+        )
+    return False
+
+
 def _full_document_text(doc: Document) -> str:
     text = "\n".join(p.text for p in doc.paragraphs)
     for table in doc.tables:
@@ -741,7 +941,7 @@ def _full_document_text(doc: Document) -> str:
 
 
 class TestOfflineSignature:
-    """TC-ANL-025 — Basic Nutrition-style footer; no body signature blocks."""
+    """TC-ANL-025 — footer approval rows plus end-of-body analyst/checker block."""
 
     def _assert_standard_protocol_footer(self, doc: Document) -> None:
         footer = _footer_text(doc)
@@ -752,12 +952,50 @@ class TestOfflineSignature:
         assert "Nashikkar" not in footer
         assert "Control copy" not in footer
 
-    def _assert_no_body_signatures(self, doc: Document) -> None:
+    def _assert_end_signatures(self, doc: Document) -> None:
         body_text = "\n".join(p.text for p in doc.paragraphs)
-        assert "Analyzed By" not in body_text
-        assert "Checked By" not in body_text
-        assert "Technical Manager" not in body_text
+        for table in doc.tables:
+            body_text += "\n" + "\n".join(
+                _cell_text(cell) for row in table.rows for cell in row.cells
+            )
+        assert "Analysed By" in body_text or "Analyzed By" in body_text
+        assert "Checked By" in body_text
+        assert "Technical Manager" in body_text
+        assert "Dated Signature" in body_text or "Dated signature" in body_text
         assert "Generated by" not in body_text
+        assert re.search(r"\d+\.\s*Analysed By", body_text) is None
+        assert re.search(r"\d+\.\s*Analyzed By", body_text) is None
+
+        tm_para = _technical_manager_paragraph(doc)
+        assert tm_para is not None
+        tm_text = tm_para.text or ""
+        tm_idx = tm_text.index("Technical Manager")
+        before_tm = tm_text[:tm_idx].rstrip()
+        assert not before_tm.endswith(".")
+        assert ".." not in before_tm
+        assert tm_para._p.pPr is None or not tm_para._p.pPr.findall(qn("w:tabs"))
+
+        last_ws_idx = _last_worksheet_table_index(doc)
+        assert last_ws_idx is not None
+        last_ws = list(doc.element.body)[last_ws_idx]
+        assert _empty_paragraphs_after_element(doc, last_ws) == 2
+
+        header_text = _header_text(doc)
+        assert "P-001" not in header_text
+        if PROTOCOL_HEADER_FOOTER_PATH.exists():
+            assert _header_has_logo(doc)
+            assert "Protocol No" not in header_text
+
+        assert _trailing_body_is_signature_block(doc)
+        last_para = None
+        for child in reversed(list(doc.element.body)):
+            if child.tag.endswith("p"):
+                last_para = child
+                break
+        assert last_para is not None
+        assert not any(
+            br.get(qn("w:type")) == "page" for br in last_para.findall(".//" + qn("w:br"))
+        )
 
     @pytest.mark.skipif(not WATER_TEMPLATE_PATH.exists(), reason="Water template missing")
     def test_water_protocol_footer_and_no_body_signatures(self):
@@ -774,7 +1012,8 @@ class TestOfflineSignature:
         assert "Prepared" in footer and "Issued" in footer
         assert "Surendra" not in footer
         assert "Nashikkar" not in footer
-        self._assert_no_body_signatures(doc)
+        body_text = "\n".join(p.text for p in doc.paragraphs)
+        assert "Generated by" not in body_text
 
     @pytest.mark.skipif(not JAGGERY_TEMPLATE_PATH.exists(), reason="Jaggery template missing")
     def test_jaggery_footer_matches_nutrition_pattern(self):
@@ -793,7 +1032,7 @@ class TestOfflineSignature:
         out = fill_protocol_docx_bytes(sample, _header(), results)
         doc = Document(io.BytesIO(out))
         self._assert_standard_protocol_footer(doc)
-        self._assert_no_body_signatures(doc)
+        self._assert_end_signatures(doc)
         assert len(doc.sections) == 1
         full_text = _full_document_text(doc)
         assert "Generated by" not in full_text
@@ -900,6 +1139,7 @@ class TestJaggeryWorksheetReadings:
         assert "=" in wet_read
         assert "45" in wet_read
         assert "%" in wet_read
+        assert "% %" not in wet_read
         assert "=" in dry_read
         assert "1.22" in dry_read
         assert "3.53" in dry_read
@@ -1029,9 +1269,9 @@ class TestJaggeryWorksheetReadings:
             for cell in row.cells
         )
         assert "1.5148" in sugar_text
-        body = "\n".join(p.text for p in doc.paragraphs)
-        assert "Analyzed By" not in body
-        assert "Technical Manager" not in body
+        full_text = _full_document_text(doc)
+        assert "Analysed By" in full_text or "Analyzed By" in full_text
+        assert "Technical Manager" in full_text
 
     def test_sulphated_ash_and_so2_worksheets_filled(self):
         sample = _sample(tests_json=json.dumps(["sulphated_ash", "sulphur_dioxide"]))
@@ -1517,15 +1757,20 @@ class TestProtocolPageLayout:
         tbl_pr = t0._tbl.tblPr
         assert tbl_pr is None or tbl_pr.find(qn("w:tblpPr")) is None
 
-    def test_repeating_section_header_table(self):
+    def test_repeating_section_letterhead_has_logo(self):
         sample = _sample(tests_json=json.dumps(["moisture"]))
         out = fill_protocol_docx_bytes(sample, _header(), self._jaggery_results())
         doc = Document(io.BytesIO(out))
-        hdr_tables = doc.sections[0].header.tables
-        assert hdr_tables
-        hdr_text = _cell_text(hdr_tables[0].rows[0].cells[0])
-        assert "Protocol No" in hdr_text
-        assert _cell_text(hdr_tables[0].rows[0].cells[1]) == "P-001"
+        if PROTOCOL_HEADER_FOOTER_PATH.exists():
+            assert _header_has_logo(doc)
+            assert "Protocol No" not in _header_text(doc)
+            assert "P-001" not in _header_text(doc)
+        else:
+            hdr_tables = doc.sections[0].header.tables
+            assert hdr_tables
+            hdr_text = _cell_text(hdr_tables[0].rows[0].cells[0])
+            assert "Protocol No" in hdr_text
+            assert _cell_text(hdr_tables[0].rows[0].cells[1]) == "P-001"
 
     def test_appearance_worksheet_filled(self):
         sample = _sample(tests_json=json.dumps(["appearance", "moisture"]))
@@ -1925,28 +2170,14 @@ class TestSauceProtocolLayout:
         assert _table_grid_sum_twips(sample) == canonical_width
         assert _table_grid_sum_twips(footer) == canonical_width
 
-    def test_section_header_matches_nutrition_spacing_structure(self):
+    def test_section_header_uses_protocol_letterhead(self):
         doc = self._filled_sauce_doc()
-        ref = Document(str(NUTRITION_TEMPLATE_PATH))
-        ref_hdr = ref.sections[0].header._element
-        ref_trailing = 0
-        seen_tbl = False
-        for child in ref_hdr:
-            if child.tag.endswith("tbl"):
-                seen_tbl = True
-                ref_trailing = 0
-            elif seen_tbl and child.tag.endswith("p"):
-                ref_trailing += 1
-
-        hdr_el = doc.sections[0].header._element
-        children = list(hdr_el)
-        assert children[0].tag.endswith("tbl")
-        assert "Protocol No" in doc.sections[0].header.tables[0].rows[0].cells[0].text
-        trailing = [c for c in children[1:] if c.tag.endswith("p")]
-        assert len(trailing) == ref_trailing == 2
-        for para_el in trailing:
-            text = "".join(t.text or "" for t in para_el.findall(".//" + qn("w:t")))
-            assert not text.strip()
+        if not PROTOCOL_HEADER_FOOTER_PATH.exists():
+            pytest.skip("protocol.docx letterhead reference missing")
+        assert _header_has_logo(doc)
+        assert "SURENDRA" in _header_text(doc).upper()
+        assert "Protocol No" not in _header_text(doc)
+        assert "P-001" not in _header_text(doc)
 
     def test_all_outer_boxes_share_width_and_indent(self):
         doc = self._filled_sauce_doc()
@@ -1957,7 +2188,8 @@ class TestSauceProtocolLayout:
             for t in doc.tables
             if "description" in _cell_text(t.rows[0].cells[0]).lower()
         )
-        outer_tables.append(doc.sections[0].header.tables[0])
+        if not PROTOCOL_HEADER_FOOTER_PATH.exists():
+            outer_tables.append(doc.sections[0].header.tables[0])
         outer_tables.append(doc.sections[0].footer.tables[0])
 
         for table in outer_tables:
@@ -1976,6 +2208,8 @@ class TestSauceProtocolLayout:
         assert "\n" not in text.strip()
 
     def test_protocol_header_uses_cambria_10pt(self):
+        if PROTOCOL_HEADER_FOOTER_PATH.exists():
+            pytest.skip("Letterhead from protocol.docx replaces the Protocol No header row")
         doc = self._filled_sauce_doc()
         header_table = doc.sections[0].header.tables[0]
         for cell in header_table.rows[0].cells:
@@ -1987,6 +2221,8 @@ class TestSauceProtocolLayout:
             assert not bold
 
     def test_protocol_header_cells_single_line(self):
+        if PROTOCOL_HEADER_FOOTER_PATH.exists():
+            pytest.skip("Letterhead from protocol.docx replaces the Protocol No header row")
         doc = self._filled_sauce_doc()
         header_table = doc.sections[0].header.tables[0]
         for cell in header_table.rows[0].cells:

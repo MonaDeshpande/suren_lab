@@ -172,7 +172,7 @@ def write_sop(inv: SystemInventory, out_dir: Path, stamp: str) -> Path:
     add_bullets(
         doc,
         [
-            "Sample rows expire after 10 days (expires_at).",
+            "Sample rows expire after 50 days (expires_at).",
             "Cleanup may run automatically when the app opens, and/or manually via "
             "python scripts/cleanup_expired_samples.py.",
             "Customer master records are permanent and must not be deleted by retention purge.",

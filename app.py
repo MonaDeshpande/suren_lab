@@ -20,7 +20,7 @@ load_dotenv()
 from db.connection import test_connection  # noqa: E402
 from db.migrate import ensure_schema  # noqa: E402
 from services.auth import ensure_default_admin, get_session_user, roles_display  # noqa: E402
-from services.samples import delete_expired_samples  # noqa: E402
+from services.samples import SAMPLE_RETENTION_DAYS, delete_expired_samples  # noqa: E402
 from ui.auth import require_login, user_can_access_page  # noqa: E402
 from ui.components import inject_styles, render_db_status, render_hero  # noqa: E402
 
@@ -34,7 +34,7 @@ st.set_page_config(
 
 
 def _purge_expired_once() -> None:
-    """Run 10-day sample cleanup once per browser session."""
+    """Run sample cleanup once per browser session."""
     if st.session_state.get("_expired_samples_purged"):
         return
     try:
@@ -81,7 +81,10 @@ def main() -> None:
     _purge_expired_once()
     deleted = st.session_state.get("_expired_samples_deleted", 0)
     if isinstance(deleted, int) and deleted > 0:
-        st.info(f"Cleanup: removed {deleted} sample(s) older than 10 days.")
+        st.info(
+            f"Cleanup: removed {deleted} sample(s) older than "
+            f"{SAMPLE_RETENTION_DAYS} days."
+        )
 
     st.markdown("### Workspaces")
 

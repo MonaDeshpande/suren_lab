@@ -1,20 +1,20 @@
 # Retention & Audit — Test Cases
 
-**Module:** 10-day sample retention, purge, audit trail  
+**Module:** 50-day sample retention, purge, audit trail  
 **Related code:** `services/samples.py` (`delete_expired_samples`), `app.py`, `pages/1_Reception.py`, `scripts/cleanup_expired_samples.py`, `services/audit.py`
 
 ---
 
 ## Retention
 
-### TC-RET-001 — New sample has 10-day expiry
+### TC-RET-001 — New sample has 50-day expiry
 
 | Field | Value |
 |-------|-------|
 | **Priority** | P0 |
 | **Type** | Positive |
 | **Steps** | Save CTR; inspect `expires_at`. |
-| **Expected** | Approximately now + 10 days. |
+| **Expected** | Approximately now + 50 days. |
 
 ---
 

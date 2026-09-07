@@ -38,6 +38,9 @@ def db_available() -> bool:
 def require_db(db_available: bool) -> None:
     if not db_available:
         pytest.skip("PostgreSQL not available — start docker compose to run integration tests")
+    from db.migrate import ensure_schema
+
+    ensure_schema()
 
 
 def sample_verification_kwargs(**overrides) -> dict:
@@ -58,9 +61,6 @@ def sample_verification_kwargs(**overrides) -> dict:
     }
     base.update(overrides)
     return base
-    from db.migrate import ensure_schema
-
-    ensure_schema()
 
 
 @pytest.fixture(autouse=True)

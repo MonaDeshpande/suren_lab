@@ -12,13 +12,17 @@ import io
 import logging
 from dataclasses import dataclass, replace
 from datetime import date
-from pathlib import Path
 from typing import Optional
 
+from services.document_templates import (
+    MICRO_REPORT_TEMPLATE_PATH,
+    final_report_template_path,
+)
 from services.docx_layout import (
-    clear_header_images,
     combine_docx_bytes,
+    compact_single_page_document,
     delete_table_rows_range,
+    fill_report_signature_block,
     finalize_docx_document,
     load_template,
     set_cell_text,
@@ -43,9 +47,6 @@ from services.samples import (
 
 logger = logging.getLogger(__name__)
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
-MICRO_REPORT_TEMPLATE_PATH = PROJECT_ROOT / "reference" / "Micro Test Report.docx"
-
 BLANK_FIELD = "--"
 
 
@@ -64,6 +65,10 @@ class MicroReportFillOptions:
     test_performance_date: str = ""
     generated_by: str = ""
     generated_at: str = ""
+    authorized_signatory: str = ""
+    checked_by: str = ""
+    authorized_signatory_role: str = ""
+    checked_by_role: str = ""
 
 
 def _fmt_date(d: Optional[date]) -> str:
@@ -170,14 +175,14 @@ def fill_micro_test_report_docx_bytes(
     with_logo: bool | None = None,
 ) -> bytes:
     """Produce a filled micro test report .docx from the reference template."""
-    if not MICRO_REPORT_TEMPLATE_PATH.exists():
-        raise FileNotFoundError(
-            f"Micro test report template missing: {MICRO_REPORT_TEMPLATE_PATH}"
-        )
-
     fill_opts = opts or MicroReportFillOptions()
     by_key = {r.test_key: r for r in results}
     logo_flag = default_report_with_logo(sample) if with_logo is None else with_logo
+    template_path = final_report_template_path(sample.category, with_logo=logo_flag)
+    if not template_path.exists():
+        raise FileNotFoundError(
+            f"Micro test report template missing: {template_path}"
+        )
 
     if not fill_opts.report_no:
         fill_opts.report_no = _default_report_no(sample, with_logo=logo_flag)
@@ -186,9 +191,7 @@ def fill_micro_test_report_docx_bytes(
     if not fill_opts.sample_appearance:
         fill_opts.sample_appearance = (header.appearance_text or "").strip()
 
-    doc = load_template(MICRO_REPORT_TEMPLATE_PATH)
-    if not logo_flag:
-        clear_header_images(doc)
+    doc = load_template(template_path)
     tables = doc.tables
     if len(tables) < 4:
         raise ValueError("Micro Test Report.docx must have 4 tables.")
@@ -232,7 +235,16 @@ def fill_micro_test_report_docx_bytes(
     )
     set_cell_text(tables[3].rows[0].cells[0], disc_text)
 
-    set_report_footer(doc, with_logo=logo_flag)
+    fill_report_signature_block(
+        doc,
+        authorized_name=fill_opts.authorized_signatory,
+        authorized_role=fill_opts.authorized_signatory_role,
+        checked_name=fill_opts.checked_by,
+        checked_role=fill_opts.checked_by_role,
+    )
+
+    compact_single_page_document(doc)
+    set_report_footer(doc, with_logo=logo_flag, static_one_of_one=True)
 
     finalize_docx_document(doc, set_qsf=True)
 
@@ -300,7 +312,11 @@ def generate_micro_test_report_pdf_bytes(
             )
             logo_flags.append(False)
         docx_bytes = (
-            combine_docx_bytes(parts, with_logo_per_section=logo_flags)
+            combine_docx_bytes(
+                parts,
+                with_logo_per_section=logo_flags,
+                static_one_of_one=True,
+            )
             if parts
             else fill_micro_test_report_docx_bytes(sample, header, results, opts=opts)
         )

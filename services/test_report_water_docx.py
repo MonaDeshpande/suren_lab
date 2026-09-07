@@ -10,7 +10,9 @@ Physical, Microbiological placeholder). PDF conversion reuses docx2pdf when avai
 from __future__ import annotations
 
 import io
+import json
 import logging
+import time
 from copy import deepcopy
 from dataclasses import dataclass, field, replace
 from datetime import date
@@ -20,11 +22,15 @@ from typing import Optional
 from docx import Document
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
-from docx.shared import Inches
+from docx.shared import Inches, Length
 
+from services.document_templates import (
+    WATER_REPORT_TEMPLATE_PATH,
+    final_report_template_path,
+)
 from services.docx_layout import (
-    clear_header_images,
     combine_docx_bytes,
+    fill_report_signature_block,
     finalize_docx_document,
     load_template,
     set_cell_text,
@@ -62,11 +68,34 @@ from services.water_report_catalog import (
 
 logger = logging.getLogger(__name__)
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
-WATER_REPORT_TEMPLATE_PATH = PROJECT_ROOT / "reference" / "Water test report.docx"
-
 DEFAULT_CUSTOMER_SAMPLE_ID = "Drinking Water"
 BLANK_FIELD = "---"
+_DEBUG_LOG_PATH = Path(__file__).resolve().parent.parent / "debug-3467ee.log"
+
+
+def _debug_log(*, hypothesis_id: str, location: str, message: str, data: dict) -> None:
+    # region agent log
+    try:
+        payload = {
+            "sessionId": "3467ee",
+            "hypothesisId": hypothesis_id,
+            "location": location,
+            "message": message,
+            "data": data,
+            "timestamp": int(time.time() * 1000),
+        }
+        with _DEBUG_LOG_PATH.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(payload) + "\n")
+    except OSError:
+        pass
+    # endregion
+
+
+def _length_twips(length: Length | int) -> str:
+    """OOXML pgMar attributes use twips, not EMU."""
+    if isinstance(length, Length):
+        return str(int(length.twips))
+    return str(int(length))
 
 
 @dataclass
@@ -89,6 +118,10 @@ class WaterReportFillOptions:
     limit_overrides: dict[str, WaterReportLimits] = field(default_factory=dict)
     generated_by: str = ""
     generated_at: str = ""
+    authorized_signatory: str = ""
+    checked_by: str = ""
+    authorized_signatory_role: str = ""
+    checked_by_role: str = ""
 
 
 def _fmt_date(d: Optional[date]) -> str:
@@ -97,17 +130,14 @@ def _fmt_date(d: Optional[date]) -> str:
     return d.strftime("%d/%m/%Y")
 
 
-def _blank_signatory_paragraphs(doc: Document) -> None:
-    """Remove hardcoded signatory names; leave blocks for pen signature."""
-    signatory_markers = ("Mrs.", "Dr.", "Quality Manager", "Director")
-    for para in doc.paragraphs:
-        text = (para.text or "").strip()
-        if any(marker in text for marker in signatory_markers):
-            if "Disclaimer" in text or "Remark" in text:
-                continue
-            if text.startswith("For "):
-                continue
-            set_paragraph_text(para, "")
+def _fill_signatures(doc: Document, opts: WaterReportFillOptions) -> None:
+    fill_report_signature_block(
+        doc,
+        authorized_name=opts.authorized_signatory,
+        authorized_role=opts.authorized_signatory_role,
+        checked_name=opts.checked_by,
+        checked_role=opts.checked_by_role,
+    )
 
 
 def _result_display(res: TestResultRow) -> str:
@@ -272,13 +302,25 @@ def _insert_page2_section_break(doc: Document, break_before_index: int) -> None:
         sect_pr.append(deepcopy(pg_sz))
 
     pg_mar = OxmlElement("w:pgMar")
-    pg_mar.set(qn("w:top"), str(int(Inches(0.15))))
-    pg_mar.set(qn("w:right"), str(int(first_section.right_margin)))
-    pg_mar.set(qn("w:bottom"), str(int(first_section.bottom_margin)))
-    pg_mar.set(qn("w:left"), str(int(first_section.left_margin)))
-    pg_mar.set(qn("w:header"), str(int(Inches(0.35))))
-    pg_mar.set(qn("w:footer"), str(int(Inches(0.35))))
+    pg_mar.set(qn("w:top"), _length_twips(Inches(0.15)))
+    pg_mar.set(qn("w:right"), _length_twips(first_section.right_margin))
+    pg_mar.set(qn("w:bottom"), _length_twips(first_section.bottom_margin))
+    pg_mar.set(qn("w:left"), _length_twips(first_section.left_margin))
+    pg_mar.set(qn("w:header"), _length_twips(Inches(0.35)))
+    pg_mar.set(qn("w:footer"), _length_twips(Inches(0.35)))
     sect_pr.append(pg_mar)
+
+    _debug_log(
+        hypothesis_id="A",
+        location="test_report_water_docx.py:_insert_page2_section_break",
+        message="inline sectPr pgMar twips",
+        data={
+            "top": pg_mar.get(qn("w:top")),
+            "right": pg_mar.get(qn("w:right")),
+            "header": pg_mar.get(qn("w:header")),
+            "footer": pg_mar.get(qn("w:footer")),
+        },
+    )
 
     pg_num = OxmlElement("w:pgNumType")
     pg_num.set(qn("w:start"), "1")
@@ -380,17 +422,17 @@ def fill_water_test_report_docx_bytes(
     with_logo: bool | None = None,
 ) -> bytes:
     """Produce a filled water test report .docx."""
-    if not WATER_REPORT_TEMPLATE_PATH.exists():
-        raise FileNotFoundError(
-            f"Water test report template missing: {WATER_REPORT_TEMPLATE_PATH}"
-        )
-
     fill_opts = opts or WaterReportFillOptions()
     by_key = {r.test_key: r for r in results}
     full_by_key = dict(by_key)
     if test_key_filter is not None:
         by_key = {k: v for k, v in by_key.items() if k in test_key_filter}
     logo_flag = default_report_with_logo(sample) if with_logo is None else with_logo
+    template_path = final_report_template_path(sample.category, with_logo=logo_flag)
+    if not template_path.exists():
+        raise FileNotFoundError(
+            f"Water test report template missing: {template_path}"
+        )
 
     if not fill_opts.report_no_chemical or not fill_opts.report_no_micro:
         default_chem, default_micro = _default_report_numbers(
@@ -407,10 +449,8 @@ def fill_water_test_report_docx_bytes(
     if not fill_opts.sample_appearance:
         fill_opts.sample_appearance = (header.appearance_text or "").strip()
 
-    doc = load_template(WATER_REPORT_TEMPLATE_PATH)
-    if not logo_flag:
-        clear_header_images(doc)
-    _blank_signatory_paragraphs(doc)
+    doc = load_template(template_path)
+    _fill_signatures(doc, fill_opts)
     _fill_header_paragraphs(doc, fill_opts, with_logo=logo_flag)
 
     tables = doc.tables

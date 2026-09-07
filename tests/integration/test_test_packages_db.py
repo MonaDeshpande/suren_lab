@@ -199,7 +199,7 @@ def test_package_crud_and_versioning(require_db, clean_packages):
 
 
 
-def test_package_unique_per_name_and_type(require_db, clean_packages):
+def test_package_unique_per_name(require_db, clean_packages):
 
     suffix = uuid.uuid4().hex[:8]
 
@@ -209,19 +209,11 @@ def test_package_unique_per_name_and_type(require_db, clean_packages):
 
     clean_packages.append(pkg.id)
 
-
-
     with pytest.raises(ValueError, match="already exists"):
-
         create_package(name, PACKAGE_TYPE_NUTRITION_ONLY, ["bn_protein"], [])
 
-
-
-    other = create_package(name, PACKAGE_TYPE_FSSAI, ["moisture"], ["total_ash"])
-
-    clean_packages.append(other.id)
-
-    assert other.id != pkg.id
+    with pytest.raises(ValueError, match="already exists"):
+        create_package(name, PACKAGE_TYPE_FSSAI, ["moisture"], ["total_ash"])
 
 
 def test_activate_package_after_deactivate(require_db, clean_packages):
@@ -275,15 +267,27 @@ def test_resolve_package_for_product_single_active(require_db, clean_packages):
     assert len(desc["test_keys"]) == 2
 
 
-def test_resolve_package_for_product_ambiguous(require_db, clean_packages):
+def test_resolve_package_for_product_duplicate(require_db, clean_packages):
     suffix = uuid.uuid4().hex[:8]
-    name = f"QA Ambiguous {suffix}"
+    name = f"QA Dup {suffix}"
     pkg1 = create_package(name, PACKAGE_TYPE_FSSAI, ["moisture"], [])
+    clean_packages.append(pkg1.id)
+    delete_package(pkg1.id, "QA setup duplicate test")
     pkg2 = create_package(name, PACKAGE_TYPE_BASIC_NUTRITION, ["bn_protein"], [])
-    clean_packages.extend([pkg1.id, pkg2.id])
+    clean_packages.append(pkg2.id)
+
+    from db.connection import get_db
+
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE sample_test_packages SET is_active = TRUE WHERE id = %s",
+                (pkg1.id,),
+            )
 
     assert resolve_package_for_product(name) is None
     desc = describe_sample_package_for_product(name)
-    assert desc["status"] == "ambiguous"
-    assert desc["active_count"] == 2
+    assert desc["status"] == "duplicate"
+    assert desc["active_count"] >= 2
+    assert len(desc.get("duplicate_package_ids") or []) >= 2
 

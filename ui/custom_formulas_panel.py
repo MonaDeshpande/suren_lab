@@ -27,10 +27,10 @@ from services.custom_formulas import (
 )
 from services.protocols.test_catalog import (
     CATEGORY_FOOD,
-    SAMPLE_CATEGORIES,
     PROTOCOL_FAMILY_JAGGERY,
     PROTOCOL_FAMILY_NUTRITION,
 )
+from services.sample_categories import all_sample_categories, category_select_options
 from services.test_packages import PACKAGE_TYPE_LABELS, LABEL_TO_PACKAGE_TYPE
 from services.versions import list_versions
 from ui.components import edit_reason_field, render_section_title, require_edit_reason
@@ -248,8 +248,9 @@ def _render_create_tab(actor) -> None:
                 st.rerun()
             return
 
-    cat_labels = list(SAMPLE_CATEGORIES.values())
-    label_to_cat = {v: k for k, v in SAMPLE_CATEGORIES.items()}
+    cat_options = category_select_options()
+    cat_labels = [lbl for _, lbl in cat_options]
+    label_to_cat = {lbl: k for k, lbl in cat_options}
 
     c1, c2 = st.columns(2)
     with c1:
@@ -363,7 +364,10 @@ def _render_manage_tab(actor) -> None:
         return
 
     st.markdown(f"**Status:** {rec.status_label}")
-    st.markdown(f"**Key:** `{rec.test_key}` · **Category:** {SAMPLE_CATEGORIES.get(rec.category, rec.category)}")
+    st.markdown(
+        f"**Key:** `{rec.test_key}` · **Category:** "
+        f"{all_sample_categories(include_inactive=True).get(rec.category, rec.category)}"
+    )
     if rec.package_type_label:
         st.markdown(f"**Package type:** {rec.package_type_label}")
     st.markdown(f"**Version:** v{rec.current_version_no}")

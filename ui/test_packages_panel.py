@@ -12,6 +12,7 @@ import streamlit as st
 
 from services.protocols.test_catalog import CATEGORY_FOOD, TEST_CATALOG, list_tests_for_select
 from services.test_packages import (
+    PACKAGE_TYPE_FSSAI,
     PACKAGE_TYPE_LABELS,
     LABEL_TO_PACKAGE_TYPE,
     activate_package,
@@ -92,6 +93,13 @@ def _render_diff_table(diff_rows: list) -> None:
 
 def render_test_packages_panel(actor) -> None:
     """Manage Food test packages and compare versions."""
+    if st.session_state.get("ctr_return_from_packages"):
+        if st.button("← Return to New request", key="pkg_return_to_intake"):
+            st.session_state["reception_mode"] = "New request"
+            st.session_state["_reception_mode_last"] = "New request"
+            st.session_state.pop("ctr_return_from_packages", None)
+            st.rerun()
+
     render_section_title(
         "Test packages (Food)",
         "Reception-only: define the **master test pool** for each product name "
@@ -121,26 +129,34 @@ def _package_select_label(pkg) -> str:
     )
 
 
+def _duplicate_product_names(packages: list) -> set[str]:
+    """Product names with more than one active package (legacy data)."""
+    from collections import Counter
+
+    active_names = [
+        (p.sample_product_name or "").strip().lower()
+        for p in packages
+        if p.is_active and (p.sample_product_name or "").strip()
+    ]
+    counts = Counter(active_names)
+    return {name for name, count in counts.items() if count > 1}
+
+
 def _render_manage_tab(actor, packages: list) -> None:
     render_section_title(
         "Create package",
-        "Product name + legacy test type + with-logo / without-logo lists. "
-        "Put **all** product tests in the union of both lists — reception picks "
-        "a subset at intake.",
+        "One active package per **product name**. Define with-logo and without-logo "
+        "test lists — reception picks a subset at intake.",
     )
-    c1, c2 = st.columns(2)
-    with c1:
-        new_name = st.text_input(
-            "Sample product name *",
-            key="pkg_new_name",
-            placeholder="e.g. Jaggery",
-        )
-    with c2:
-        new_type_label = st.selectbox(
-            "Test type *",
-            options=PACKAGE_TYPE_LABELS,
-            key="pkg_new_type",
-        )
+    new_name = st.text_input(
+        "Sample product name *",
+        key="pkg_new_name",
+        placeholder="e.g. Jaggery",
+    )
+    st.caption(
+        "Test type (FSSAI) is stored for legacy compatibility — intake resolves "
+        "packages by product name only."
+    )
     catalog_options = _catalog_multiselect_options()
     label_options = [lbl for _, lbl in catalog_options]
     new_wl_labels = st.multiselect(
@@ -171,7 +187,7 @@ def _render_manage_tab(actor, packages: list) -> None:
             nwl_keys = _labels_to_keys(new_nwl_labels)
             pkg = create_package(
                 new_name,
-                LABEL_TO_PACKAGE_TYPE[new_type_label],
+                PACKAGE_TYPE_FSSAI,
                 wl_keys,
                 nwl_keys,
                 actor=actor,
@@ -182,6 +198,20 @@ def _render_manage_tab(actor, packages: list) -> None:
                 f"NWL:{len(pkg.test_keys_without_logo)} tests)."
             )
             st.rerun()
+        except ValueError as exc:
+            st.error(str(exc))
+            name_key = (new_name or "").strip().lower()
+            for p in packages:
+                if (
+                    p.is_active
+                    and (p.sample_product_name or "").strip().lower() == name_key
+                ):
+                    st.info(
+                        f"Edit existing package **#{p.id} — {p.sample_product_name}** "
+                        "in the list below."
+                    )
+                    st.session_state["pkg_edit_select"] = _package_select_label(p)
+                    break
         except Exception as exc:  # noqa: BLE001
             st.error(str(exc))
 
@@ -192,6 +222,15 @@ def _render_manage_tab(actor, packages: list) -> None:
         st.info("No packages yet. Create one above.")
         return
 
+    dup_names = _duplicate_product_names(packages)
+    if dup_names:
+        st.warning(
+            "Duplicate active packages detected for: "
+            + ", ".join(sorted(dup_names))
+            + ". Deactivate extras — only one active package per product name is allowed. "
+            "Run `scripts/migrate_dedupe_packages.sql` if needed."
+        )
+
     list_rows = [
         {
             "ID": p.id,
@@ -201,6 +240,12 @@ def _render_manage_tab(actor, packages: list) -> None:
             "WL": len(p.test_keys_with_logo),
             "NWL": len(p.test_keys_without_logo),
             "Active": "Yes" if p.is_active else "No",
+            "Dup?": (
+                "Yes"
+                if p.is_active
+                and (p.sample_product_name or "").strip().lower() in dup_names
+                else ""
+            ),
         }
         for p in packages
     ]

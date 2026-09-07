@@ -41,6 +41,49 @@ def _filled_df() -> pd.DataFrame:
     )
 
 
+class TestSampleEditorDfForRender:
+    def test_merges_pending_batch_and_qty_edits(self, session_state):
+        session_state[ui_components._SAMPLE_EDITOR_LIVE_KEY] = pd.DataFrame(
+            ui_components._default_sample_rows()
+        )
+        session_state[ui_components._SAMPLE_EDITOR_WIDGET_KEY] = {
+            "edited_rows": {
+                0: {"Code/batch no.": "002", "Sample qty.": "100 gm"},
+            },
+            "added_rows": [],
+            "deleted_rows": [],
+        }
+        out = ui_components._sample_editor_df_for_render()
+        assert out.iloc[0]["Code/batch no."] == "002"
+        assert out.iloc[0]["Sample qty."] == "100 gm"
+
+
+class TestPersistSampleEditorState:
+    def test_persist_merges_edited_rows_into_live(self, session_state):
+        session_state[ui_components._SAMPLE_EDITOR_KEY] = pd.DataFrame(
+            ui_components._default_sample_rows()
+        )
+        session_state[ui_components._SAMPLE_EDITOR_WIDGET_KEY] = {
+            "edited_rows": {0: {"Name of sample": "Goda Masala", "Sample qty.": "1kg"}},
+            "added_rows": [],
+            "deleted_rows": [],
+        }
+        ui_components.persist_sample_editor_state()
+        live = session_state[ui_components._SAMPLE_EDITOR_LIVE_KEY]
+        assert live.iloc[0]["Name of sample"] == "Goda Masala"
+        assert live.iloc[0]["Sample qty."] == "1kg"
+
+    def test_round_trip_survives_widget_remount(self, session_state):
+        filled = _filled_df()
+        session_state[ui_components._SAMPLE_EDITOR_LIVE_KEY] = filled
+        session_state[ui_components._SAMPLE_EDITOR_KEY] = pd.DataFrame(
+            ui_components._default_sample_rows()
+        )
+        session_state.pop(ui_components._SAMPLE_EDITOR_WIDGET_KEY, None)
+        out = ui_components._current_sample_editor_df()
+        assert out.iloc[0]["Name of sample"] == "Jaggery"
+
+
 class TestCurrentSampleEditorDf:
     def test_prefers_live_dataframe_over_empty_stored(self, session_state):
         session_state[ui_components._SAMPLE_EDITOR_KEY] = pd.DataFrame(

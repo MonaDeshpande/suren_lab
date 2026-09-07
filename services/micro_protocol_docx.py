@@ -13,6 +13,7 @@ from typing import Optional
 
 from docx import Document
 
+from services.document_templates import MICRO_PROTOCOL_PATH
 from services.docx_layout import finalize_docx_document
 from services.catalog_specs import get_spec
 from services.micro_report_catalog import MICRO_END_OF_REPORT, spec_for_key
@@ -20,8 +21,7 @@ from services.protocol_store import ProtocolHeader, TestResultRow
 from services.protocols.test_catalog import MICRO_TEST_KEYS
 from services.samples import SampleRecord
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
-MICRO_PROTOCOL_TEMPLATE = PROJECT_ROOT / "reference" / "Micro Protocol.docx"
+MICRO_PROTOCOL_TEMPLATE = MICRO_PROTOCOL_PATH
 
 
 def suggest_micro_protocol_filename(sample: SampleRecord) -> str:

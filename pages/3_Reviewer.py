@@ -3,7 +3,7 @@ pages/3_Reviewer.py
 -------------------
 Reviewer workspace:
 
-1. Find sample (lab code / sample / client) within 10-day window
+1. Find sample (lab code / sample / client) within 50-day window
 2. Review Reception intake data
 3. Review Analyst protocol header + test results
 4. Preview final report fields → Generate Final Report PDF
@@ -36,6 +36,7 @@ from services.protocols.test_catalog import (  # noqa: E402
     normalize_category,
 )
 from services.samples import (  # noqa: E402
+    SAMPLE_RETENTION_DAYS,
     REPORT_FORMAT_BOTH,
     REPORT_FORMAT_WITH_LOGO,
     SampleRecord,
@@ -53,13 +54,14 @@ from services.samples import (  # noqa: E402
 )
 from services.report_settings import (  # noqa: E402
     default_authorized_signatory,
-    default_checked_by,
     load_report_settings,
     signatory_names,
+    signatory_role,
 )
 from services.test_report_micro_docx import MicroReportFillOptions  # noqa: E402
 from services.test_report_pdf import (  # noqa: E402
     build_test_report_data,
+    default_checked_by_analysts,
     generate_final_report,
     suggest_test_report_filename,
 )
@@ -183,7 +185,7 @@ def main() -> None:
                 s.sample_code for s in search_hits
             ]
             if not search_hits:
-                st.info("No matching samples in the 10-day window.")
+                st.info(f"No matching samples in the {SAMPLE_RETENTION_DAYS}-day window.")
 
     if "reviewer_search_hits" in st.session_state and not search_hits:
         codes = st.session_state.get("reviewer_search_hits") or []
@@ -358,6 +360,24 @@ def main() -> None:
     report_settings = load_report_settings()
     signatory_options = signatory_names(report_settings) or [""]
 
+    def _render_signatory_pickers() -> None:
+        analyst_checked = default_checked_by_analysts(selected)
+        s1, s2 = st.columns(2)
+        with s1:
+            st.selectbox(
+                "Authorized signatory",
+                options=signatory_options,
+                key=auth_key,
+            )
+        with s2:
+            st.text_input(
+                "Checked by (assigned analyst)",
+                value=analyst_checked,
+                disabled=True,
+                help="Filled from the analyst assigned at reception. Each analyst signs on the printed report.",
+            )
+            st.session_state[checked_key] = analyst_checked
+
     if is_water:
         if st.session_state.get(fields_key) != selected.sample_code:
             st.session_state[fields_key] = selected.sample_code
@@ -375,6 +395,8 @@ def main() -> None:
             st.session_state[customer_sid_key] = (
                 (selected.parameters or "").strip() or "Drinking Water"
             )
+            st.session_state[auth_key] = default_authorized_signatory(report_settings)
+            st.session_state[checked_key] = default_checked_by_analysts(selected)
             st.session_state[spec_key] = pd.DataFrame(build_water_report_limit_rows(selected, results))
 
         p1, p2 = st.columns(2)
@@ -428,6 +450,7 @@ def main() -> None:
             "Microbiological results are taken from the water micro protocol "
             "observations (Present / Absent)."
         )
+        _render_signatory_pickers()
     elif is_micro:
         if st.session_state.get(fields_key) != selected.sample_code:
             st.session_state[fields_key] = selected.sample_code
@@ -439,6 +462,8 @@ def main() -> None:
             st.session_state[customer_sid_key] = (selected.parameters or "").strip() or (
                 selected.sample_name or ""
             )
+            st.session_state[auth_key] = default_authorized_signatory(report_settings)
+            st.session_state[checked_key] = default_checked_by_analysts(selected)
             by_key = {r.test_key: r for r in results}
             keys = micro_report_keys_ordered(set(selected.selected_test_keys()) or set(by_key))
             st.session_state[spec_key] = pd.DataFrame(
@@ -493,6 +518,7 @@ def main() -> None:
             "Name of Test, Limits, and Method of Analysis are fixed for all Micro samples. "
             "Only Results come from the analyst."
         )
+        _render_signatory_pickers()
     else:
         preview = build_test_report_data(selected, header, results)
         if st.session_state.get(fields_key) != selected.sample_code:
@@ -507,7 +533,7 @@ def main() -> None:
                 "Laboratory sampling" if selected.sampling_by_lab else "--"
             )
             st.session_state[auth_key] = default_authorized_signatory(report_settings)
-            st.session_state[checked_key] = default_checked_by(report_settings)
+            st.session_state[checked_key] = default_checked_by_analysts(selected)
             st.session_state[remark_key] = report_settings.default_remark_text
             st.session_state[disclaimer_key] = "\n".join(
                 report_settings.disclaimer_bullets
@@ -560,14 +586,14 @@ def main() -> None:
                 key=auth_key,
             )
         with s2:
-            checked_opts = [""] + [n for n in signatory_options if n]
-            if st.session_state.get(checked_key) not in checked_opts:
-                checked_opts.append(st.session_state.get(checked_key, ""))
-            st.selectbox(
-                "Checked by",
-                options=checked_opts,
-                key=checked_key,
+            analyst_checked = default_checked_by_analysts(selected)
+            st.text_input(
+                "Checked by (assigned analyst)",
+                value=analyst_checked,
+                disabled=True,
+                help="Filled from the analyst assigned at reception.",
             )
+            st.session_state[checked_key] = analyst_checked
         st.text_area(
             "Remark (optional override)",
             key=remark_key,
@@ -626,6 +652,13 @@ def main() -> None:
 
             water_opts = None
             micro_opts = None
+            auth_name = st.session_state.get(auth_key, "")
+            check_name = (
+                st.session_state.get(checked_key, "")
+                or default_checked_by_analysts(selected)
+            )
+            auth_role = signatory_role(auth_name, report_settings)
+            check_role = "Analyst" if check_name else "Quality Manager"
             if is_water:
                 water_opts = WaterReportFillOptions(
                     ulr_no=st.session_state.get(ulr_key, ""),
@@ -638,6 +671,10 @@ def main() -> None:
                     limit_overrides=limit_overrides,
                     generated_by=gen_by,
                     generated_at=gen_at,
+                    authorized_signatory=auth_name,
+                    checked_by=check_name,
+                    authorized_signatory_role=auth_role,
+                    checked_by_role=check_role,
                 )
             elif is_micro:
                 micro_opts = MicroReportFillOptions(
@@ -647,6 +684,10 @@ def main() -> None:
                     sample_appearance=st.session_state.get(appearance_key, ""),
                     generated_by=gen_by,
                     generated_at=gen_at,
+                    authorized_signatory=auth_name,
+                    checked_by=check_name,
+                    authorized_signatory_role=auth_role,
+                    checked_by_role=check_role,
                 )
 
             output = generate_final_report(
@@ -683,16 +724,8 @@ def main() -> None:
                     if not is_water and not is_micro
                     else None
                 ),
-                authorized_signatory=(
-                    st.session_state.get(auth_key, "")
-                    if not is_water and not is_micro
-                    else None
-                ),
-                checked_by=(
-                    st.session_state.get(checked_key, "")
-                    if not is_water and not is_micro
-                    else None
-                ),
+                authorized_signatory=auth_name or None,
+                checked_by=check_name or None,
                 remark_text=(
                     st.session_state.get(remark_key, "")
                     if not is_water and not is_micro
