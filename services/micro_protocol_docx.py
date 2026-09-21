@@ -16,7 +16,8 @@ from docx import Document
 from services.document_templates import MICRO_PROTOCOL_PATH
 from services.docx_layout import finalize_docx_document
 from services.catalog_specs import get_spec
-from services.micro_report_catalog import MICRO_END_OF_REPORT, spec_for_key
+from services.micro_report_catalog import spec_for_key
+from services.protocol_docx import append_protocol_disclaimer
 from services.protocol_store import ProtocolHeader, TestResultRow
 from services.protocols.test_catalog import MICRO_TEST_KEYS
 from services.samples import SampleRecord
@@ -36,11 +37,8 @@ def _fmt_date(d: Optional[date]) -> str:
 
 
 def _set_cell(cell, text: str) -> None:
-    if not cell.paragraphs:
-        cell.add_paragraph()
-    cell.paragraphs[0].text = text or ""
-    for para in cell.paragraphs[1:]:
-        para.text = ""
+    """Replace cell content; use cell.text so template runs do not leave stray digits."""
+    cell.text = text or ""
 
 
 def _result_display(result: Optional[TestResultRow]) -> str:
@@ -105,13 +103,20 @@ def fill_micro_protocol_docx_bytes(
         spec = spec_for_key(key)
         db_spec = get_spec(key)
         name = db_spec.test_name if db_spec else spec.name
-        method = db_spec.method_of_analysis if db_spec else spec.method
+        saved = by_key.get(key)
+        if saved and (saved.method or "").strip():
+            method = saved.method.strip()
+        elif db_spec and db_spec.method_of_analysis:
+            method = db_spec.method_of_analysis
+        else:
+            method = spec.method
         row = t2.rows[row_idx]
         _set_cell(row.cells[0], str(index + 1))
         _set_cell(row.cells[1], name)
         _set_cell(row.cells[2], _result_display(by_key.get(key)))
         _set_cell(row.cells[3], method)
 
+    append_protocol_disclaimer(doc, header)
     finalize_docx_document(doc, set_qsf=False)
 
     buf = io.BytesIO()

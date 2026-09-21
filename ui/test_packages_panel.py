@@ -93,20 +93,11 @@ def _render_diff_table(diff_rows: list) -> None:
 
 def render_test_packages_panel(actor) -> None:
     """Manage Food test packages and compare versions."""
-    if st.session_state.get("ctr_return_from_packages"):
-        if st.button("← Return to New request", key="pkg_return_to_intake"):
-            st.session_state["reception_mode"] = "New request"
-            st.session_state["_reception_mode_last"] = "New request"
-            st.session_state.pop("ctr_return_from_packages", None)
-            st.rerun()
-
     render_section_title(
-        "Test packages (Food)",
-        "Reception-only: define the **master test pool** for each product name "
-        "(e.g. Jaggery). The union of with-logo and without-logo lists is the "
-        "maximum set reception can pick from at intake. **Test type** "
-        "(FSSAI / Basic / Detailed) is legacy/admin-only — intake resolves by "
-        "product name only (one active package per product).",
+        "Sample registration — test packages (Food)",
+        "Define the **master test pool** for each product name "
+        "(e.g. Paneer, Jaggery, Masala). The union of with-logo and without-logo "
+        "lists is the maximum set reception can pick from at intake.",
     )
 
     packages = list_packages(active_only=False)

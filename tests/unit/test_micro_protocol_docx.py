@@ -111,6 +111,8 @@ class TestMicroProtocolDocx:
         t2 = doc.tables[2]
         assert t2.rows[2].cells[0].text.strip() == "1"
         assert "Total Plate Count" in t2.rows[2].cells[1].text
-        assert "3.0 x 10³ cfu/gm" in t2.rows[2].cells[2].text
+        result_cell = t2.rows[2].cells[2].text
+        assert "3.0 x 10" in result_cell and "cfu/gm" in result_cell
+        assert "Absent" not in result_cell
         assert "IS:5402:2018" in t2.rows[2].cells[3].text
         assert "Absent cfu/25g" in t2.rows[4].cells[2].text

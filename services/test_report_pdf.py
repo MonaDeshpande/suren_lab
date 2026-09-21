@@ -24,6 +24,7 @@ from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import mm
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
+from reportlab.pdfgen import canvas as rl_canvas
 from reportlab.platypus import (
     Image as RLImage,
     PageBreak,
@@ -42,8 +43,13 @@ from services.branding import (
     ORGANIZATION_NAME,
     TEST_REPORT_LETTERHEAD_PT,
 )
-from services.protocol_store import ProtocolHeader, TestResultRow
+from services.protocol_store import (
+    ProtocolHeader,
+    TestResultRow,
+    format_analysis_date_range,
+)
 from services.protocols.test_catalog import (
+    CATEGORY_FOOD,
     CATEGORY_MICRO,
     CATEGORY_WATER,
     PROTOCOL_FAMILY_JAGGERY,
@@ -65,6 +71,7 @@ from services.samples import (
     SampleRecord,
     default_report_with_logo,
     default_test_report_no,
+    format_report_footer_metadata,
     logo_test_keys,
     no_logo_test_keys,
     normalize_report_format,
@@ -78,6 +85,12 @@ BORDER = colors.black
 FONT = "Helvetica"
 FONT_BOLD = "Helvetica-Bold"
 _FONTS_REGISTERED = False
+
+# Layout constants (A4 portrait, reference Test Report Format)
+PAGE_MARGIN = 15 * mm
+FOOTER_BASELINE_Y = 10 * mm
+METADATA_COL_FRACS = (0.20, 0.30, 0.20, 0.30)
+RESULTS_COL_FRACS = (0.05, 0.35, 0.15, 0.25, 0.20)
 
 
 def _register_report_fonts() -> None:
@@ -152,6 +165,14 @@ WATER_SPECS_HEADER = "Specifications (as applicable)"
 NUTRITION_SPECS_HEADER = "Specifications (as applicable)"
 
 DEFAULT_TESTS_PROCESSED = "As per customer request"
+
+def format_disclaimer_footer_text(bullets: list[str] | None) -> str:
+    """Compact disclaimer string for per-page report footers."""
+    parts = [str(b).strip() for b in (bullets or []) if str(b).strip()]
+    if not parts:
+        parts = list(DISCLAIMER_BULLETS)
+    return "  |  ".join(parts)
+
 
 DISCLAIMER_BULLETS = [
     "Sample submitted by the customer in their own container.",
@@ -280,6 +301,20 @@ def _report_keys(
     return chem_keys
 
 
+def _default_report_customer_sample_id(sample: SampleRecord, cat: str) -> str:
+    from services.reviewer_report_defaults import default_customer_sample_id_for_report
+
+    if cat == CATEGORY_FOOD:
+        return default_customer_sample_id_for_report(sample)
+    return (sample.parameters or "").strip() or (sample.sample_name or "")
+
+
+def _default_report_lab_code(sample: SampleRecord) -> str:
+    from services.reviewer_report_defaults import default_lab_code_for_report
+
+    return default_lab_code_for_report(sample)
+
+
 def default_checked_by_analysts(sample: SampleRecord) -> str:
     """Full name(s) of assigned analyst(s) for the final report Checked by block."""
     cat = normalize_category(sample.category)
@@ -316,6 +351,10 @@ def build_test_report_data(
     checked_by: str | None = None,
     remark_text: str | None = None,
     disclaimer_bullets: list[str] | None = None,
+    customer_name_address: str | None = None,
+    customer_sample_id: str | None = None,
+    batch_no: str | None = None,
+    lab_code: str | None = None,
 ) -> TestReportData:
     """Collate client + protocol into Test Report fields."""
     results_by_key = {r.test_key: r for r in results}
@@ -327,10 +366,13 @@ def build_test_report_data(
         sample,
     )
 
-    name_addr_parts = [sample.customer_name or ""]
-    if (sample.customer_address or "").strip():
-        name_addr_parts.append(sample.customer_address.strip())
-    name_address = "\n".join(p for p in name_addr_parts if p)
+    if customer_name_address is not None:
+        name_address = customer_name_address.strip()
+    else:
+        name_addr_parts = [sample.customer_name or ""]
+        if (sample.customer_address or "").strip():
+            name_addr_parts.append(sample.customer_address.strip())
+        name_address = "\n".join(p for p in name_addr_parts if p)
 
     if sample.sampling_by_lab is True:
         sampling_done = "Laboratory"
@@ -422,15 +464,32 @@ def build_test_report_data(
         final_remark = settings.default_remark_text or remark
     else:
         final_remark = remark
+    if customer_sample_id is not None:
+        sid = customer_sample_id.strip()
+    else:
+        sid = _default_report_customer_sample_id(sample, cat)
+    if batch_no is not None:
+        batch = batch_no.strip()
+    else:
+        batch = sample.batch_code or ""
+    if lab_code is not None:
+        lab = lab_code.strip()
+    else:
+        lab = _default_report_lab_code(sample)
+
     return TestReportData(
         customer_name_address=name_address,
-        customer_sample_id=(sample.parameters or "").strip() or (sample.sample_name or ""),
-        batch_no=sample.batch_code or "",
-        lab_code=sample.sample_code or sample.lab_code or "",
+        customer_sample_id=sid,
+        batch_no=batch,
+        lab_code=lab,
         date_of_sample_receipt=_fmt_date(header.sample_received_on),
         sample_name=sample.sample_name or "",
         sample_drawn_by=sampling_done,
-        test_performance_date=_fmt_date(header.date_of_analysis),
+        test_performance_date=format_analysis_date_range(
+            header.date_of_analysis_from,
+            header.date_of_analysis_to,
+            legacy_single=header.date_of_analysis,
+        ),
         condition_of_sample=(
             condition_of_sample if condition_of_sample is not None else ""
         ),
@@ -492,6 +551,16 @@ def generate_test_report_pdf_bytes(
     tests_processed: str | None = None,
     specification_by_test_name: dict[str, str] | None = None,
     ulr_no: str | None = None,
+    location_of_sampling: str | None = None,
+    sampling_method: str | None = None,
+    authorized_signatory: str | None = None,
+    checked_by: str | None = None,
+    remark_text: str | None = None,
+    disclaimer_bullets: list[str] | None = None,
+    customer_name_address: str | None = None,
+    customer_sample_id: str | None = None,
+    batch_no: str | None = None,
+    lab_code: str | None = None,
 ) -> bytes:
     """Build the filled Test Report PDF bytes."""
     report_kwargs = {
@@ -502,6 +571,16 @@ def generate_test_report_pdf_bytes(
         "tests_processed": tests_processed,
         "specification_by_test_name": specification_by_test_name,
         "ulr_no": ulr_no,
+        "location_of_sampling": location_of_sampling,
+        "sampling_method": sampling_method,
+        "authorized_signatory": authorized_signatory,
+        "checked_by": checked_by,
+        "remark_text": remark_text,
+        "disclaimer_bullets": disclaimer_bullets,
+        "customer_name_address": customer_name_address,
+        "customer_sample_id": customer_sample_id,
+        "batch_no": batch_no,
+        "lab_code": lab_code,
     }
     fmt = normalize_report_format(sample.report_format)
     if fmt == REPORT_FORMAT_BOTH:
@@ -575,19 +654,34 @@ def _render_pdf_sections(sections: list[tuple[TestReportData, bool]]) -> bytes:
     if len(sections) == 1:
         return _render_pdf(sections[0][0], include_logo=sections[0][1])
     buffer = io.BytesIO()
-    page_w, page_h = A4
-    left = 18 * mm
-    right = 18 * mm
+    page_w, _page_h = A4
+    left = right = PAGE_MARGIN
     usable = page_w - left - right
+
+    def footer_drawer(canvas, page: int, total: int) -> None:
+        section_idx = min(page - 1, len(sections) - 1)
+        data, include_logo = sections[section_idx]
+        _draw_report_pdf_footer(
+            canvas,
+            data,
+            page,
+            total,
+            include_logo=include_logo,
+            page_w=page_w,
+            left=left,
+            right=right,
+        )
+
     doc = SimpleDocTemplate(
         buffer,
         pagesize=A4,
         leftMargin=left,
         rightMargin=right,
-        topMargin=8 * mm,
-        bottomMargin=12 * mm,
+        topMargin=PAGE_MARGIN,
+        bottomMargin=PAGE_MARGIN,
         title="Test Report",
         author=ORGANIZATION_NAME,
+        canvasmaker=_make_numbered_canvas_class(footer_drawer),
     )
     styles = _report_styles()
     story: list = []
@@ -596,19 +690,7 @@ def _render_pdf_sections(sections: list[tuple[TestReportData, bool]]) -> bytes:
             story.append(PageBreak())
         story.extend(_build_report_story(data, styles, usable, include_logo))
 
-    def _footer(canvas, _doc):
-        canvas.saveState()
-        canvas.setFont(FONT, 8)
-        n = canvas.getPageNumber()
-        include_logo = sections[min(n - 1, len(sections) - 1)][1]
-        canvas.drawRightString(
-            page_w - right,
-            8 * mm,
-            report_page_label(with_logo=include_logo),
-        )
-        canvas.restoreState()
-
-    doc.build(story, onFirstPage=_footer, onLaterPages=_footer)
+    doc.build(story)
     return buffer.getvalue()
 
 
@@ -717,6 +799,65 @@ def _report_styles() -> dict:
     }
 
 
+def metadata_col_widths(usable: float) -> list[float]:
+    """Four-column metadata grid: label/value pairs at 20/30/20/30%."""
+    return [usable * frac for frac in METADATA_COL_FRACS]
+
+
+def results_col_widths(usable: float) -> list[float]:
+    """Five-column results table: Sr/Name/Result/Specs/Method."""
+    return [usable * frac for frac in RESULTS_COL_FRACS]
+
+
+def _make_numbered_canvas_class(footer_drawer):
+    """Two-pass canvas so every page can show ``page X of Y``."""
+
+    class NumberedCanvas(rl_canvas.Canvas):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self._saved_page_states: list[dict] = []
+
+        def showPage(self):
+            self._saved_page_states.append(dict(self.__dict__))
+            self._startPage()
+
+        def save(self):
+            total = len(self._saved_page_states)
+            for page_num, state in enumerate(self._saved_page_states, 1):
+                self.__dict__.update(state)
+                footer_drawer(self, page_num, total)
+                super().showPage()
+            super().save()
+
+    return NumberedCanvas
+
+
+def _draw_report_pdf_footer(
+    canvas,
+    data: TestReportData,
+    page: int,
+    total: int,
+    *,
+    include_logo: bool,
+    page_w: float,
+    left: float,
+    right: float,
+) -> None:
+    """Draw disclaimer, footer metadata (left), and page label (right) on each page."""
+    canvas.saveState()
+    disclaimer = format_disclaimer_footer_text(data.disclaimer_bullets)
+    if disclaimer:
+        canvas.setFont(FONT, 7)
+        canvas.drawString(left, FOOTER_BASELINE_Y + 4 * mm, disclaimer[:240])
+    canvas.setFont(FONT, 8)
+    meta = format_report_footer_metadata(data.generated_by, data.generated_at)
+    if meta:
+        canvas.drawString(left, FOOTER_BASELINE_Y, meta)
+    page_line = report_page_label(with_logo=include_logo, page=page, total=total)
+    canvas.drawRightString(page_w - right, FOOTER_BASELINE_Y, page_line)
+    canvas.restoreState()
+
+
 def _build_report_story(
     data: TestReportData,
     styles: dict,
@@ -803,8 +944,7 @@ def _build_report_story(
     story.append(Spacer(1, 4))
 
     # ----- Sample / customer info (label | value | label | value) -----
-    lw = usable * 0.22
-    vw = usable * 0.28
+    lw, vw, lw2, vw2 = metadata_col_widths(usable)
 
     def _pair(l1: str, v1: str, l2: str, v2: str) -> list:
         return [
@@ -871,7 +1011,7 @@ def _build_report_story(
         ),
     ]
 
-    info_tbl = Table(info_rows, colWidths=[lw, vw, lw, vw])
+    info_tbl = Table(info_rows, colWidths=[lw, vw, lw2, vw2])
     info_tbl.setStyle(
         TableStyle(
             [
@@ -891,12 +1031,8 @@ def _build_report_story(
     story.append(Spacer(1, 8))
     story.append(Paragraph("CHEMICAL TEST REPORT", section_style))
 
-    # ----- Results table -----
-    col_sr = 12 * mm
-    col_name = usable * 0.28
-    col_result = usable * 0.12
-    col_spec = usable * 0.28
-    col_method = usable - col_sr - col_name - col_result - col_spec
+    # ----- Results table (5/35/15/25/20%) -----
+    col_sr, col_name, col_result, col_spec, col_method = results_col_widths(usable)
 
     result_header = [
         _p("Sr. No", th_style),
@@ -917,11 +1053,11 @@ def _build_report_story(
             ]
         )
 
-    # Remark as final merged row (empty Sr. No; text starts in Name of Test column)
+    # Remark as final merged row spanning all five columns
     body.append(
         [
-            _p("", td_style),
             _remark_paragraph(data.remark_text, remark_style),
+            _p("", td_style),
             _p("", td_style),
             _p("", td_style),
             _p("", td_style),
@@ -941,7 +1077,7 @@ def _build_report_story(
                 ("INNERGRID", (0, 0), (-1, last - 1), 0.5, BORDER),
                 ("LINEBELOW", (0, last - 1), (-1, last - 1), 0.5, BORDER),
                 ("BOX", (0, last), (-1, last), 1, BORDER),
-                ("SPAN", (1, last), (-1, last)),
+                ("SPAN", (0, last), (-1, last)),
                 ("VALIGN", (0, 0), (-1, -1), "TOP"),
                 ("BACKGROUND", (0, 0), (-1, 0), colors.Color(0.95, 0.95, 0.95)),
                 ("LEFTPADDING", (0, 0), (-1, -1), 3),
@@ -957,21 +1093,16 @@ def _build_report_story(
     # ----- Signature block -----
     auth = (data.authorized_signatory or "xxx").strip()
     checked = (data.checked_by or "").strip()
-    auth_role = (data.authorized_signatory_role or "Director").strip()
-    checked_role = (data.checked_by_role or "Quality Manager").strip()
     sign_left = (
         f"{auth}<br/>"
-        f"{auth_role}<br/>"
-        "Authorized signatory<br/>"
-        f"For, {LAB_SHORT_NAME}"
+        "Director<br/>"
+        "Authorized signatory"
     )
     sign_right = (
-        f"{checked}<br/>"
-        f"{checked_role}<br/>"
-        "Authorized Signatory<br/>"
-        f"For {LAB_SHORT_NAME}"
+        f"Checked by: {checked}<br/>"
+        f"For, {ORGANIZATION_NAME}"
         if checked
-        else "Checked by:"
+        else f"For, {ORGANIZATION_NAME}"
     )
     sign_tbl = Table(
         [
@@ -995,13 +1126,6 @@ def _build_report_story(
     story.append(sign_tbl)
     story.append(Spacer(1, 12))
 
-    # ----- Disclaimer -----
-    story.append(_p("Disclaimer", label_style))
-    bullets = data.disclaimer_bullets or DISCLAIMER_BULLETS
-    for bullet in bullets:
-        story.append(_p(f"• {bullet}", small))
-    story.append(Spacer(1, 10))
-
     story.append(Paragraph("End of Report", end_style))
     return story
 
@@ -1009,33 +1133,35 @@ def _build_report_story(
 def _render_pdf(data: TestReportData, *, include_logo: bool = True) -> bytes:
     buffer = io.BytesIO()
     page_w, _page_h = A4
-    left = 18 * mm
-    right = 18 * mm
+    left = right = PAGE_MARGIN
     usable = page_w - left - right
+
+    def footer_drawer(canvas, page: int, total: int) -> None:
+        _draw_report_pdf_footer(
+            canvas,
+            data,
+            page,
+            total,
+            include_logo=include_logo,
+            page_w=page_w,
+            left=left,
+            right=right,
+        )
+
     doc = SimpleDocTemplate(
         buffer,
         pagesize=A4,
         leftMargin=left,
         rightMargin=right,
-        topMargin=8 * mm,
-        bottomMargin=12 * mm,
+        topMargin=PAGE_MARGIN,
+        bottomMargin=PAGE_MARGIN,
         title="Test Report",
         author=ORGANIZATION_NAME,
+        canvasmaker=_make_numbered_canvas_class(footer_drawer),
     )
     styles = _report_styles()
     story = _build_report_story(data, styles, usable, include_logo)
-
-    def _footer(canvas, _doc):
-        canvas.saveState()
-        canvas.setFont(FONT, 8)
-        canvas.drawRightString(
-            page_w - right,
-            8 * mm,
-            report_page_label(with_logo=include_logo),
-        )
-        canvas.restoreState()
-
-    doc.build(story, onFirstPage=_footer, onLaterPages=_footer)
+    doc.build(story)
     return buffer.getvalue()
 
 
@@ -1071,6 +1197,10 @@ def generate_final_report(
     checked_by: str | None = None,
     remark_text: str | None = None,
     disclaimer_bullets: list[str] | None = None,
+    customer_name_address: str | None = None,
+    customer_sample_id: str | None = None,
+    batch_no: str | None = None,
+    lab_code: str | None = None,
 ) -> FinalReportOutput:
     """
     Route final report generation by sample category.
@@ -1163,6 +1293,10 @@ def generate_final_report(
         checked_by=checked_by,
         remark_text=remark_text,
         disclaimer_bullets=disclaimer_bullets,
+        customer_name_address=customer_name_address,
+        customer_sample_id=customer_sample_id,
+        batch_no=batch_no,
+        lab_code=lab_code,
     )
     pdf_name = suggest_test_report_filename(sample)
     return FinalReportOutput(
@@ -1178,6 +1312,16 @@ def generate_final_report(
             tests_processed=tests_processed,
             specification_by_test_name=specification_by_test_name,
             ulr_no=ulr_no,
+            location_of_sampling=location_of_sampling,
+            sampling_method=sampling_method,
+            authorized_signatory=authorized_signatory,
+            checked_by=checked_by,
+            remark_text=remark_text,
+            disclaimer_bullets=disclaimer_bullets,
+            customer_name_address=customer_name_address,
+            customer_sample_id=customer_sample_id,
+            batch_no=batch_no,
+            lab_code=lab_code,
         ),
         docx_filename=suggest_food_test_report_docx_filename(sample),
         pdf_filename=pdf_name,

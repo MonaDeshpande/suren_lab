@@ -17,7 +17,7 @@ from typing import Optional
 import json
 
 from db.connection import get_db
-from services.audit import actor_display_name, log_from_user
+from services.audit import actor_display_name, document_actor_display_name, log_from_user
 from services.customers import Customer, get_customer_by_id, upsert_customer, gst_ready_for_lookup
 from services.samples import (
     REPORT_FORMAT_BOTH,
@@ -89,9 +89,18 @@ class SampleRow:
     package_type: Optional[str] = None
     parameters_select: str = ""  # UI selectbox value (FSSAI / Other / …); not stored in DB
 
+    # Per-sample test request details (override request-level when set)
+    storage_temperature: str = ""
+    sampling_by_lab: Optional[bool] = None
+    decision_rule: Optional[bool] = None
+    service_type: str = ""
+    delivery_mode: str = ""
+    test_method_spec: str = ""
+
     # Sample verification checklist (per sample, printed on last CTR page(s))
     verify_review_date: Optional[date] = None
     verify_lab_code: str = ""
+    verify_sample_code: str = ""
     verify_sample_condition: str = ""
     verify_qty_checked: Optional[bool] = None
     verify_chemical_available: Optional[bool] = None
@@ -140,6 +149,7 @@ def _verification_tuple(sample: SampleRow) -> tuple:
     return (
         sample.verify_review_date,
         (sample.verify_lab_code or "").strip() or None,
+        (sample.verify_sample_code or "").strip() or None,
         (sample.verify_sample_condition or "").strip() or None,
         sample.verify_qty_checked,
         sample.verify_chemical_available,
@@ -149,6 +159,59 @@ def _verification_tuple(sample: SampleRow) -> tuple:
         sample.verify_ready_to_issue,
         sample.verify_conformity_statement,
     )
+
+
+def _sample_request_details_tuple(sample: SampleRow) -> tuple:
+    """DB bind values for per-sample request detail columns."""
+    return (
+        (sample.storage_temperature or "").strip() or None,
+        sample.sampling_by_lab,
+        sample.decision_rule,
+        (sample.service_type or "").strip() or None,
+        (sample.delivery_mode or "").strip() or None,
+        (sample.test_method_spec or "").strip() or None,
+    )
+
+
+def effective_sample_request_details(
+    sample: SampleRow,
+    request: TestRequestData,
+) -> dict[str, object]:
+    """Resolve per-sample CTR fields with request-level fallback."""
+    return {
+        "storage_temperature": (sample.storage_temperature or request.storage_temperature or "").strip(),
+        "sampling_by_lab": (
+            sample.sampling_by_lab
+            if sample.sampling_by_lab is not None
+            else request.sampling_by_lab
+        ),
+        "decision_rule": (
+            sample.decision_rule
+            if sample.decision_rule is not None
+            else request.decision_rule
+        ),
+        "service_type": (sample.service_type or request.service_type or "").strip(),
+        "delivery_mode": (sample.delivery_mode or request.delivery_mode or "").strip(),
+        "test_method_spec": (sample.test_method_spec or request.test_method_spec or "").strip(),
+    }
+
+
+def sync_verify_sample_code(
+    derived_code: str,
+    *,
+    session: dict | None = None,
+    sr_no: int,
+    overwrite: bool = False,
+) -> str:
+    """Auto-fill verification sample code from derived registration code."""
+    key = f"verify_sample_code_{sr_no}"
+    code = (derived_code or "").strip()
+    if session is not None:
+        existing = str(session.get(key) or "").strip()
+        if code and (overwrite or not existing):
+            session[key] = code
+        return str(session.get(key) or code)
+    return code
 
 
 @dataclass
@@ -203,17 +266,33 @@ def storage_temperature_select_value(stored: str | None) -> str:
     return STORAGE_TEMPERATURE_OTHER
 
 
+def format_storage_temperature_celsius(value: str) -> str:
+    """Normalize storage temperature text to include a degree-C symbol when missing."""
+    text = (value or "").strip()
+    if not text:
+        return ""
+    lower = text.lower()
+    if "°c" in lower or lower.endswith(" c"):
+        return text
+    if text.isdigit():
+        return f"{text}\u00B0C"
+    if lower.endswith("c") and len(text) >= 2 and text[-2].isdigit():
+        return f"{text[:-1]}\u00B0C"
+    return f"{text}\u00B0C"
+
+
 def storage_temperature_for_save(
     select_value: str,
     other_text: str | None,
 ) -> str:
-    """Merge selectbox + Other text into the value stored on the request."""
+    """Merge selectbox + Other text into the value stored on the sample/request."""
     choice = (select_value or "").strip()
     if not choice:
         return ""
     if choice == STORAGE_TEMPERATURE_OTHER:
-        return (other_text or "").strip()
-    return choice
+        raw = (other_text or "").strip()
+        return format_storage_temperature_celsius(raw) if raw else ""
+    return format_storage_temperature_celsius(choice)
 
 
 DELIVERY_MODE_OPTIONS = ["Collect", "Courier", "Email/Whatsapp"]
@@ -526,7 +605,7 @@ def _sync_reception_protocol_headers(
             sample.id,
             protocol_no=(sample.protocol_no or "").strip(),
             issued_to=(sample.assigned_analyst_name or "").strip(),
-            issued_by=actor_display_name(actor),
+            issued_by=document_actor_display_name(actor),
             sample_received_on=request_date,
             actor=actor,
         )
@@ -602,7 +681,10 @@ def save_test_request(
             assigned_analyst_id, assigned_micro_analyst_id, protocol_no,
             report_format, tests_with_logo_json,
             tests_without_logo_json, package_id, package_version_no, package_type,
-            verify_review_date, verify_lab_code, verify_sample_condition,
+            storage_temperature, sampling_by_lab, decision_rule,
+            service_type, delivery_mode, test_method_spec,
+            verify_review_date, verify_lab_code, verify_sample_code,
+            verify_sample_condition,
             verify_qty_checked, verify_chemical_available, verify_methods_available,
             verify_methods_informed, verify_tat_informed, verify_ready_to_issue,
             verify_conformity_statement,
@@ -612,7 +694,8 @@ def save_test_request(
             %s, %s, %s, %s, %s, %s,
             %s, %s, %s, %s, 'pending', %s, %s, %s, %s, %s,
             %s, %s, %s, %s,
-            %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+            %s, %s, %s, %s, %s, %s,
+            %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
             NOW() + INTERVAL '50 days'
         )
         RETURNING id, sample_code
@@ -679,12 +762,15 @@ def save_test_request(
                         pkg_id,
                         pkg_ver,
                         pkg_type,
+                        *_sample_request_details_tuple(sample),
                         *_verification_tuple(sample),
                     ),
                 )
                 new_id, returned_code = cur.fetchone()
                 sample.id = new_id
                 sample.sample_code = returned_code
+                if not (sample.verify_sample_code or "").strip():
+                    sample.verify_sample_code = returned_code
                 sample.category = category
                 sample.parameters = parameters_display or ""
                 sample.test_keys = keys
@@ -736,8 +822,15 @@ def get_test_request(request_id: int) -> Optional[TestRequestData]:
                COALESCE(rs.protocol_no, ''),
                rs.assigned_micro_analyst_id,
                COALESCE(um.full_name, um.username, ''),
+               COALESCE(rs.storage_temperature, ''),
+               rs.sampling_by_lab,
+               rs.decision_rule,
+               COALESCE(rs.service_type, ''),
+               COALESCE(rs.delivery_mode, ''),
+               COALESCE(rs.test_method_spec, ''),
                rs.verify_review_date,
                COALESCE(rs.verify_lab_code, ''),
+               COALESCE(rs.verify_sample_code, ''),
                COALESCE(rs.verify_sample_condition, ''),
                rs.verify_qty_checked,
                rs.verify_chemical_available,
@@ -814,16 +907,23 @@ def get_test_request(request_id: int) -> Optional[TestRequestData]:
                 protocol_no=row[19] or "",
                 assigned_micro_analyst_id=row[20],
                 assigned_micro_analyst_name=row[21] or "",
-                verify_review_date=row[22],
-                verify_lab_code=row[23] or "",
-                verify_sample_condition=row[24] or "",
-                verify_qty_checked=row[25],
-                verify_chemical_available=row[26],
-                verify_methods_available=row[27],
-                verify_methods_informed=row[28],
-                verify_tat_informed=row[29],
-                verify_ready_to_issue=row[30],
-                verify_conformity_statement=row[31],
+                storage_temperature=row[22] or "",
+                sampling_by_lab=row[23],
+                decision_rule=row[24],
+                service_type=row[25] or "",
+                delivery_mode=row[26] or "",
+                test_method_spec=row[27] or "",
+                verify_review_date=row[28],
+                verify_lab_code=row[29] or "",
+                verify_sample_code=row[30] or "",
+                verify_sample_condition=row[31] or "",
+                verify_qty_checked=row[32],
+                verify_chemical_available=row[33],
+                verify_methods_available=row[34],
+                verify_methods_informed=row[35],
+                verify_tat_informed=row[36],
+                verify_ready_to_issue=row[37],
+                verify_conformity_statement=row[38],
             )
         )
 
@@ -983,8 +1083,15 @@ def update_test_request(
             package_id = %s,
             package_version_no = %s,
             package_type = %s,
+            storage_temperature = %s,
+            sampling_by_lab = %s,
+            decision_rule = %s,
+            service_type = %s,
+            delivery_mode = %s,
+            test_method_spec = %s,
             verify_review_date = %s,
             verify_lab_code = %s,
+            verify_sample_code = %s,
             verify_sample_condition = %s,
             verify_qty_checked = %s,
             verify_chemical_available = %s,
@@ -1003,7 +1110,10 @@ def update_test_request(
             assigned_analyst_id, assigned_micro_analyst_id, protocol_no,
             report_format, tests_with_logo_json,
             tests_without_logo_json, package_id, package_version_no, package_type,
-            verify_review_date, verify_lab_code, verify_sample_condition,
+            storage_temperature, sampling_by_lab, decision_rule,
+            service_type, delivery_mode, test_method_spec,
+            verify_review_date, verify_lab_code, verify_sample_code,
+            verify_sample_condition,
             verify_qty_checked, verify_chemical_available, verify_methods_available,
             verify_methods_informed, verify_tat_informed, verify_ready_to_issue,
             verify_conformity_statement,
@@ -1013,7 +1123,8 @@ def update_test_request(
             %s, %s, %s, %s, %s, %s,
             %s, %s, %s, %s, 'pending', %s, %s, %s, %s, %s,
             %s, %s, %s, %s,
-            %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+            %s, %s, %s, %s, %s, %s,
+            %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
             NOW() + INTERVAL '50 days'
         )
         RETURNING id, sample_code
@@ -1148,6 +1259,7 @@ def update_test_request(
                             pkg_id,
                             pkg_ver,
                             pkg_type,
+                            *_sample_request_details_tuple(sample),
                             *_verification_tuple(sample),
                             sample.id,
                         ),
@@ -1191,12 +1303,15 @@ def update_test_request(
                             pkg_id,
                             pkg_ver,
                             pkg_type,
+                            *_sample_request_details_tuple(sample),
                             *_verification_tuple(sample),
                         ),
                     )
                     new_id, returned_code = cur.fetchone()
                     sample.id = new_id
                     sample.sample_code = returned_code
+                    if not (sample.verify_sample_code or "").strip():
+                        sample.verify_sample_code = returned_code
                     sample.category = category
                     sample.parameters = parameters_display or ""
                     sample.test_keys = keys

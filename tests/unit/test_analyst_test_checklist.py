@@ -11,9 +11,12 @@ from services.protocols.test_catalog import (
 )
 from services.protocol_docx import unsaved_selected_test_names
 from services.samples import (
+    REPORT_FORMAT_BOTH,
     SampleRecord,
     analyst_test_checklist_rows,
     assigned_test_keys_for_sample,
+    logo_test_keys,
+    no_logo_test_keys,
     worksheet_result_is_saved,
     water_analyst_test_keys,
 )
@@ -39,6 +42,19 @@ def _food_sample(**overrides) -> SampleRecord:
     )
     base.update(overrides)
     return SampleRecord(**base)
+
+
+def _food_both_sample(**overrides) -> SampleRecord:
+    """Food sample with report format Both (split WL / NWL, union in tests_json)."""
+    return _food_sample(
+        report_format=REPORT_FORMAT_BOTH,
+        tests_json=json.dumps(["moisture", "total_ash"]),
+        tests_with_logo_json=json.dumps(["moisture"]),
+        tests_without_logo_json=json.dumps(["total_ash"]),
+        assigned_analyst_id=42,
+        assigned_analyst_name="Chem Analyst",
+        **overrides,
+    )
 
 
 def _water_sample(**overrides) -> SampleRecord:
@@ -125,6 +141,35 @@ class TestAnalystTestChecklistRows:
         assert pending
         assert any("ash" in name.lower() for name in pending)
         assert any("ash" in name.lower() for name in missing)
+
+
+class TestBothReportFormatAnalystVisibility:
+    def test_both_format_selected_test_keys_union(self):
+        sample = _food_both_sample()
+        keys = sample.selected_test_keys()
+        assert "moisture" in keys
+        assert "total_ash" in keys
+        assert len(keys) == 2
+
+    def test_assigned_keys_include_without_logo_for_both(self):
+        sample = _food_both_sample()
+        keys = assigned_test_keys_for_sample(sample)
+        assert "moisture" in keys
+        assert "total_ash" in keys
+
+    def test_checklist_rows_include_without_logo_for_both(self):
+        sample = _food_both_sample()
+        rows = analyst_test_checklist_rows(sample, [])
+        test_names = [row["Test"] for row in rows]
+        assert any("ash" in name.lower() for name in test_names)
+        assert any("moisture" in name.lower() for name in test_names)
+
+    def test_logo_split_does_not_shrink_analyst_keys(self):
+        sample = _food_both_sample()
+        assert logo_test_keys(sample) == {"moisture"}
+        assert no_logo_test_keys(sample) == {"total_ash"}
+        assigned = assigned_test_keys_for_sample(sample)
+        assert len(assigned) == len(logo_test_keys(sample) | no_logo_test_keys(sample))
 
 
 class TestWorksheetResultIsSaved:

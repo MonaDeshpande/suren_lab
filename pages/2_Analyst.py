@@ -36,13 +36,19 @@ from services.protocol_docx import (  # noqa: E402
     unsaved_selected_test_names,
 )
 from services.protocol_pdf import generate_protocol_documents  # noqa: E402
+from services.appearance_master import (  # noqa: E402
+    get_or_create_appearance,
+    list_appearances,
+)
 from services.protocol_store import (  # noqa: E402
     ProtocolHeader,
+    default_protocol_disclaimer_text,
     get_protocol_header,
     get_result_context,
     list_results,
     save_test_result,
     upsert_protocol_header,
+    validate_analysis_date_range,
 )
 from services.protocols.test_catalog import (
     CATEGORY_MICRO,
@@ -59,6 +65,7 @@ from services.protocols.test_catalog import (
     protein_titrant_from,
     PROTEIN_TITRANT_NAOH,
 )  # noqa: E402
+from services.worksheet_inputs import apply_composite_defaults  # noqa: E402
 from services.worksheet_preview import preview_test_calculation  # noqa: E402
 from services.samples import (  # noqa: E402
     SAMPLE_RETENTION_DAYS,
@@ -330,34 +337,93 @@ def main() -> None:
     with h3:
         st.text_input("Sample Issued by", value=issued_by_display, disabled=True)
 
+    _APPEARANCE_OTHER = "Other (custom)"
+    _stored_appearance = (existing.appearance_text if existing else "") or ""
+    _appearance_options = [o.appearance_text for o in list_appearances()]
+    if _stored_appearance and _stored_appearance not in _appearance_options:
+        _appearance_options.append(_stored_appearance)
+    _appearance_select_options = [""] + _appearance_options + [_APPEARANCE_OTHER]
+    if _stored_appearance in _appearance_options:
+        _default_appearance_choice = _stored_appearance
+    elif _stored_appearance:
+        _default_appearance_choice = _APPEARANCE_OTHER
+    else:
+        _default_appearance_choice = ""
+    _default_analysis_from = (
+        (existing.date_of_analysis_from if existing else None)
+        or (existing.date_of_analysis if existing else None)
+        or date.today()
+    )
+    _default_analysis_to = (
+        (existing.date_of_analysis_to if existing else None)
+        or (existing.date_of_analysis if existing else None)
+        or _default_analysis_from
+    )
+    _default_disclaimer = (
+        (existing.protocol_disclaimer_text if existing else "")
+        or default_protocol_disclaimer_text()
+    )
+
     with st.form("protocol_header_form"):
-        analysis = st.date_input(
-            "Date of Analysis",
-            value=(existing.date_of_analysis if existing else None) or date.today(),
+        analysis_from = st.date_input(
+            "Analysis Date From",
+            value=_default_analysis_from,
         )
-        appearance = st.text_area(
+        analysis_to = st.date_input(
+            "Analysis Date To",
+            value=_default_analysis_to,
+        )
+        appearance_choice = st.selectbox(
             "Appearance",
-            value=(existing.appearance_text if existing else "") or "",
-            height=80,
-            help="Also saved when you run the Appearance catalog test.",
+            options=_appearance_select_options,
+            index=(
+                _appearance_select_options.index(_default_appearance_choice)
+                if _default_appearance_choice in _appearance_select_options
+                else 0
+            ),
+            help="Pick from master list or enter a custom value.",
+        )
+        custom_appearance = ""
+        if appearance_choice == _APPEARANCE_OTHER:
+            custom_appearance = st.text_input(
+                "Custom appearance",
+                value=_stored_appearance if _default_appearance_choice == _APPEARANCE_OTHER else "",
+            )
+        protocol_disclaimer = st.text_area(
+            "Protocol disclaimer",
+            value=_default_disclaimer,
+            height=180,
+            help="Editable disclaimer printed below the protocol tables.",
         )
         save_hdr = st.form_submit_button("Save analysis date & appearance", type="primary")
 
     if save_hdr:
-        hdr = existing or ProtocolHeader(sample_id=selected.id)
-        upsert_protocol_header(
-            ProtocolHeader(
-                sample_id=selected.id,
-                protocol_no=hdr.protocol_no or getattr(selected, "protocol_no", ""),
-                issued_to=hdr.issued_to or selected.assigned_analyst_name,
-                issued_by=hdr.issued_by,
-                sample_received_on=received_on,
-                date_of_analysis=analysis,
-                appearance_text=appearance,
-            ),
-            actor=actor,
-        )
-        st.success("Analysis date and appearance saved.")
+        range_errors = validate_analysis_date_range(analysis_from, analysis_to)
+        if range_errors:
+            for msg in range_errors:
+                st.error(msg)
+        else:
+            if appearance_choice == _APPEARANCE_OTHER:
+                appearance_text = get_or_create_appearance(custom_appearance).appearance_text
+            else:
+                appearance_text = appearance_choice
+            hdr = existing or ProtocolHeader(sample_id=selected.id)
+            upsert_protocol_header(
+                ProtocolHeader(
+                    sample_id=selected.id,
+                    protocol_no=hdr.protocol_no or getattr(selected, "protocol_no", ""),
+                    issued_to=hdr.issued_to or selected.assigned_analyst_name,
+                    issued_by=hdr.issued_by,
+                    sample_received_on=received_on,
+                    date_of_analysis=analysis_from,
+                    date_of_analysis_from=analysis_from,
+                    date_of_analysis_to=analysis_to,
+                    appearance_text=appearance_text,
+                    protocol_disclaimer_text=protocol_disclaimer,
+                ),
+                actor=actor,
+            )
+            st.success("Analysis date, appearance, and disclaimer saved.")
 
     # ----- Assigned tests -----
     cat = normalize_category(selected.category)
@@ -474,10 +540,22 @@ def main() -> None:
         default_value = prior_inputs.get("result_value") or (
             prior_row.result_value if prior_row else ""
         )
+        default_method = ""
+        if prior_row and (prior_row.method or "").strip():
+            default_method = prior_row.method.strip()
+        elif cat_spec and cat_spec.method_of_analysis:
+            default_method = cat_spec.method_of_analysis
+        else:
+            default_method = micro_spec.method
 
         with st.form("micro_result_form"):
             st.markdown(f"#### {test.name}")
             micro_inputs: dict = {}
+            micro_inputs["method_override"] = st.text_input(
+                "Method of Analysis",
+                value=default_method,
+                key=f"micro_method_{choice}",
+            )
             micro_inputs["result_value"] = st.text_input(
                 "Result",
                 value=str(default_value or ""),
@@ -543,6 +621,12 @@ def main() -> None:
                 if choice == "bn_protein"
                 else ""
             )
+            draft_inputs = dict(prior_inputs)
+            for field in test.inputs:
+                session_key = f"in_{choice}_{field.key}"
+                if session_key in st.session_state:
+                    draft_inputs[field.key] = st.session_state[session_key]
+            draft_inputs = apply_composite_defaults(choice, draft_inputs)
             for field in test.inputs:
                 if field.key == "moisture_pct":
                     continue
@@ -550,7 +634,7 @@ def main() -> None:
                     active_key = protein_normality_key(protein_titrant_from({"titrant": protein_titrant}))
                     if field.key != active_key:
                         continue
-                default = prior_inputs.get(field.key, "")
+                default = draft_inputs.get(field.key, "")
                 if (
                     field.key == "procedure"
                     and choice in WATER_MICRO_TEST_KEYS
@@ -711,11 +795,13 @@ def main() -> None:
                     generated_by=gen_by,
                     generated_at=gen_at,
                 )
-                st.session_state["proto_docx_bytes"] = docx_bytes
-                st.session_state["proto_docx_name"] = docx_name
-                st.session_state["proto_pdf_bytes"] = pdf_bytes
-                st.session_state["proto_pdf_name"] = pdf_name
-                st.session_state["proto_pdf_error"] = pdf_error
+                proto_key = (selected.sample_code or "").strip() or str(selected.id)
+                st.session_state[f"proto_docx_bytes_{proto_key}"] = docx_bytes
+                st.session_state[f"proto_docx_name_{proto_key}"] = docx_name
+                st.session_state[f"proto_pdf_bytes_{proto_key}"] = pdf_bytes
+                st.session_state[f"proto_pdf_name_{proto_key}"] = pdf_name
+                st.session_state[f"proto_pdf_error_{proto_key}"] = pdf_error
+                st.session_state["proto_active_code"] = proto_key
                 log_from_user(
                     actor,
                     "report.protocol",
@@ -732,7 +818,8 @@ def main() -> None:
             except Exception as exc:  # noqa: BLE001
                 st.error(str(exc))
 
-    if st.session_state.get("proto_docx_bytes"):
+    proto_key = (selected.sample_code or "").strip() or str(selected.id)
+    if st.session_state.get(f"proto_docx_bytes_{proto_key}"):
         default_name = (
             suggest_micro_protocol_filename(selected)
             if is_micro
@@ -742,22 +829,26 @@ def main() -> None:
         with dl1:
             st.download_button(
                 "Download Word protocol (.docx)",
-                data=st.session_state["proto_docx_bytes"],
-                file_name=st.session_state.get("proto_docx_name", default_name),
+                data=st.session_state[f"proto_docx_bytes_{proto_key}"],
+                file_name=st.session_state.get(
+                    f"proto_docx_name_{proto_key}", default_name
+                ),
                 mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
                 use_container_width=True,
             )
         with dl2:
-            if st.session_state.get("proto_pdf_bytes"):
+            if st.session_state.get(f"proto_pdf_bytes_{proto_key}"):
                 st.download_button(
                     "Download PDF protocol",
-                    data=st.session_state["proto_pdf_bytes"],
-                    file_name=st.session_state.get("proto_pdf_name", "protocol.pdf"),
+                    data=st.session_state[f"proto_pdf_bytes_{proto_key}"],
+                    file_name=st.session_state.get(
+                        f"proto_pdf_name_{proto_key}", "protocol.pdf"
+                    ),
                     mime="application/pdf",
                     use_container_width=True,
                 )
             else:
-                pdf_error = st.session_state.get("proto_pdf_error")
+                pdf_error = st.session_state.get(f"proto_pdf_error_{proto_key}")
                 if pdf_error:
                     st.warning(f"PDF not available: {pdf_error}")
                 else:

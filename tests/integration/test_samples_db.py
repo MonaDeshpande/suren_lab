@@ -122,7 +122,7 @@ def test_save_request_status_and_lookup(require_db, clean_customer_gst, qa_analy
     assert saved.request_id is not None
     assert len(saved.samples) == 1
     code = saved.samples[0].sample_code
-    assert code == "LAB-QA-1"
+    assert code == "LAB-QA-1/01"
 
     rec = get_by_code(code)
     assert rec is not None
@@ -167,7 +167,6 @@ def test_expired_sample_hidden_and_purged(require_db, clean_customer_gst, qa_ana
                 sr_no=1,
                 sample_name="Expire Me",
                 test_keys=["moisture"],
-                sample_code="SLS-990201-9002",
                 assigned_analyst_id=analyst_a.id,
                 protocol_no="P-EXP-1",
             )
@@ -175,7 +174,7 @@ def test_expired_sample_hidden_and_purged(require_db, clean_customer_gst, qa_ana
     )
     saved = save_test_request(data, actor=None)
     code = saved.samples[0].sample_code
-    assert code == "SLS-990201-9002"
+    assert code == "LAB-QA-EXP/01"
 
     past = datetime.now(timezone.utc) - timedelta(days=1)
     with get_db() as conn:

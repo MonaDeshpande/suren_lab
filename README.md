@@ -179,7 +179,17 @@ the same service layer as the app:
 
 **Offline fallback** (no database): `python scripts/generate_e2e_downloads.py --offline`
 
-Integration test: `pytest -m integration tests/integration/test_e2e_app_flow.py`
+Demo E2E pytest (not run by `run_tests.bat`): `pytest -m e2e tests/integration/test_e2e_app_flow.py`
+
+Routine test run: `run_tests.bat` runs the full suite **except** `-m e2e` demo flows.
+
+**Dummy CTR + protocol previews (unique GST, auto DB cleanup):** requires PostgreSQL.
+Included in `run_tests.bat` when Postgres is up. Writes files under
+`tests/output_preview/integration/` for visual review:
+
+```bash
+pytest tests/integration/test_dummy_document_generation.py -v -s
+```
 
 ## Analyst protocol (shared 11-test library)
 

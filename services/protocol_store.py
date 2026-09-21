@@ -25,6 +25,32 @@ from services.protocols.test_catalog import (
     missing_required_inputs,
 )
 
+PROTOCOL_DISCLAIMER_BULLETS: list[str] = [
+    "Sample submitted by the customer in their own container.",
+    "Above analysis result is valid only for specific sample as stated above, "
+    "without any bias to its source.",
+    "We claim no responsibility for changes made in the report after dispatch. "
+    "e.g. Use of whitener or eraser.",
+    "Sample stored for one Week and test Report for one year from the date received.",
+    "Duplicate copies of Report or Invoice will be charged extra.",
+]
+
+
+def default_protocol_disclaimer_text() -> str:
+    """Default multi-line protocol disclaimer for Analyst editing."""
+    lines = ["Disclaimer:"]
+    for index, bullet in enumerate(PROTOCOL_DISCLAIMER_BULLETS, start=1):
+        lines.append(f"{index}. {bullet}")
+    return "\n".join(lines)
+
+
+def format_protocol_disclaimer_paragraphs(text: str | None) -> list[str]:
+    """Split stored disclaimer into non-empty lines for DOCX rendering."""
+    raw = (text or "").strip()
+    if not raw:
+        raw = default_protocol_disclaimer_text()
+    return [line.strip() for line in raw.splitlines() if line.strip()]
+
 
 @dataclass
 class ProtocolHeader:
@@ -34,7 +60,46 @@ class ProtocolHeader:
     issued_by: str = ""
     sample_received_on: Optional[date] = None
     date_of_analysis: Optional[date] = None
+    date_of_analysis_from: Optional[date] = None
+    date_of_analysis_to: Optional[date] = None
     appearance_text: str = ""
+    protocol_disclaimer_text: str = ""
+
+
+def _fmt_analysis_date(d: Optional[date]) -> str:
+    if d is None:
+        return ""
+    return d.strftime("%d/%m/%Y")
+
+
+def format_analysis_date_range(
+    date_from: Optional[date],
+    date_to: Optional[date],
+    *,
+    legacy_single: Optional[date] = None,
+) -> str:
+    """Render analysis dates as DD/MM/YYYY or DD/MM/YYYY to DD/MM/YYYY."""
+    start = date_from or legacy_single
+    end = date_to or legacy_single or start
+    if start is None and end is None:
+        return ""
+    if start is None:
+        return _fmt_analysis_date(end)
+    if end is None or start == end:
+        return _fmt_analysis_date(start)
+    return f"{_fmt_analysis_date(start)} to {_fmt_analysis_date(end)}"
+
+
+def validate_analysis_date_range(
+    date_from: Optional[date],
+    date_to: Optional[date],
+) -> list[str]:
+    """Return validation errors when analysis end precedes start."""
+    if date_from is None or date_to is None:
+        return []
+    if date_to < date_from:
+        return ["Analysis Date To must be on or after Analysis Date From."]
+    return []
 
 
 @dataclass
@@ -75,26 +140,43 @@ def sync_reception_protocol_header(
             else (existing.sample_received_on if existing else None)
         ),
         date_of_analysis=existing.date_of_analysis if existing else None,
+        date_of_analysis_from=(
+            existing.date_of_analysis_from if existing else None
+        ),
+        date_of_analysis_to=(
+            existing.date_of_analysis_to if existing else None
+        ),
         appearance_text=(existing.appearance_text if existing else "") or "",
+        protocol_disclaimer_text=(
+            existing.protocol_disclaimer_text if existing else ""
+        ),
     )
     upsert_protocol_header(header, actor=actor)
 
 
 def upsert_protocol_header(header: ProtocolHeader, actor=None) -> None:
     """Insert or update the 2-row protocol header + appearance for a sample."""
+    analysis_from = header.date_of_analysis_from or header.date_of_analysis
+    analysis_to = header.date_of_analysis_to or header.date_of_analysis or analysis_from
+    legacy_single = analysis_from if analysis_from == analysis_to else header.date_of_analysis
     sql = """
         INSERT INTO sample_protocols (
             sample_id, protocol_no, issued_to, issued_by,
-            sample_received_on, date_of_analysis, appearance_text, updated_at
+            sample_received_on, date_of_analysis,
+            date_of_analysis_from, date_of_analysis_to,
+            appearance_text, protocol_disclaimer_text, updated_at
         )
-        VALUES (%s, %s, %s, %s, %s, %s, %s, NOW())
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
         ON CONFLICT (sample_id) DO UPDATE SET
             protocol_no = EXCLUDED.protocol_no,
             issued_to = EXCLUDED.issued_to,
             issued_by = EXCLUDED.issued_by,
             sample_received_on = EXCLUDED.sample_received_on,
             date_of_analysis = EXCLUDED.date_of_analysis,
+            date_of_analysis_from = EXCLUDED.date_of_analysis_from,
+            date_of_analysis_to = EXCLUDED.date_of_analysis_to,
             appearance_text = EXCLUDED.appearance_text,
+            protocol_disclaimer_text = EXCLUDED.protocol_disclaimer_text,
             updated_at = NOW()
     """
     with get_db() as conn:
@@ -107,8 +189,11 @@ def upsert_protocol_header(header: ProtocolHeader, actor=None) -> None:
                     (header.issued_to or "").strip() or None,
                     (header.issued_by or "").strip() or None,
                     header.sample_received_on,
-                    header.date_of_analysis,
+                    legacy_single or analysis_from,
+                    analysis_from,
+                    analysis_to,
                     (header.appearance_text or "").strip() or None,
+                    (header.protocol_disclaimer_text or "").strip() or None,
                 ),
             )
     log_from_user(
@@ -124,7 +209,9 @@ def get_protocol_header(sample_id: int) -> Optional[ProtocolHeader]:
     sql = """
         SELECT sample_id, COALESCE(protocol_no,''), COALESCE(issued_to,''),
                COALESCE(issued_by,''), sample_received_on, date_of_analysis,
-               COALESCE(appearance_text,'')
+               date_of_analysis_from, date_of_analysis_to,
+               COALESCE(appearance_text,''),
+               COALESCE(protocol_disclaimer_text,'')
           FROM sample_protocols
          WHERE sample_id = %s AND is_active = TRUE
     """
@@ -141,7 +228,10 @@ def get_protocol_header(sample_id: int) -> Optional[ProtocolHeader]:
         issued_by=row[3],
         sample_received_on=row[4],
         date_of_analysis=row[5],
-        appearance_text=row[6],
+        date_of_analysis_from=row[6],
+        date_of_analysis_to=row[7],
+        appearance_text=row[8],
+        protocol_disclaimer_text=row[9] or "",
     )
 
 
@@ -263,7 +353,13 @@ def save_test_result(
             unit = entered_unit
         elif spec is not None and spec.default_unit:
             unit = spec.default_unit
-        method_override = spec.method_of_analysis if spec else test.method
+        entered_method = str(form_inputs.get("method_override") or "").strip()
+        if entered_method:
+            method_override = entered_method
+        elif spec is not None and spec.method_of_analysis:
+            method_override = spec.method_of_analysis
+        else:
+            method_override = test.method
     else:
         method_override = test.method
         try:

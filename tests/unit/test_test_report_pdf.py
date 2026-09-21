@@ -2,20 +2,29 @@
 
 from __future__ import annotations
 
+import io
 import json
 from datetime import date
 
 from services.protocol_store import ProtocolHeader, TestResultRow
 from services.samples import SampleRecord
+from pypdf import PdfReader
+
 from services.test_report_pdf import (
     DEFAULT_TESTS_PROCESSED,
+    DISCLAIMER_BULLETS,
+    METADATA_COL_FRACS,
     NUTRITION_REMARK_TEXT,
     NUTRITION_SPECS_HEADER,
     REMARK_TEXT,
+    RESULTS_COL_FRACS,
     SPECS_HEADER,
     build_test_report_data,
     default_checked_by_analysts,
+    format_disclaimer_footer_text,
     generate_test_report_pdf_bytes,
+    metadata_col_widths,
+    results_col_widths,
 )
 
 
@@ -194,6 +203,66 @@ def test_build_test_report_data_pads_results_under_ten():
         [high],
     )
     assert data_high.rows[0].result == "12.34 %"
+
+
+def test_layout_column_proportions():
+    usable = 180.0
+    meta = metadata_col_widths(usable)
+    assert len(meta) == 4
+    assert meta == [usable * f for f in METADATA_COL_FRACS]
+    results = results_col_widths(usable)
+    assert len(results) == 5
+    assert results == [usable * f for f in RESULTS_COL_FRACS]
+    assert abs(sum(results) - usable) < 0.01
+
+
+def test_build_test_report_data_stores_footer_metadata():
+    data = build_test_report_data(
+        _sample(),
+        _header(),
+        [_moisture_result()],
+        generated_by="Reviewer User",
+        generated_at="09/09/2026 14:30",
+    )
+    assert data.generated_by == "Reviewer User"
+    assert "09/09/2026 14:30" in data.generated_at
+
+
+def test_pdf_generates_with_dynamic_page_count():
+    pdf = generate_test_report_pdf_bytes(
+        _sample(),
+        _header(),
+        [_moisture_result()],
+        generated_by="Reviewer User",
+        generated_at="09/09/2026 14:30",
+    )
+    assert pdf.startswith(b"%PDF")
+    reader = PdfReader(io.BytesIO(pdf))
+    assert len(reader.pages) >= 1
+
+
+def test_format_disclaimer_footer_text_joins_bullets():
+    text = format_disclaimer_footer_text(DISCLAIMER_BULLETS[:2])
+    assert DISCLAIMER_BULLETS[0] in text
+    assert DISCLAIMER_BULLETS[1] in text
+
+
+def test_pdf_body_omits_disclaimer_bullets_footer_carries_text():
+    data = build_test_report_data(
+        _sample(),
+        _header(),
+        [_moisture_result()],
+    )
+    footer_text = format_disclaimer_footer_text(data.disclaimer_bullets)
+    assert DISCLAIMER_BULLETS[0] in footer_text
+    pdf = generate_test_report_pdf_bytes(
+        _sample(),
+        _header(),
+        [_moisture_result()],
+    )
+    body = PdfReader(io.BytesIO(pdf)).pages[0].extract_text() or ""
+    assert "End of Report" in body
+    assert "We claim no responsibility" not in body
 
 
 def test_both_format_report_numbers_and_footers():

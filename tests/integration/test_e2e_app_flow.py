@@ -1,7 +1,11 @@
 """
-Integration test for service-layer E2E (Reception -> Analyst -> Reviewer).
+Demo full-flow integration (Reception -> Analyst -> Reviewer) with fixed scenarios.
 
-Run: pytest -m integration tests/integration/test_e2e_app_flow.py
+Marked ``e2e`` — excluded from ``run_tests.bat``. Run on demand:
+
+  pytest -m e2e tests/integration/test_e2e_app_flow.py
+
+Or use ``run_e2e_demo.bat`` for document bundle output.
 """
 
 from __future__ import annotations
@@ -29,7 +33,7 @@ from services.samples import get_by_code
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 
-pytestmark = pytest.mark.integration
+pytestmark = [pytest.mark.integration, pytest.mark.e2e]
 
 
 @pytest.fixture

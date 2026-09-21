@@ -8,6 +8,7 @@ from io import BytesIO
 from pypdf import PdfReader
 
 from services.customers import Customer
+from services.protocols.test_catalog import WATER_TEST_KEYS, WATER_MICRO_TEST_KEYS
 from services.pdf_generator import (
     FOOTER_RIGHT_TEXT,
     _ctr_footer_left,
@@ -69,10 +70,36 @@ class TestCtrPdfGenerator:
         pdf = _generate_ctr_pdf(_ctr_request())
         text = _pdf_text(pdf)
         assert "Email:" in text
+
+    def test_ctr_yes_no_single_brackets_only(self):
+        pdf = _generate_ctr_pdf(_ctr_request())
+        text = _pdf_text(pdf)
+        assert "[[ " not in text and "[[" not in text.replace("[✓]", "")
+        assert "Yes" in text and "[✓]" in text
+
+    def test_ctr_water_tests_use_caco3_ascii(self):
+        keys = list(WATER_TEST_KEYS) + list(WATER_MICRO_TEST_KEYS)
+        data = _ctr_request(
+            samples=[
+                SampleRow(
+                    sr_no=1,
+                    sample_name="Potable Water",
+                    batch_code="---",
+                    quantity="1 lit",
+                    parameters="Drinking Water",
+                    category="water",
+                    test_keys=keys,
+                    **sample_verification_kwargs(verify_lab_code="LAB/CTR/26/001"),
+                ),
+            ],
+        )
+        text = _pdf_text(_generate_ctr_pdf(data))
+        assert "CaCO3" in text
+        assert "\u2083" not in text
         assert "ravi@example.com" in text
         assert "Receiver's Sign & date" in text
         assert "Sample Description & tests to be performed:" in text
-        assert "sauce" in text
+        assert "Potable Water" in text
         assert "Sample Verification Checklist" in text
         assert "Checked for Sample Quantity" in text
 
@@ -80,27 +107,26 @@ class TestCtrPdfGenerator:
         data = _ctr_request()
         data.delivery_mode = "Collect, Courier"
         text = _pdf_text(_generate_ctr_pdf(data))
-        assert "Collect [X]" in text
-        assert "Courier [X]" in text
+        assert "Collect [✓]" in text
+        assert "Courier [✓]" in text
         assert "Email/Whatsapp [ ]" in text
 
-    def test_ctr_pdf_one_sample_has_three_pages(self):
+    def test_ctr_pdf_one_sample_has_two_pages(self):
         pdf = _generate_ctr_pdf(_ctr_request())
         reader = PdfReader(BytesIO(pdf))
-        assert len(reader.pages) == 3
+        assert len(reader.pages) == 2
 
-    def test_sample_table_on_page_two_only(self):
+    def test_checklist_and_sample_on_same_page(self):
         pdf = _generate_ctr_pdf(_ctr_request())
         reader = PdfReader(BytesIO(pdf))
         page1 = reader.pages[0].extract_text() or ""
         page2 = reader.pages[1].extract_text() or ""
-        page3 = reader.pages[2].extract_text() or ""
         assert "Sample Description" not in page1
+        assert "Sample Verification Checklist" in page2
         assert "Sample Description & tests to be performed:" in page2
         assert "sauce" in page2
         assert "Tests to be performed:" in page2
         assert "Moisture" in page2
-        assert "Sample Verification Checklist" in page3
 
     def test_ctr_footer_has_reception_and_review(self):
         left = _ctr_footer_left("Priya Reception", "30/07/2026 15:00", date(2026, 7, 30))
@@ -140,7 +166,7 @@ class TestCtrPdfGenerator:
             ]
         )
         reader = PdfReader(BytesIO(_generate_ctr_pdf(req)))
-        assert len(reader.pages) == 5
+        assert len(reader.pages) == 3
         page2 = reader.pages[1].extract_text() or ""
         page3 = reader.pages[2].extract_text() or ""
         assert "sauce" in page2

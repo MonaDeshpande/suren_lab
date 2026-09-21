@@ -36,7 +36,13 @@ from services.document_templates import (
     PROTOCOL_LETTERHEAD_LOGO_PATH,
     WATER_PROTOCOL_PATH,
 )
-from services.protocol_store import ProtocolHeader, TestResultRow
+from services.protocol_store import (
+    ProtocolHeader,
+    TestResultRow,
+    format_analysis_date_range,
+    format_protocol_disclaimer_paragraphs,
+)
+from services.samples import REPORT_FORMAT_WITHOUT_LOGO, SampleRecord, normalize_report_format
 from services.input_store import primary_inputs, recalc_inputs
 from services.number_format import (
     format_final_number,
@@ -58,7 +64,6 @@ from services.protocols.test_catalog import (
     uses_nutrition_template,
 )
 from services.test_packages import is_nutrition_package_type, normalize_package_type
-from services.samples import SampleRecord
 
 JAGGERY_TEMPLATE_PATH = JAGGERY_PROTOCOL_PATH
 WATER_TEMPLATE_PATH = WATER_PROTOCOL_PATH
@@ -374,6 +379,14 @@ def _worksheet_readings_for(
     if _uses_nutrition_protocol(sample):
         return NUTRITION_WORKSHEET_READINGS
     return WORKSHEET_READINGS
+
+
+def _analysis_date_display(header: ProtocolHeader) -> str:
+    return format_analysis_date_range(
+        header.date_of_analysis_from,
+        header.date_of_analysis_to,
+        legacy_single=header.date_of_analysis,
+    )
 
 
 def _fmt_date(d: Optional[date]) -> str:
@@ -1252,6 +1265,44 @@ def _protocol_issued_to(sample: SampleRecord, header: ProtocolHeader) -> str:
     return strip_analyst_label_suffix(header.issued_to or "")
 
 
+def _protocol_issued_by_display(issued_by: str | None) -> str:
+    """Issuer name for printed protocol; omit audit fallback 'system'."""
+    name = (issued_by or "").strip()
+    if name.lower() == "system":
+        return ""
+    return name
+
+
+def _fill_water_issued_by_cell(cell, issuer: str | None) -> None:
+    """Preserve template label in merged 'Sample Issued by' cell; append issuer below."""
+    existing = _cell_text(cell)
+    base = existing.strip() if existing.strip() else "Sample Issued by"
+    if "sample issued" not in base.lower():
+        base = "Sample Issued by"
+    name = _protocol_issued_by_display(issuer)
+    if name:
+        _set_cell(cell, f"{base.rstrip()}\n{name}")
+    else:
+        _set_cell(cell, base.rstrip())
+
+
+def _water_sample_includes_micro(sample: SampleRecord) -> bool:
+    from services.protocols.test_catalog import WATER_MICRO_TEST_KEYS
+
+    selected = set(sample.selected_test_keys())
+    return bool(selected & set(WATER_MICRO_TEST_KEYS))
+
+
+def _remove_orphan_page_break_paragraphs(doc: Document) -> None:
+    """Drop empty paragraphs that only force a page break (common after table prune)."""
+    body = doc.element.body
+    for child in list(body):
+        if child.tag.endswith("p") and _paragraph_is_page_break_only(child):
+            parent = child.getparent()
+            if parent is not None:
+                parent.remove(child)
+
+
 def _computed_result_value(
     test,
     test_key: str,
@@ -1943,7 +1994,7 @@ def _apply_protocol_end_signatures(
         return
 
     analyst = _protocol_issued_to(sample, header)
-    date_str = _fmt_date(header.date_of_analysis)
+    date_str = _analysis_date_display(header)
 
     lines = [
         _two_column_signature_line("Analysed By:", "Checked By:", width),
@@ -2800,7 +2851,7 @@ def _fill_reference_sample_info_table(
             sample.lab_code or sample.sample_code or "",
         )
         _set_cell(table.rows[1].cells[2], "Date of Analysis")
-        _set_cell(table.rows[1].cells[3], _fmt_date(header.date_of_analysis))
+        _set_cell(table.rows[1].cells[3], _analysis_date_display(header))
 
 
 def _remove_body_tables_before_summary(doc: Document) -> None:
@@ -3833,7 +3884,7 @@ def _fill_jaggery_header_and_summary(
                 sample.lab_code or sample.sample_code or "",
             )
             _set_cell(t1.rows[1].cells[2], "Date of Analysis:")
-            _set_cell(t1.rows[1].cells[3], _fmt_date(header.date_of_analysis))
+            _set_cell(t1.rows[1].cells[3], _analysis_date_display(header))
 
     # Table 2 summary rebuilt in fill_protocol_docx_bytes (conducted tests only).
 
@@ -3848,12 +3899,9 @@ def _fill_water_header_and_summary(
         t0 = tables[0]
         if len(t0.rows) >= 1 and len(t0.rows[0].cells) >= 7:
             cells = t0.rows[0].cells
-            _set_cell(cells[0], "Protocol No")
             _set_cell(cells[1], header.protocol_no or "")
-            _set_cell(cells[3], "Sample Issued to")
             _set_cell(cells[4], header.issued_to or "")
-            _set_cell(cells[5], "Sample Issued by")
-            _set_cell(cells[6], header.issued_by or "")
+            _fill_water_issued_by_cell(cells[5], header.issued_by)
         # Row 2/3 (merged): Label|Label|Value|Value|Label|Label|Value|Value
         if len(t0.rows) >= 4 and len(t0.rows[2].cells) >= 8:
             _set_cell(t0.rows[2].cells[0], "Sample Name:")
@@ -3866,7 +3914,7 @@ def _fill_water_header_and_summary(
                 sample.lab_code or sample.sample_code or "",
             )
             _set_cell(t0.rows[3].cells[4], "Date of Analysis:")
-            _set_cell(t0.rows[3].cells[7], _fmt_date(header.date_of_analysis))
+            _set_cell(t0.rows[3].cells[7], _analysis_date_display(header))
 
     # Table 1 summary rebuilt in fill_protocol_docx_bytes (conducted tests only).
 
@@ -3918,7 +3966,7 @@ def _fill_nutrition_header_and_summary(
                 sample.lab_code or sample.sample_code or "",
             )
             _set_cell(t0.rows[3].cells[2], "Date of Analysis")
-            _set_cell(t0.rows[3].cells[3], _fmt_date(header.date_of_analysis))
+            _set_cell(t0.rows[3].cells[3], _analysis_date_display(header))
 
     # Table 1 summary rebuilt in fill_protocol_docx_bytes (conducted tests only).
 
@@ -3941,8 +3989,8 @@ def _append_water_micro_observation_page(
     identity = doc.add_paragraph()
     identity.alignment = WD_ALIGN_PARAGRAPH.LEFT
     run = identity.add_run(
-        f"Lab Code No\t{_cell_text_safe(sample.lab_code or sample.sample_code)}\t"
-        f"Date of Analysis:\t{_fmt_date(header.date_of_analysis)}"
+        f"Lab Code No\t{(sample.lab_code or sample.sample_code or '').strip()}\t"
+        f"Date of Analysis:\t{_analysis_date_display(header)}"
     )
     _apply_run_font(run, *PROTOCOL_HEADER_FONT)
 
@@ -3977,8 +4025,17 @@ def _append_water_micro_observation_page(
         _set_cell(row.cells[3], result)
 
 
-def _cell_text_safe(value: Optional[str]) -> str:
-    return (value or "").strip()
+def append_protocol_disclaimer(doc: Document, header: ProtocolHeader) -> None:
+    """Append analyst-editable disclaimer below the protocol body."""
+    lines = format_protocol_disclaimer_paragraphs(header.protocol_disclaimer_text)
+    if not lines:
+        return
+    doc.add_paragraph("")
+    for line in lines:
+        para = doc.add_paragraph(line)
+        if line.strip().lower().startswith("disclaimer"):
+            for run in para.runs:
+                run.bold = True
 
 
 def fill_protocol_docx_bytes(
@@ -4028,6 +4085,7 @@ def fill_protocol_docx_bytes(
 
     if is_water:
         _prune_worksheet_tables(doc, WATER_PRUNE_BLOCKS, conducted)
+        _remove_orphan_page_break_paragraphs(doc)
     elif is_nutrition:
         _prune_worksheet_tables(doc, NUTRITION_PRUNE_BLOCKS, conducted)
     else:
@@ -4038,7 +4096,8 @@ def fill_protocol_docx_bytes(
     letterhead_applied = False
     if is_food_house_style:
         _replace_page1_body_with_reference_layout(doc, sample, header)
-        letterhead_applied = _apply_repeating_protocol_header(doc, header)
+        if normalize_report_format(sample.report_format) != REPORT_FORMAT_WITHOUT_LOGO:
+            letterhead_applied = _apply_repeating_protocol_header(doc, header)
         if not letterhead_applied:
             _normalize_food_protocol_section_header_spacing(doc)
     _fill_appearance_worksheet_block(doc, header, by_key)
@@ -4070,8 +4129,9 @@ def fill_protocol_docx_bytes(
         _ensure_blank_line_before_result_table(doc, sample)
         _normalize_protocol_typography(doc, sample)
     _blank_director_approval(doc)
-    if is_water:
+    if is_water and _water_sample_includes_micro(sample):
         _append_water_micro_observation_page(doc, sample, header, by_key)
+    append_protocol_disclaimer(doc, header)
     _remove_trailing_empty_paragraphs(doc)
 
     from services.docx_layout import finalize_docx_document

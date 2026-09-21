@@ -20,6 +20,13 @@ from services.protocols.test_catalog import (  # noqa: E402
     SAMPLE_CATEGORIES,
     TEST_CATALOG,
 )
+from services.exceptions import (  # noqa: E402
+    DomainError,
+    PasswordPolicyError,
+    RoleAssignmentError,
+    UserAlreadyExistsError,
+    UserNotFoundError,
+)
 from services.users import (  # noqa: E402
     create_user,
     list_users,
@@ -113,7 +120,9 @@ def main() -> None:
                 f"**{roles_display(user.roles)}**. "
                 "They must change the temporary password on first login."
             )
-        except ValueError as exc:
+        except UserAlreadyExistsError as exc:
+            st.error(str(exc))
+        except (PasswordPolicyError, RoleAssignmentError, DomainError, ValueError) as exc:
             st.error(str(exc))
         except Exception as exc:  # noqa: BLE001
             st.error(f"Create failed: {exc}")
@@ -181,7 +190,7 @@ def main() -> None:
                     )
                     st.success(f"Roles set to **{roles_display(tuple(new_roles))}**.")
                     st.rerun()
-                except ValueError as exc:
+                except (RoleAssignmentError, UserNotFoundError, DomainError, ValueError) as exc:
                     st.error(str(exc))
 
         with m2:
@@ -192,7 +201,7 @@ def main() -> None:
                         set_active(target.id, False, actor=actor)
                         st.success("User deactivated.")
                         st.rerun()
-                    except ValueError as exc:
+                    except (RoleAssignmentError, UserNotFoundError, DomainError, ValueError) as exc:
                         st.error(str(exc))
             else:
                 if st.button("Activate user", key="admin_btn_act"):
@@ -200,7 +209,7 @@ def main() -> None:
                         set_active(target.id, True, actor=actor)
                         st.success("User activated.")
                         st.rerun()
-                    except ValueError as exc:
+                    except (UserNotFoundError, DomainError, ValueError) as exc:
                         st.error(str(exc))
 
         with m3:
@@ -216,12 +225,16 @@ def main() -> None:
                     st.success(
                         "Password reset. User must change it on next login."
                     )
-                except ValueError as exc:
+                except (PasswordPolicyError, UserNotFoundError, DomainError, ValueError) as exc:
                     st.error(str(exc))
 
-    # ----- Catalog specs (methods & limits) -----
+    # ----- Catalog specs (methods & limits) — database source of truth -----
     st.divider()
-    render_section_title("3. Test catalog (methods & limits)")
+    render_section_title(
+        "3. Test catalog (methods & limits)",
+        "Live methods, limits, and units are stored in the database. "
+        "Reports and analyst worksheets read from here at runtime.",
+    )
     render_catalog_specs_panel(actor)
 
     # ----- Sample categories (e.g. Pharma) -----
@@ -234,11 +247,16 @@ def main() -> None:
     render_section_title("5. Custom formulas")
     render_custom_formulas_panel(actor)
 
-    # ----- Built-in formulas catalog (read-only from code) -----
-    with st.expander("Built-in formula catalog (worksheet definitions)", expanded=False):
+    # ----- Worksheet definitions (code only; optional seed source) -----
+    with st.expander(
+        "Worksheet definitions (code only — formulas & inputs)",
+        expanded=False,
+    ):
         st.caption(
-            "Worksheet formulas and inputs live in `services/protocols/test_catalog.py`. "
-            "Method, limits, and units are edited in section 3 above."
+            "Worksheet formulas and input fields are defined in "
+            "`services/protocols/test_catalog.py` and used for analyst worksheets. "
+            "**Methods, limits, and units** are **not** edited here — use section 3 "
+            "(database). Static catalog rows seed `catalog_test_specs` on first migrate."
         )
         catalog_rows = []
         for test in TEST_CATALOG.values():
@@ -265,33 +283,6 @@ def main() -> None:
             use_container_width=True,
             hide_index=True,
         )
-        for test in TEST_CATALOG.values():
-            with st.expander(f"{test.name} (`{test.key}`)", expanded=False):
-                st.markdown(f"**Method:** {test.method}")
-                st.markdown(f"**Unit:** {test.unit or '—'}")
-                st.markdown(
-                    "**Categories:** "
-                    + ", ".join(
-                        SAMPLE_CATEGORIES.get(c, c) for c in (test.categories or [])
-                    )
-                )
-                st.info(f"**Formula:** {test.formula_display}")
-                if test.inputs:
-                    st.markdown("**Worksheet inputs**")
-                    st.dataframe(
-                        [
-                            {
-                                "Field key": f.key,
-                                "Label": f.label,
-                                "Unit": f.unit or "—",
-                                "Required": "Yes" if f.required else "No",
-                                "Type": f.field_type,
-                            }
-                            for f in test.inputs
-                        ],
-                        use_container_width=True,
-                        hide_index=True,
-                    )
 
     # ----- Audit log -----
     st.divider()

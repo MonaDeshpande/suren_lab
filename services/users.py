@@ -13,6 +13,12 @@ from typing import Optional
 from db.connection import get_db
 from services.audit import log_from_user
 from services.auth import MAX_ROLES_PER_USER, ROLES, hash_password, roles_display
+from services.exceptions import (
+    PasswordPolicyError,
+    RoleAssignmentError,
+    UserAlreadyExistsError,
+    UserNotFoundError,
+)
 
 
 @dataclass
@@ -57,7 +63,7 @@ def validate_roles(roles: list[str]) -> tuple[str, ...]:
             f"A user may have at most {MAX_ROLES_PER_USER} roles."
         )
     if "admin" in normalized and len(normalized) > 1:
-        raise ValueError("Admin role cannot be combined with other roles.")
+        raise RoleAssignmentError("Admin role cannot be combined with other roles.")
     return tuple(sorted(normalized, key=lambda r: ROLES.index(r)))
 
 
@@ -177,7 +183,7 @@ def assert_valid_analyst_assignee(user_id: int) -> None:
         raise ValueError("Assigned analyst account is inactive.")
 
 
-def count_active_admins(exclude_user_id: Optional[int] = None) -> int:
+def _count_active_admins_cur(cur, exclude_user_id: Optional[int] = None) -> int:
     sql = """
         SELECT COUNT(DISTINCT u.id)
           FROM users u
@@ -188,11 +194,15 @@ def count_active_admins(exclude_user_id: Optional[int] = None) -> int:
     if exclude_user_id is not None:
         sql += " AND u.id <> %s"
         params.append(exclude_user_id)
+    cur.execute(sql, params)
+    row = cur.fetchone()
+    return int(row[0]) if row else 0
+
+
+def count_active_admins(exclude_user_id: Optional[int] = None) -> int:
     with get_db() as conn:
         with conn.cursor() as cur:
-            cur.execute(sql, params)
-            row = cur.fetchone()
-    return int(row[0]) if row else 0
+            return _count_active_admins_cur(cur, exclude_user_id)
 
 
 def _replace_user_roles(cur, user_id: int, roles: tuple[str, ...]) -> None:
@@ -229,7 +239,7 @@ def create_user(
     role_tuple = validate_roles(roles)
     pw = temporary_password or ""
     if len(pw) < 6:
-        raise ValueError("Temporary password must be at least 6 characters.")
+        raise PasswordPolicyError("Temporary password must be at least 6 characters.")
 
     sql = """
         INSERT INTO users (
@@ -239,6 +249,7 @@ def create_user(
         RETURNING id, username, COALESCE(full_name, ''),
                   is_active, must_change_password, created_at, updated_at
     """
+    row: tuple | None = None
     try:
         with get_db() as conn:
             with conn.cursor() as cur:
@@ -253,10 +264,11 @@ def create_user(
                 row = cur.fetchone()
                 assert row is not None
                 _replace_user_roles(cur, row[0], role_tuple)
+                conn.commit()
     except Exception as exc:  # noqa: BLE001
         msg = str(exc).lower()
         if "unique" in msg or "duplicate" in msg:
-            raise ValueError(f"Username '{name}' is already taken.") from exc
+            raise UserAlreadyExistsError(f"Username '{name}' is already taken.") from exc
         raise
 
     created = _user_row_from_db(row, role_tuple)
@@ -290,7 +302,7 @@ def set_roles(
             )
             row = cur.fetchone()
             if not row:
-                raise ValueError("User not found.")
+                raise UserNotFoundError("User not found.")
             is_active = bool(row[0])
 
             cur.execute(
@@ -302,25 +314,27 @@ def set_roles(
                 "admin" in current_roles
                 and "admin" not in role_tuple
             )
-            if losing_admin and is_active and count_active_admins(
-                exclude_user_id=user_id
-            ) < 1:
-                raise ValueError(
+            other_admins = _count_active_admins_cur(cur, exclude_user_id=user_id)
+            if losing_admin and is_active and other_admins < 1:
+                raise RoleAssignmentError(
                     "Cannot change roles: this is the last active admin."
                 )
             if (
                 actor_user_id is not None
                 and actor_user_id == user_id
                 and losing_admin
-                and count_active_admins(exclude_user_id=user_id) < 1
+                and other_admins < 1
             ):
-                raise ValueError("Cannot demote yourself: you are the only admin.")
+                raise RoleAssignmentError(
+                    "Cannot demote yourself: you are the only admin."
+                )
 
             _replace_user_roles(cur, user_id, role_tuple)
             cur.execute(
                 "UPDATE users SET updated_at = NOW() WHERE id = %s",
                 (user_id,),
             )
+            conn.commit()
     log_from_user(
         actor,
         "user.set_roles",
@@ -350,15 +364,20 @@ def set_active(user_id: int, is_active: bool, actor=None) -> None:
             )
             row = cur.fetchone()
             if not row:
-                raise ValueError("User not found.")
+                raise UserNotFoundError("User not found.")
             currently_active = bool(row[0])
+            cur.execute(
+                "SELECT 1 FROM user_roles WHERE user_id = %s AND role = 'admin' LIMIT 1",
+                (user_id,),
+            )
+            is_admin = cur.fetchone() is not None
             if (
                 currently_active
                 and not is_active
-                and user_has_role(user_id, "admin")
-                and count_active_admins(exclude_user_id=user_id) < 1
+                and is_admin
+                and _count_active_admins_cur(cur, exclude_user_id=user_id) < 1
             ):
-                raise ValueError(
+                raise RoleAssignmentError(
                     "Cannot deactivate the last active admin."
                 )
             cur.execute(
@@ -369,6 +388,7 @@ def set_active(user_id: int, is_active: bool, actor=None) -> None:
                 """,
                 (is_active, user_id),
             )
+            conn.commit()
     log_from_user(
         actor,
         "user.set_active",
@@ -382,13 +402,13 @@ def reset_password(user_id: int, temporary_password: str, actor=None) -> None:
     """Set a temporary password and force change on next login."""
     pw = temporary_password or ""
     if len(pw) < 6:
-        raise ValueError("Temporary password must be at least 6 characters.")
+        raise PasswordPolicyError("Temporary password must be at least 6 characters.")
 
     with get_db() as conn:
         with conn.cursor() as cur:
             cur.execute("SELECT id FROM users WHERE id = %s", (user_id,))
             if not cur.fetchone():
-                raise ValueError("User not found.")
+                raise UserNotFoundError("User not found.")
             cur.execute(
                 """
                 UPDATE users
@@ -399,6 +419,7 @@ def reset_password(user_id: int, temporary_password: str, actor=None) -> None:
                 """,
                 (hash_password(pw), user_id),
             )
+            conn.commit()
     log_from_user(
         actor,
         "user.reset_password",

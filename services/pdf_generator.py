@@ -86,24 +86,24 @@ SAMPLE_HEADER_HEIGHT = 0.35 * inch
 SAMPLE_ROW_HEIGHT = 0.30 * inch
 
 
+from services.ctr_symbols import bracket_mark, yes_no_option_line
+from services.requests import effective_sample_request_details
+
+
 def _yes_no(value: Optional[bool]) -> str:
-    if value is True:
-        return "Yes  [X]                                   No  [ ]"
-    if value is False:
-        return "Yes  [ ]                                   No  [X]"
-    return "Yes  [ ]                                   No  [ ]"
+    return yes_no_option_line(value)
 
 
 def _service_marks(service_type: str) -> str:
-    urgent = "[X]" if (service_type or "").strip().lower() == "urgent" else "[ ]"
-    regular = "[X]" if (service_type or "").strip().lower() == "regular" else "[ ]"
+    urgent = bracket_mark((service_type or "").strip().lower() == "urgent")
+    regular = bracket_mark((service_type or "").strip().lower() == "regular")
     return f"Urgent  {urgent}          Regular  {regular}"
 
 
 def _delivery_marks(mode: str) -> str:
-    collect = "[X]" if delivery_mode_is_selected(mode, "Collect") else "[ ]"
-    courier = "[X]" if delivery_mode_is_selected(mode, "Courier") else "[ ]"
-    email = "[X]" if delivery_mode_is_selected(mode, "Email/Whatsapp") else "[ ]"
+    collect = bracket_mark(delivery_mode_is_selected(mode, "Collect"))
+    courier = bracket_mark(delivery_mode_is_selected(mode, "Courier"))
+    email = bracket_mark(delivery_mode_is_selected(mode, "Email/Whatsapp"))
     return f"Collect  {collect}      Courier  {courier}      Email/Whatsapp  {email}"
 
 
@@ -209,13 +209,18 @@ def _build_verification_table(
     usable: float,
     th_style: ParagraphStyle,
     td_style: ParagraphStyle,
+    *,
+    storage_temperature: str = "",
 ) -> Table:
     header = [
         _p("Sr No", th_style),
         _p("Particulars", th_style),
         _p("Remark", th_style),
     ]
-    rows = verification_checklist_rows(sample)
+    rows = verification_checklist_rows(
+        sample,
+        storage_temperature=storage_temperature,
+    )
     body = [
         [
             _p(str(row.sr), td_style),
@@ -325,6 +330,10 @@ def _generate_ctr_pdf(
     story: list = []
     usable = 6.5 * inch
     col_w = [usable / 2, usable / 2]
+    filled = [s for s in data.samples if not s.is_empty()]
+    first_details = (
+        effective_sample_request_details(filled[0], data) if filled else {}
+    )
 
     # ----- Page 1: main details table (Word Table 0) -----
     main_data = [
@@ -358,12 +367,12 @@ def _generate_ctr_pdf(
         ],
         [
             _lv("Sampling Done by Laboratory:", "", value),
-            _p(_yes_no(data.sampling_by_lab), value),
+            _p(_yes_no(first_details.get("sampling_by_lab")), value),
         ],
         [
             _lv(
                 "Storage Temperature of sample required:",
-                data.storage_temperature or "",
+                str(first_details.get("storage_temperature") or ""),
                 value,
             ),
             _p("", value),
@@ -371,22 +380,22 @@ def _generate_ctr_pdf(
         [
             _lv_br(
                 "Specific test method/ Specification to be followed:",
-                data.test_method_spec or "",
+                str(first_details.get("test_method_spec") or ""),
                 value,
             ),
             _p("", value),
         ],
         [
             _lv("Decision Rule required:", "", value),
-            _p(_yes_no(data.decision_rule), value),
+            _p(_yes_no(first_details.get("decision_rule")), value),
         ],
         [
             _lv("Service required:", "", value),
-            _p(_service_marks(data.service_type), value),
+            _p(_service_marks(str(first_details.get("service_type") or "")), value),
         ],
         [
             _lv("Mode of report delivery:", "", value),
-            _p(_delivery_marks(data.delivery_mode), value),
+            _p(_delivery_marks(str(first_details.get("delivery_mode") or "")), value),
         ],
         [
             _lv("Payment Details:", "", value),
@@ -435,6 +444,7 @@ def _generate_ctr_pdf(
     )
     story.append(note_table)
     story.append(Spacer(1, 14))
+    story.append(Spacer(1, 28))
 
     sign_table = Table(
         [
@@ -447,18 +457,24 @@ def _generate_ctr_pdf(
     )
     story.append(sign_table)
 
-    filled = [s for s in data.samples if not s.is_empty()]
-
     for index, sample in enumerate(filled, start=1):
+        details = effective_sample_request_details(sample, data)
+        storage_temp = str(details.get("storage_temperature") or "")
         story.append(PageBreak())
+        story.append(Paragraph(CHECKLIST_TITLE, section_style))
+        story.append(
+            _build_verification_table(
+                sample,
+                usable,
+                th_style,
+                td_style,
+                storage_temperature=storage_temp,
+            )
+        )
+        story.append(Spacer(1, 10))
         story.append(Paragraph(SAMPLE_SECTION_HEADING, section_style))
         story.append(_build_one_sample_table(sample, index, usable, th_style, td_style))
         story.extend(_build_tests_block(sample, td_style))
-
-    for sample in filled:
-        story.append(PageBreak())
-        story.append(Paragraph(CHECKLIST_TITLE, section_style))
-        story.append(_build_verification_table(sample, usable, th_style, td_style))
 
     def _on_page(canvas, doc_obj) -> None:
         _draw_footer(canvas, doc_obj, left_text=footer_left)

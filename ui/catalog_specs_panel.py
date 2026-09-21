@@ -34,8 +34,9 @@ def render_catalog_specs_panel(actor) -> None:
     """Edit catalog_test_specs rows (Admin only)."""
     render_section_title(
         "Test catalog — methods & limits",
-        "Built-in Food, Water, and Micro tests. Each save creates a new version; "
-        "the live row is always the latest. Custom formulas are managed separately.",
+        "Database source of truth for built-in Food, Water, and Micro tests. "
+        "Each save creates a new version; the live row is always the latest. "
+        "Custom formulas are managed separately.",
     )
 
     cat_keys = list(SAMPLE_CATEGORIES.keys())

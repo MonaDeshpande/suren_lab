@@ -39,6 +39,10 @@ _MIGRATION_FILES = (
     "migrate_sample_categories.sql",
     "migrate_retention_50_days.sql",
     "migrate_gst_optional.sql",
+    "migrate_appearance_master.sql",
+    "migrate_sample_request_details.sql",
+    "migrate_analysis_date_range.sql",
+    "migrate_protocol_disclaimer.sql",
 )
 
 _applied = False

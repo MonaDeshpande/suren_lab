@@ -41,6 +41,14 @@ def actor_display_name(user: Any) -> str:
     return username or "system"
 
 
+def document_actor_display_name(user: Any) -> str:
+    """Like actor_display_name but never returns 'system' (for printed forms)."""
+    if user is None:
+        return ""
+    name = actor_display_name(user)
+    return "" if name == "system" else name
+
+
 def format_stamp_datetime(when: Optional[datetime] = None) -> str:
     """Format datetime for report footers (Asia/Kolkata)."""
     dt = when or datetime.now(_LAB_TZ)

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from services.requests import (
     STORAGE_TEMPERATURE_OTHER,
+    format_storage_temperature_celsius,
     storage_temperature_for_save,
     storage_temperature_select_value,
 )
@@ -39,5 +40,23 @@ class TestStorageTemperatureForSave:
 
     def test_other_trims_whitespace(self):
         assert storage_temperature_for_save(STORAGE_TEMPERATURE_OTHER, "  Ice  ") == (
-            "Ice"
+            "Ice°C"
         )
+
+
+class TestFormatStorageTemperatureCelsius:
+    def test_numeric_appends_degree_c(self):
+        assert format_storage_temperature_celsius("4") == "4°C"
+
+    def test_existing_degree_c_unchanged(self):
+        assert format_storage_temperature_celsius("2°C to 8°C") == "2°C to 8°C"
+
+    def test_no_duplicate_suffix(self):
+        assert format_storage_temperature_celsius("4°C") == "4°C"
+        assert "°C°C" not in format_storage_temperature_celsius("4°C")
+
+    def test_text_without_unit_gets_suffix(self):
+        assert format_storage_temperature_celsius("Frozen") == "Frozen°C"
+
+    def test_for_save_canonical_option_gets_formatted(self):
+        assert storage_temperature_for_save("4°C", "") == "4°C"

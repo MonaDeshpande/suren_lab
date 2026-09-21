@@ -1,4 +1,4 @@
-"""Unit tests for Reception intake helpers (mode change, package gate)."""
+"""Unit tests for Reception intake helpers (tab change, package gate)."""
 
 from __future__ import annotations
 
@@ -11,8 +11,14 @@ from ui.components import (
     RECEPTION_MODE_EDIT,
     RECEPTION_MODE_NEW,
     RECEPTION_MODE_PACKAGES,
+    RECEPTION_TAB_CUSTOMERS,
+    RECEPTION_TAB_EDIT,
+    RECEPTION_TAB_NEW,
+    RECEPTION_TAB_REGISTRATION,
+    RECEPTION_TABS,
     food_intake_packages_ready,
     handle_reception_mode_change,
+    mark_reception_tab,
     should_clear_ctr_form_on_mode_change,
 )
 
@@ -58,6 +64,34 @@ class TestShouldClearCtrFormOnModeChange:
             is False
         )
 
+    def test_customers_tab_does_not_clear_intake(self):
+        assert (
+            should_clear_ctr_form_on_mode_change(
+                RECEPTION_TAB_NEW, RECEPTION_TAB_CUSTOMERS
+            )
+            is False
+        )
+        assert (
+            should_clear_ctr_form_on_mode_change(
+                RECEPTION_TAB_CUSTOMERS, RECEPTION_TAB_NEW
+            )
+            is False
+        )
+
+
+class TestReceptionTabs:
+    def test_four_tab_labels(self):
+        assert len(RECEPTION_TABS) == 4
+        assert RECEPTION_TAB_REGISTRATION in RECEPTION_TABS
+        assert RECEPTION_TAB_CUSTOMERS in RECEPTION_TABS
+        assert RECEPTION_TAB_NEW in RECEPTION_TABS
+        assert RECEPTION_TAB_EDIT in RECEPTION_TABS
+
+    def test_legacy_mode_aliases_match_tabs(self):
+        assert RECEPTION_MODE_PACKAGES == RECEPTION_TAB_REGISTRATION
+        assert RECEPTION_MODE_NEW == RECEPTION_TAB_NEW
+        assert RECEPTION_MODE_EDIT == RECEPTION_TAB_EDIT
+
 
 class TestHandleReceptionModeChange:
     @pytest.fixture
@@ -91,6 +125,30 @@ class TestHandleReceptionModeChange:
 
         clear_mock.assert_called_once()
         assert state["_reception_mode_last"] == RECEPTION_MODE_EDIT
+
+
+class TestMarkReceptionTab:
+    @pytest.fixture
+    def session_state(self):
+        state = {
+            "_reception_tab_last": RECEPTION_TAB_NEW,
+            "_reception_mode_last": RECEPTION_TAB_NEW,
+        }
+        with patch("ui.components.st") as mock_st:
+            mock_st.session_state = state
+            yield state
+
+    def test_switching_to_customers_preserves_form(self, session_state):
+        with patch("ui.components.clear_ctr_form_state") as clear_mock:
+            mark_reception_tab(RECEPTION_TAB_CUSTOMERS)
+        clear_mock.assert_not_called()
+        assert session_state["reception_tab"] == RECEPTION_TAB_CUSTOMERS
+
+    def test_switching_new_to_edit_clears_form(self, session_state):
+        with patch("ui.components.clear_ctr_form_state") as clear_mock:
+            mark_reception_tab(RECEPTION_TAB_EDIT)
+        clear_mock.assert_called_once()
+        assert session_state["_reception_tab_last"] == RECEPTION_TAB_EDIT
 
 
 class TestFoodIntakePackagesReady:

@@ -30,12 +30,14 @@ from services.ctr_verification import (
     ctr_test_names_for_sample,
     verification_checklist_rows,
 )
+from services.ctr_symbols import bracket_mark, yes_no_option_line
 from services.customers import format_contacts_for_display
 from services.requests import (
     SampleRow,
     TestRequestData,
     ctr_parameters_display,
     delivery_mode_is_selected,
+    effective_sample_request_details,
 )
 from services.document_templates import CTR_TEMPLATE_PATH
 from services.docx_layout import set_ctr_signature_footer
@@ -51,31 +53,23 @@ def _fmt_date(d: Optional[date]) -> str:
 
 
 def _yes_no_cell(value: Optional[bool]) -> str:
-    """
-    Match the Word template Yes/No option cell style.
-
-    Template shows both options with spacing; we mark the selected one.
-    """
-    if value is True:
-        return "Yes  [X]                                   No  [ ]"
-    if value is False:
-        return "Yes  [ ]                                   No  [X]"
-    return "Yes  [ ]                                   No  [ ]"
+    """Match the Word template Yes/No option cell style."""
+    return yes_no_option_line(value)
 
 
 def _service_cell(service_type: str) -> str:
     """Urgent / Regular options as on the Word form."""
     s = (service_type or "").strip().lower()
-    urgent = "[X]" if s == "urgent" else "[ ]"
-    regular = "[X]" if s == "regular" else "[ ]"
+    urgent = bracket_mark(s == "urgent")
+    regular = bracket_mark(s == "regular")
     return f"Urgent\t{urgent}\t\t\tRegular\t{regular}"
 
 
 def _delivery_cell(mode: str) -> str:
     """Collect / Courier / Email/Whatsapp options as on the Word form."""
-    collect = "[X]" if delivery_mode_is_selected(mode, "Collect") else "[ ]"
-    courier = "[X]" if delivery_mode_is_selected(mode, "Courier") else "[ ]"
-    email = "[X]" if delivery_mode_is_selected(mode, "Email/Whatsapp") else "[ ]"
+    collect = bracket_mark(delivery_mode_is_selected(mode, "Collect"))
+    courier = bracket_mark(delivery_mode_is_selected(mode, "Courier"))
+    email = bracket_mark(delivery_mode_is_selected(mode, "Email/Whatsapp"))
     return f"Collect\t{collect}\t Courier\t{courier}\t  Email/Whatsapp\t{email}"
 
 
@@ -155,8 +149,16 @@ def _add_tests_paragraphs(doc: Document, sample: SampleRow) -> None:
         doc.add_paragraph(f"{index}. {name}")
 
 
-def _add_verification_table(doc: Document, sample: SampleRow) -> Table:
-    rows = verification_checklist_rows(sample)
+def _add_verification_table(
+    doc: Document,
+    sample: SampleRow,
+    *,
+    storage_temperature: str = "",
+) -> Table:
+    rows = verification_checklist_rows(
+        sample,
+        storage_temperature=storage_temperature,
+    )
     table = doc.add_table(rows=len(rows) + 1, cols=3)
     _set_table_borders(table)
     header = table.rows[0].cells
@@ -236,60 +238,70 @@ def fill_docx_bytes(
         nos = "" if data.number_of_samples is None else str(data.number_of_samples)
         _append_to_label(t0.rows[4].cells[0], "Number of Samples", nos)
 
+        filled_preview = [s for s in data.samples if not s.is_empty()]
+        first_details = (
+            effective_sample_request_details(filled_preview[0], data)
+            if filled_preview
+            else {}
+        )
+
         _set_cell_text(t0.rows[5].cells[0], "Sampling Done by Laboratory:")
-        _set_cell_text(t0.rows[5].cells[1], _yes_no_cell(data.sampling_by_lab))
+        _set_cell_text(
+            t0.rows[5].cells[1],
+            _yes_no_cell(first_details.get("sampling_by_lab")),
+        )
 
         _append_to_label(
             t0.rows[6].cells[0],
             "Storage Temperature of sample required:",
-            data.storage_temperature or "",
+            str(first_details.get("storage_temperature") or ""),
         )
 
-        method = data.test_method_spec or ""
+        method = str(first_details.get("test_method_spec") or "")
         _set_cell_text(
             t0.rows[7].cells[0],
             f"Specific test method/ Specification to be followed:\n{method}".rstrip(),
         )
 
         _set_cell_text(t0.rows[8].cells[0], "Decision Rule required:")
-        _set_cell_text(t0.rows[8].cells[1], _yes_no_cell(data.decision_rule))
+        _set_cell_text(
+            t0.rows[8].cells[1],
+            _yes_no_cell(first_details.get("decision_rule")),
+        )
 
         _set_cell_text(t0.rows[9].cells[0], "Service required:")
-        _set_cell_text(t0.rows[9].cells[1], _service_cell(data.service_type))
+        _set_cell_text(
+            t0.rows[9].cells[1],
+            _service_cell(str(first_details.get("service_type") or "")),
+        )
 
         _set_cell_text(t0.rows[10].cells[0], "Mode of report delivery:")
-        _set_cell_text(t0.rows[10].cells[1], _delivery_cell(data.delivery_mode))
+        _set_cell_text(
+            t0.rows[10].cells[1],
+            _delivery_cell(str(first_details.get("delivery_mode") or "")),
+        )
 
         _set_cell_text(t0.rows[11].cells[0], "Payment Details:")
         _set_cell_text(t0.rows[11].cells[1], data.payment_details or "")
 
     filled = [s for s in data.samples if not s.is_empty()]
 
-    if len(tables) >= 3 and filled:
-        t2: Table = tables[2]
-        first = filled[0]
-        if len(t2.rows) >= 2:
-            row = t2.rows[1]
-            cells = row.cells
-            if len(cells) >= 5:
-                _set_cell_text(cells[0], "1")
-                _set_cell_text(cells[1], first.sample_name or "")
-                _set_cell_text(cells[2], first.batch_code or "")
-                _set_cell_text(cells[3], first.quantity or "")
-                _set_cell_text(cells[4], ctr_parameters_display(first))
-        _trim_table_rows(t2, 2)
-        _add_tests_paragraphs(doc, first)
+    if len(tables) >= 3:
+        _trim_table_rows(tables[2], 1)
 
-        for index, sample in enumerate(filled[1:], start=2):
-            _add_page_break(doc)
-            doc.add_paragraph(SAMPLE_SECTION_HEADING)
-            _add_sample_table(doc, sample, index)
-            _add_tests_paragraphs(doc, sample)
+    if filled:
+        doc.add_paragraph("")
+        doc.add_paragraph("")
 
-    for sample in filled:
+    for index, sample in enumerate(filled, start=1):
+        details = effective_sample_request_details(sample, data)
+        storage_temp = str(details.get("storage_temperature") or "")
         _add_page_break(doc)
         doc.add_paragraph(CHECKLIST_TITLE)
-        _add_verification_table(doc, sample)
+        _add_verification_table(doc, sample, storage_temperature=storage_temp)
+        doc.add_paragraph(SAMPLE_SECTION_HEADING)
+        _add_sample_table(doc, sample, index)
+        _add_tests_paragraphs(doc, sample)
 
     left_text = _ctr_footer_left(generated_by, generated_at, data.request_date)
     set_ctr_signature_footer(doc, left_text=left_text, right_text=FOOTER_RIGHT_TEXT)

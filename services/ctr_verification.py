@@ -18,6 +18,7 @@ from services.protocols.test_catalog import (
     filter_keys_for_category,
     normalize_category,
 )
+from services.ctr_symbols import normalize_ctr_display_text, yes_no_remark
 from services.requests import SampleRow
 
 
@@ -29,12 +30,8 @@ class ChecklistRow:
 
 
 def verification_yes_no_remark(value: Optional[bool]) -> str:
-    """Match checklist Yes (  ) No (  ) layout."""
-    if value is True:
-        return "Yes ( X ) No (  )"
-    if value is False:
-        return "Yes (  ) No ( X )"
-    return "Yes (  ) No (  )"
+    """Match checklist Yes ( ✓ ) No (  ) layout."""
+    return yes_no_remark(value)
 
 
 def _fmt_verify_date(d: Optional[date]) -> str:
@@ -50,7 +47,11 @@ def ctr_test_names_for_sample(sample: SampleRow) -> list[str]:
     if not keys and cat in (CATEGORY_WATER, CATEGORY_MICRO):
         keys = default_test_keys_for_category(cat)
     keys = filter_keys_for_category(keys, cat)
-    names = [TEST_CATALOG[k].name for k in keys if k in TEST_CATALOG]
+    names = [
+        normalize_ctr_display_text(TEST_CATALOG[k].name)
+        for k in keys
+        if k in TEST_CATALOG
+    ]
     if names:
         return names
     param = (sample.parameters or "").strip()
@@ -59,46 +60,57 @@ def ctr_test_names_for_sample(sample: SampleRow) -> list[str]:
     return []
 
 
-def verification_checklist_rows(sample: SampleRow) -> list[ChecklistRow]:
-    """Ten-row Sample Verification Checklist (table 1 only)."""
+def verification_checklist_rows(
+    sample: SampleRow,
+    *,
+    storage_temperature: str = "",
+) -> list[ChecklistRow]:
+    """Sample Verification Checklist rows (table 1 only)."""
+    temp = (storage_temperature or sample.storage_temperature or "").strip()
     return [
         ChecklistRow(1, "Review Date", _fmt_verify_date(sample.verify_review_date)),
         ChecklistRow(2, "Lab Code", (sample.verify_lab_code or "").strip()),
         ChecklistRow(
-            3, "Sample condition", (sample.verify_sample_condition or "").strip()
+            3,
+            "Sample Code",
+            (sample.verify_sample_code or sample.sample_code or "").strip(),
+        ),
+        ChecklistRow(4, "Storage Temperature", temp),
+        ChecklistRow(
+            5, "Sample condition", (sample.verify_sample_condition or "").strip()
         ),
         ChecklistRow(
-            4,
+            6,
             "Checked for Sample Quantity",
             verification_yes_no_remark(sample.verify_qty_checked),
         ),
         ChecklistRow(
-            5,
+            7,
             "Checked for Availability of Chemical",
             verification_yes_no_remark(sample.verify_chemical_available),
         ),
         ChecklistRow(
-            6,
+            8,
             "Checked for Availability of Methods",
             verification_yes_no_remark(sample.verify_methods_available),
         ),
         ChecklistRow(
-            7,
+            9,
             "Informed testing Methods to Customer",
             verification_yes_no_remark(sample.verify_methods_informed),
         ),
         ChecklistRow(
-            8,
+            10,
             "Informed turnaround time to Customer",
             verification_yes_no_remark(sample.verify_tat_informed),
         ),
         ChecklistRow(
-            9,
+            11,
             "Sample is ready to issue",
             verification_yes_no_remark(sample.verify_ready_to_issue),
         ),
         ChecklistRow(
-            10,
+            12,
             "About statement of conformity:",
             verification_yes_no_remark(sample.verify_conformity_statement),
         ),

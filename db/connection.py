@@ -49,7 +49,9 @@ def get_connection() -> PgConnection:
 
     Caller is responsible for closing it (prefer `get_db()` below).
     """
-    return psycopg2.connect(**get_connection_params())
+    params = get_connection_params()
+    params["connect_timeout"] = int(os.getenv("POSTGRES_CONNECT_TIMEOUT", "3"))
+    return psycopg2.connect(**params)
 
 
 @contextmanager

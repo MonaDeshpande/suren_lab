@@ -97,7 +97,8 @@ def _fill_metadata_table(table, data: TestReportData) -> None:
         if l2:
             set_cell_text(row.cells[2], l2)
             set_cell_text(row.cells[3], v2)
-        else:
+        elif i not in (0, 6):
+            # Rows 0 and 6 use a merged value cell (cols 1–3); do not clear it.
             set_cell_text(row.cells[2], "")
             set_cell_text(row.cells[3], "")
 
@@ -143,7 +144,15 @@ def _fill_results_table(table, data: TestReportData) -> None:
     remark_body = (data.remark_text or "").strip()
     if remark_body.lower().startswith("remark:"):
         remark_body = remark_body[7:].lstrip()
-    set_cell_text(table.rows[remark_row_index].cells[1], f"Remark: {remark_body}")
+    remark_row = table.rows[remark_row_index]
+    remark_text = f"Remark: {remark_body}"
+    if len(remark_row.cells) >= 5:
+        master = remark_row.cells[0]
+        for col in range(1, 5):
+            master.merge(remark_row.cells[col])
+        set_cell_text(master, remark_text)
+    else:
+        set_cell_text(remark_row.cells[min(1, len(remark_row.cells) - 1)], remark_text)
 
 
 def _fill_identity_paragraphs(
@@ -220,6 +229,10 @@ def fill_food_test_report_docx_bytes(
     checked_by: str | None = None,
     remark_text: str | None = None,
     disclaimer_bullets: list[str] | None = None,
+    customer_name_address: str | None = None,
+    customer_sample_id: str | None = None,
+    batch_no: str | None = None,
+    lab_code: str | None = None,
 ) -> bytes:
     """Produce a filled food test report .docx from the reference template."""
     logo_flag = default_report_with_logo(sample) if with_logo is None else with_logo
@@ -247,6 +260,10 @@ def fill_food_test_report_docx_bytes(
         checked_by=checked_by,
         remark_text=remark_text,
         disclaimer_bullets=disclaimer_bullets,
+        customer_name_address=customer_name_address,
+        customer_sample_id=customer_sample_id,
+        batch_no=batch_no,
+        lab_code=lab_code,
     )
 
     doc = load_template(template_path)
@@ -265,7 +282,16 @@ def fill_food_test_report_docx_bytes(
     _fill_disclaimer(doc, data)
 
     compact_single_page_document(doc)
-    set_report_footer(doc, with_logo=logo_flag, static_one_of_one=True)
+    from services.test_report_pdf import format_disclaimer_footer_text
+
+    set_report_footer(
+        doc,
+        with_logo=logo_flag,
+        generated_by=data.generated_by,
+        generated_at=data.generated_at,
+        static_one_of_one=False,
+        disclaimer_text=format_disclaimer_footer_text(data.disclaimer_bullets),
+    )
 
     finalize_docx_document(doc, set_qsf=True)
 
@@ -313,7 +339,9 @@ def generate_food_test_report_pdf_bytes(
             combine_docx_bytes(
                 parts,
                 with_logo_per_section=logo_flags,
-                static_one_of_one=True,
+                static_one_of_one=False,
+                generated_by=str(kwargs.get("generated_by") or ""),
+                generated_at=str(kwargs.get("generated_at") or ""),
             )
             if parts
             else fill_food_test_report_docx_bytes(sample, header, results, **kwargs)

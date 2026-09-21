@@ -194,6 +194,19 @@
 
 ---
 
+## TC-REV-018 — Food final report editable header fields (Word)
+
+| Field | Value |
+|-------|-------|
+| **Priority** | P0 |
+| **Type** | Positive |
+| **Preconditions** | Food sample with reception customer/address, batch, lab code; protocol header + ≥1 result |
+| **Steps** | Open Reviewer section C; confirm defaults (ULR from lab code, today’s report date, customer block from CTR, Customer Sample ID = sample name); edit ULR, report date, name/address, sample ID, batch, lab code; **Generate Final Report**; download Word. |
+| **Expected** | DOCX matches `reference/Test Report Format.docx` header: ULR line, `Date: DD/MM/YYYY` + Report No, metadata rows for customer, sample ID, batch, lab code. Edits appear on the document; status → `reported`. |
+| **Automated** | `test_food_report_docx.py`, `test_reviewer_report_defaults.py` |
+
+---
+
 ## TC-REV-017 — Final report pads numeric results under 10
 
 | Field | Value |

@@ -58,12 +58,12 @@ if errorlevel 1 (
 )
 
 echo.
-echo [4/4] Running pytest...
+echo [4/4] Running pytest (excluding demo E2E; use run_e2e_demo.bat or pytest -m e2e)...
 echo.
 
 set "PYTHONPATH=%CD%;%PYTHONPATH%"
 
-%PY% -m pytest -q
+%PY% -m pytest -q -m "not e2e"
 set "RC=%ERRORLEVEL%"
 
 echo.

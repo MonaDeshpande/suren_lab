@@ -63,16 +63,16 @@ class TestDocxSampleTable:
             "Parameters",
         ]
 
-    def test_table2_has_only_first_sample_row(self):
+    def test_template_sample_table_trimmed_to_header_only(self):
         doc = Document(BytesIO(fill_docx_bytes(_ctr_request())))
         t2 = doc.tables[2]
-        assert len(t2.rows) == 2
-        row1 = [c.text.strip() for c in t2.rows[1].cells]
-        assert row1[0] == "1"
-        assert row1[1] == "Jaggery"
-        assert row1[2] == "B-01"
-        assert row1[3] == "500 g"
-        assert row1[4] == "FSSAI"
+        assert len(t2.rows) == 1
+        sample_tables = [
+            t
+            for t in doc.tables
+            if len(t.rows) >= 2 and t.rows[1].cells[1].text.strip() == "Jaggery"
+        ]
+        assert len(sample_tables) == 1
 
     def test_second_sample_on_later_table_with_tests(self):
         doc = Document(BytesIO(fill_docx_bytes(_ctr_request())))
@@ -93,14 +93,17 @@ class TestDocxSampleTable:
         checklist_tables = [
             t
             for t in doc.tables
-            if len(t.rows) >= 11
+            if len(t.rows) >= 12
             and t.rows[0].cells[1].text.strip() == "Particulars"
         ]
         assert len(checklist_tables) == 2
         assert checklist_tables[0].rows[4].cells[1].text.strip() == (
+            "Storage Temperature"
+        )
+        assert checklist_tables[0].rows[6].cells[1].text.strip() == (
             "Checked for Sample Quantity"
         )
-        assert "Yes ( X )" in checklist_tables[0].rows[4].cells[2].text
+        assert "Yes ( ✓ )" in checklist_tables[0].rows[6].cells[2].text
 
     def test_no_generator_stamp_in_ctr_docx(self):
         doc = Document(

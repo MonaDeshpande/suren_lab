@@ -20,6 +20,10 @@ def pytest_configure(config: pytest.Config) -> None:
         "markers",
         "integration: tests that require a live PostgreSQL (Docker) database",
     )
+    config.addinivalue_line(
+        "markers",
+        "e2e: demo full-flow scenarios; excluded from run_tests.bat",
+    )
 
 
 @pytest.fixture(scope="session")
@@ -202,3 +206,89 @@ def _mock_resolve_package_for_unit_tests(request, monkeypatch):
         "services.test_packages.describe_sample_package_for_product",
         fake_describe_product,
     )
+
+
+# ---------------------------------------------------------------------------
+# Integration DB fixtures (shared by test_db_integration / test_report_preview)
+# ---------------------------------------------------------------------------
+
+_ANALYST_PW = "Temp@12"
+
+
+def cleanup_test_data(
+    *,
+    gst: str | None = None,
+    appearance_ids: list[int] | None = None,
+) -> None:
+    """Remove integration test rows; safe to call multiple times."""
+    from db.connection import get_db
+
+    normalized_gst = (gst or "").strip().upper()
+    try:
+        with get_db() as conn:
+            with conn.cursor() as cur:
+                if appearance_ids:
+                    cur.execute(
+                        "DELETE FROM appearance_master WHERE id = ANY(%s)",
+                        (appearance_ids,),
+                    )
+                if normalized_gst:
+                    cur.execute(
+                        """
+                        DELETE FROM test_requests
+                         WHERE customer_id IN (
+                            SELECT id FROM customers WHERE gst_number = %s
+                         )
+                        """,
+                        (normalized_gst,),
+                    )
+                    cur.execute(
+                        "DELETE FROM customers WHERE gst_number = %s",
+                        (normalized_gst,),
+                    )
+            conn.commit()
+    except Exception:  # noqa: BLE001
+        pass
+
+
+@pytest.fixture
+def qa_analyst_pair(require_db):
+    """Two active analyst users for assignment tests."""
+    import uuid
+
+    from db.connection import get_db
+    from services.users import create_user
+
+    created = []
+    for suffix in ("a", "b"):
+        user = create_user(
+            username=f"qa_db_{suffix}_{uuid.uuid4().hex[:8]}",
+            temporary_password=_ANALYST_PW,
+            roles=["analyst"],
+            full_name=f"QA DB Analyst {suffix.upper()}",
+        )
+        created.append(user)
+    yield created[0], created[1]
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            ids = [u.id for u in created]
+            cur.execute("DELETE FROM user_roles WHERE user_id = ANY(%s)", (ids,))
+            cur.execute("DELETE FROM users WHERE id = ANY(%s)", (ids,))
+
+
+@pytest.fixture
+def db_test_gst():
+    """Unique GST per test; teardown removes customer + requests."""
+    import uuid
+
+    gst = f"99DB{uuid.uuid4().hex[:8].upper()}000A1Z5"
+    yield gst
+    cleanup_test_data(gst=gst)
+
+
+@pytest.fixture
+def appearance_test_cleanup():
+    """Track appearance_master rows created in a test for teardown."""
+    created_ids: list[int] = []
+    yield created_ids
+    cleanup_test_data(appearance_ids=created_ids)

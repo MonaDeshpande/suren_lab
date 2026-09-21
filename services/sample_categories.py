@@ -101,10 +101,10 @@ def normalize_sample_category(category: Optional[str]) -> str:
     key = _normalize_key(category or "")
     if not key:
         return CATEGORY_FOOD
+    if key in BUILTIN_SAMPLE_CATEGORIES:
+        return key
     cats = all_sample_categories(include_inactive=True)
     if key in cats:
-        return key
-    if key in BUILTIN_SAMPLE_CATEGORIES:
         return key
     return CATEGORY_FOOD
 

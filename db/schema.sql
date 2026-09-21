@@ -259,6 +259,13 @@ CREATE TABLE IF NOT EXISTS request_samples (
     verify_tat_informed         BOOLEAN,
     verify_ready_to_issue       BOOLEAN,
     verify_conformity_statement BOOLEAN,
+    verify_sample_code          TEXT,
+    storage_temperature         TEXT,
+    sampling_by_lab             BOOLEAN,
+    decision_rule               BOOLEAN,
+    service_type                TEXT,
+    delivery_mode               TEXT,
+    test_method_spec            TEXT,
     created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     expires_at          TIMESTAMPTZ NOT NULL DEFAULT (NOW() + INTERVAL '50 days'),
@@ -309,11 +316,29 @@ CREATE TABLE IF NOT EXISTS sample_protocols (
     issued_by           TEXT,
     sample_received_on  DATE,
     date_of_analysis    DATE,
+    date_of_analysis_from DATE,
+    date_of_analysis_to   DATE,
     appearance_text     TEXT,
+    protocol_disclaimer_text TEXT,
     is_active           BOOLEAN     NOT NULL DEFAULT TRUE,
     created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at          TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+-- ---------------------------------------------------------------------------
+-- appearance_master  (Analyst appearance dropdown)
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS appearance_master (
+    id              SERIAL PRIMARY KEY,
+    appearance_text TEXT        NOT NULL,
+    normalized_key  TEXT        NOT NULL,
+    is_active       BOOLEAN     NOT NULL DEFAULT TRUE,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_appearance_master_normalized
+    ON appearance_master (normalized_key)
+    WHERE is_active = TRUE;
 
 -- ---------------------------------------------------------------------------
 -- sample_test_results  (one row per shared-library test on a sample)

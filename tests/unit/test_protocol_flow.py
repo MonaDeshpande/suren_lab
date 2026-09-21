@@ -814,6 +814,9 @@ class TestHeaderValueColumns:
         assert _cell_text(t0.rows[2].cells[7]) == "21/07/2026"
         assert _cell_text(t0.rows[3].cells[3]) == "LAB/CTR/26/088"
         assert _cell_text(t0.rows[3].cells[7]) == "21/07/2026"
+        issued_by_cell = _cell_text(t0.rows[0].cells[5])
+        assert "Sample Issued" in issued_by_cell
+        assert "system" not in issued_by_cell.lower()
 
     @pytest.mark.skipif(not NUTRITION_TEMPLATE_PATH.exists(), reason="Nutrition template missing")
     def test_nutrition_header_values_in_next_column(self):
@@ -910,6 +913,18 @@ def _technical_manager_paragraph(doc: Document) -> Paragraph | None:
     return None
 
 
+def _is_protocol_disclaimer_paragraph(text: str) -> bool:
+    t = (text or "").strip()
+    if not t:
+        return True
+    lower = t.lower()
+    if lower.startswith("disclaimer"):
+        return True
+    if re.match(r"^\d+\.\s", t):
+        return True
+    return False
+
+
 def _trailing_body_is_signature_block(doc: Document) -> bool:
     siblings = [c for c in doc.element.body if not c.tag.endswith("sectPr")]
     for child in reversed(siblings):
@@ -918,7 +933,7 @@ def _trailing_body_is_signature_block(doc: Document) -> bool:
         if not child.tag.endswith("p"):
             continue
         text = (Paragraph(child, doc).text or "").strip()
-        if not text:
+        if not text or _is_protocol_disclaimer_paragraph(text):
             continue
         lower = text.lower()
         return (

@@ -304,3 +304,18 @@ def test_create_package_from_source_rejects_duplicate_name(
     with pytest.raises(ValueError, match="already exists"):
         create_package_from_source("Haldi Powder", 5)
 
+
+def test_validate_test_keys_accepts_full_food_catalog_mix():
+    from services.protocols.test_catalog import FOOD_TEST_KEYS
+
+    keys = validate_test_keys(["moisture", "bn_protein", "bn_moisture"])
+    assert keys == ["moisture", "bn_protein", "bn_moisture"]
+    assert all(k in FOOD_TEST_KEYS for k in keys)
+
+
+def test_list_tests_for_select_labels_hide_internal_keys():
+    from services.protocols.test_catalog import CATEGORY_FOOD, list_tests_for_select
+
+    for _key, label in list_tests_for_select(CATEGORY_FOOD):
+        assert "bn_" not in label
+

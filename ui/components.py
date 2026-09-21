@@ -34,6 +34,7 @@ from services.requests import (
     parse_delivery_modes,
     storage_temperature_for_save,
     storage_temperature_select_value,
+    sync_verify_sample_code,
 )
 from services.versions import validate_edit_reason
 
@@ -96,6 +97,8 @@ def _food_package_type_key_for_row(sample_name: str, sr_no: int, category: str) 
 
 def _food_resolved_for_row(row: dict, category: str):
     """Resolved test package for a Food sample table row."""
+    from services.test_packages import get_package, package_to_resolved
+
     sample_name = _cell_text(row.get("Name of sample")).strip()
     if not sample_name:
         return None
@@ -103,6 +106,15 @@ def _food_resolved_for_row(row: dict, category: str):
         sr_no = int(row.get("Sr. No") or 0)
     except (TypeError, ValueError):
         sr_no = 0
+    pinned = st.session_state.get("intake_pinned_package_id")
+    if pinned and sr_no == 1:
+        pkg = get_package(int(pinned))
+        if (
+            pkg
+            and pkg.sample_product_name.strip().lower()
+            == sample_name.strip().lower()
+        ):
+            return package_to_resolved(pkg)
     ptype_key = _food_package_type_key_for_row(sample_name, sr_no, category)
     return _cached_resolve_package_for_product(sample_name, ptype_key, category)
 
@@ -321,13 +333,13 @@ def _render_food_sample_package_block(
                 len(pkg.test_keys_without_logo),
             )
             if st.button(
-                "Manage package in Test packages",
+                "Manage package in Sample registration",
                 key=f"pkg_manage_{sr_no}",
             ):
                 persist_sample_editor_state()
-                st.session_state["reception_mode"] = RECEPTION_MODE_PACKAGES
-                st.session_state["_reception_mode_last"] = RECEPTION_MODE_PACKAGES
-                st.session_state["ctr_return_from_packages"] = True
+                st.session_state["reception_tab"] = RECEPTION_TAB_REGISTRATION
+                st.session_state["_reception_tab_last"] = RECEPTION_TAB_REGISTRATION
+                st.session_state["_reception_mode_last"] = RECEPTION_TAB_REGISTRATION
                 st.session_state["pkg_edit_select"] = select_label
                 st.rerun()
 
@@ -485,14 +497,26 @@ def render_db_status(ok: bool, message: str) -> None:
     )
 
 
-RECEPTION_MODE_NEW = "New request"
-RECEPTION_MODE_EDIT = "Edit existing request"
-RECEPTION_MODE_PACKAGES = "Test packages"
+RECEPTION_TAB_REGISTRATION = "Sample registration"
+RECEPTION_TAB_CUSTOMERS = "Customers"
+RECEPTION_TAB_NEW = "New sample registration"
+RECEPTION_TAB_EDIT = "Edit existing request"
+RECEPTION_TABS = (
+    RECEPTION_TAB_REGISTRATION,
+    RECEPTION_TAB_CUSTOMERS,
+    RECEPTION_TAB_NEW,
+    RECEPTION_TAB_EDIT,
+)
+
+# Backward-compatible aliases (tests / legacy session keys)
+RECEPTION_MODE_PACKAGES = RECEPTION_TAB_REGISTRATION
+RECEPTION_MODE_NEW = RECEPTION_TAB_NEW
+RECEPTION_MODE_EDIT = RECEPTION_TAB_EDIT
 
 
 def should_clear_ctr_form_on_mode_change(old_mode: str, new_mode: str) -> bool:
-    """Clear intake draft only when switching between New request and Edit."""
-    intake_modes = {RECEPTION_MODE_NEW, RECEPTION_MODE_EDIT}
+    """Clear intake draft only when switching between new registration and edit."""
+    intake_modes = {RECEPTION_TAB_NEW, RECEPTION_TAB_EDIT}
     return (
         old_mode in intake_modes
         and new_mode in intake_modes
@@ -500,17 +524,33 @@ def should_clear_ctr_form_on_mode_change(old_mode: str, new_mode: str) -> bool:
     )
 
 
-def handle_reception_mode_change() -> None:
-    """Preserve CTR draft when visiting Test packages; clear on New ↔ Edit only."""
-    new_mode = str(st.session_state.get("reception_mode") or RECEPTION_MODE_NEW)
+def mark_reception_tab(tab_name: str) -> None:
+    """Track active Reception tab; persist/clear CTR draft on tab switches."""
+    new_mode = str(tab_name or RECEPTION_TAB_NEW)
     old_mode = str(
-        st.session_state.get("_reception_mode_last") or RECEPTION_MODE_NEW
+        st.session_state.get("_reception_tab_last")
+        or st.session_state.get("_reception_mode_last")
+        or RECEPTION_TAB_NEW
     )
-    if old_mode == RECEPTION_MODE_NEW and new_mode != RECEPTION_MODE_NEW:
+    if old_mode == RECEPTION_TAB_NEW and new_mode != RECEPTION_TAB_NEW:
         persist_sample_editor_state()
     if should_clear_ctr_form_on_mode_change(old_mode, new_mode):
         clear_ctr_form_state()
+    st.session_state["_reception_tab_last"] = new_mode
     st.session_state["_reception_mode_last"] = new_mode
+    st.session_state["reception_tab"] = new_mode
+
+
+def handle_reception_mode_change() -> None:
+    """Legacy radio on_change — delegates to mark_reception_tab."""
+    mark_reception_tab(
+        str(st.session_state.get("reception_mode") or RECEPTION_TAB_NEW)
+    )
+
+
+def handle_reception_tab_change() -> None:
+    """Tab/select on_change — delegates to mark_reception_tab."""
+    mark_reception_tab(str(st.session_state.get("reception_tab") or RECEPTION_TAB_NEW))
 
 
 def food_intake_packages_ready(
@@ -621,15 +661,37 @@ def ctr_section_numbers(
     return {name: index + 1 for index, name in enumerate(order)}
 
 
-def _refresh_customer_search() -> None:
+def customer_picker_keys(key_prefix: str = "ctr_") -> dict[str, str]:
+    """Session/widget key names for a namespaced customer picker instance."""
+    prefix = (key_prefix or "ctr_").strip()
+    return {
+        "search_q": f"{prefix}customer_search_q",
+        "select": f"{prefix}customer_select",
+        "prev_q": f"{prefix}_customer_search_prev_q",
+        "results": f"{prefix}customer_search_results",
+        "error": f"{prefix}customer_search_error",
+    }
+
+
+def _refresh_customer_search(key_prefix: str = "ctr_") -> None:
     """Run customer master search from the customer lookup box."""
-    query = str(st.session_state.get("customer_search_q") or "")
+    keys = customer_picker_keys(key_prefix)
+    query = str(st.session_state.get(keys["search_q"]) or "")
     try:
-        st.session_state["customer_search_results"] = search_customers(query)
-        st.session_state.pop("customer_search_error", None)
+        st.session_state[keys["results"]] = search_customers(query)
+        st.session_state.pop(keys["error"], None)
     except Exception as exc:  # noqa: BLE001
-        st.session_state["customer_search_error"] = str(exc)
-        st.session_state["customer_search_results"] = []
+        st.session_state[keys["error"]] = str(exc)
+        st.session_state[keys["results"]] = []
+
+
+def apply_customer_to_session(
+    customer: Customer,
+    *,
+    autoload_msg: str | None = None,
+) -> None:
+    """Write permanent customer fields into CTR / customer-master widget keys."""
+    _push_customer_to_session(customer, autoload_msg=autoload_msg)
 
 
 def _push_customer_to_session(
@@ -702,6 +764,7 @@ def customer_picker(
     *,
     lookup_no: int,
     customer_details_no: int,
+    key_prefix: str = "ctr_",
 ) -> Optional[Customer]:
     """
     Search / select an existing permanent customer.
@@ -711,6 +774,11 @@ def customer_picker(
     Customer or None
         Selected customer to autofill the form, or None if user chose "New".
     """
+    keys = customer_picker_keys(key_prefix)
+
+    def _on_search_change() -> None:
+        _refresh_customer_search(key_prefix)
+
     render_section_title(
         f"{lookup_no}. Existing customer lookup",
         "Search by GST or customer name — results update as you type. "
@@ -721,20 +789,20 @@ def customer_picker(
     query = st.text_input(
         "Search GST / customer name",
         placeholder="e.g. 27AAAAA0000A1Z5 or Acme Foods",
-        key="customer_search_q",
-        on_change=_refresh_customer_search,
+        key=keys["search_q"],
+        on_change=_on_search_change,
     )
 
-    prev_q = st.session_state.get("_customer_search_prev_q")
-    if prev_q != query or "customer_search_results" not in st.session_state:
-        st.session_state["_customer_search_prev_q"] = query
-        _refresh_customer_search()
+    prev_q = st.session_state.get(keys["prev_q"])
+    if prev_q != query or keys["results"] not in st.session_state:
+        st.session_state[keys["prev_q"]] = query
+        _refresh_customer_search(key_prefix)
 
-    search_error = st.session_state.get("customer_search_error")
+    search_error = st.session_state.get(keys["error"])
     if search_error:
         st.warning(f"Could not search customers: {search_error}")
 
-    results: list[Customer] = st.session_state.get("customer_search_results", [])
+    results: list[Customer] = st.session_state.get(keys["results"], [])
     if results:
         st.caption(
             f"{len(results)} customer(s) shown. Empty search lists recent customers."
@@ -743,7 +811,7 @@ def customer_picker(
     options = ["— New customer —"] + [
         f"{c.customer_name}  |  GST: {c.gst_number}  (#{c.id})" for c in results
     ]
-    choice = st.selectbox("Select customer to autofill", options, key="customer_select")
+    choice = st.selectbox("Select customer to autofill", options, key=keys["select"])
 
     if choice == "— New customer —" or not results:
         return None
@@ -878,6 +946,106 @@ def _read_contacts_from_session(count: int) -> list[ContactPerson]:
     return contacts
 
 
+def read_customer_from_session(
+    *,
+    contact_count: int | None = None,
+    prefill: Customer | None = None,
+) -> Customer:
+    """Build a Customer from intake / customer-master widget session keys."""
+    count = contact_count
+    if count is None:
+        count = int(st.session_state.get("ctr_contact_count", 1))
+    count = max(1, min(int(count), MAX_CONTACTS))
+    contacts = _read_contacts_from_session(count)
+    primary = contacts[0] if contacts else ContactPerson()
+    gst_number = str(st.session_state.get("f_gst_number", "") or "")
+    p = prefill or Customer(
+        customer_name="",
+        address="",
+        contact_person="",
+        contact_number="",
+        email="",
+        gst_number="",
+    )
+    return Customer(
+        id=_resolved_customer_id(p, gst_number),
+        customer_name=str(st.session_state.get("f_customer_name", "") or ""),
+        address=str(st.session_state.get("f_address", "") or ""),
+        contact_person=(primary.contact_name or "").strip(),
+        contact_number=str(st.session_state.get("f_contact_number", "") or ""),
+        email=(primary.email or "").strip(),
+        gst_number=gst_number,
+        contacts=contacts,
+    )
+
+
+def render_customer_details_form(
+    *,
+    section_no: int = 1,
+    show_gst_autoload: bool = True,
+) -> int:
+    """
+    Editable customer + contact fields (shared by CTR intake and customer master).
+
+    Returns active contact-person count.
+    """
+    render_section_title(
+        f"{section_no}. Customer details",
+        "Saved to PostgreSQL. GST is optional; when provided it is the unique lookup key.",
+    )
+    c1, c2 = st.columns(2)
+    with c1:
+        st.text_input(
+            "Customer Details (Name / Company) *",
+            key="f_customer_name",
+        )
+    with c2:
+        st.text_area("Address *", height=100, key="f_address")
+
+    contact_count = _render_contact_controls()
+
+    render_section_title(
+        f"{section_no + 1}. Contact persons",
+        "Up to five contacts. Contact 1 name is required.",
+    )
+    for i in range(1, contact_count + 1):
+        cc1, cc2 = st.columns(2)
+        with cc1:
+            st.text_input(
+                f"Contact {i} — Name" + (" *" if i == 1 else ""),
+                key=f"ctr_c{i}_name",
+            )
+        with cc2:
+            st.text_input(
+                f"Contact {i} — Email ID"
+                + (" (optional)" if i == 1 else ""),
+                key=f"ctr_c{i}_email",
+            )
+
+    c3, c4 = st.columns(2)
+    with c3:
+        st.text_input(
+            "Contact Number *",
+            key="f_contact_number",
+            help="Primary phone number for the customer.",
+        )
+    with c4:
+        st.text_input(
+            "GST Number (optional)",
+            key="f_gst_number",
+            on_change=_on_gst_lookup if show_gst_autoload else None,
+            help=(
+                "Optional. Enter a saved 15-character GSTIN to auto-load "
+                "name, address, and contacts."
+            ),
+        )
+        if show_gst_autoload:
+            gst_autoload_msg = st.session_state.get("customer_gst_autoload_msg")
+            if gst_autoload_msg:
+                st.info(gst_autoload_msg)
+    return contact_count
+
+
 def edit_reason_field(
     key: str = "edit_reason",
     *,
@@ -921,6 +1089,7 @@ def _bool_to_yn(value: Optional[bool]) -> str:
 
 _CTR_TABLE_COLUMNS = (
     "Sr. No",
+    "Category",
     "Name of sample",
     "Code/batch no.",
     "Sample qty.",
@@ -929,6 +1098,7 @@ _CTR_TABLE_COLUMNS = (
     "_status",
 )
 _CTR_TEXT_COLUMNS = (
+    "Category",
     "Name of sample",
     "Code/batch no.",
     "Sample qty.",
@@ -942,10 +1112,11 @@ _SAMPLE_EDITOR_WIDGET_KEY = "sample_editor_widget"
 _SAMPLE_EDITOR_LIVE_KEY = "sample_editor_live"
 
 
-def _default_sample_rows(count: int = 1) -> list[dict]:
+def _default_sample_rows(count: int = 1, *, default_category: str = "Food") -> list[dict]:
     return [
         {
             "Sr. No": i,
+            "Category": default_category,
             "Name of sample": "",
             "Code/batch no.": "",
             "Sample qty.": "",
@@ -955,6 +1126,17 @@ def _default_sample_rows(count: int = 1) -> list[dict]:
         }
         for i in range(1, count + 1)
     ]
+
+
+def _category_key_from_row(row: dict, cat_key_by_label: dict[str, str]) -> str:
+    from services.protocols.test_catalog import CATEGORY_FOOD, normalize_category
+
+    label = _cell_text(row.get("Category")).strip()
+    if label in cat_key_by_label:
+        return normalize_category(cat_key_by_label[label])
+    if label:
+        return normalize_category(label.replace(" ", "_"))
+    return CATEGORY_FOOD
 
 
 def _cell_text(value: object) -> str:
@@ -1066,6 +1248,30 @@ def persist_sample_editor_state() -> None:
     st.session_state[_SAMPLE_EDITOR_LIVE_KEY] = merged
 
 
+def apply_pinned_package_to_intake(pkg) -> None:
+    """Pre-fill row 1 of the sample table from a selected test package."""
+    from services.test_packages import PACKAGE_TYPES
+
+    st.session_state["intake_pinned_package_id"] = int(pkg.id)
+    param_label = PACKAGE_TYPES.get(pkg.package_type, pkg.package_type_label)
+    df = pd.DataFrame(
+        [
+            {
+                "Sr. No": 1,
+                "Name of sample": pkg.sample_product_name,
+                "Code/batch no.": "",
+                "Sample qty.": "",
+                "Parameters": param_label,
+                "_sample_id": None,
+                "_status": "pending",
+            }
+        ]
+    )
+    _reset_sample_editor(df)
+    st.session_state["food_parameters_1"] = param_label
+    st.session_state["test_package_type_1"] = pkg.package_type_label
+
+
 def _sample_editor_df_for_render() -> pd.DataFrame:
     """Merge pending data_editor edits before passing data= to the widget."""
     base = _current_sample_editor_df()
@@ -1134,8 +1340,17 @@ def _migrate_sample_editor_df(df: pd.DataFrame, category: str) -> pd.DataFrame:
     if df is None or not isinstance(df, pd.DataFrame):
         return pd.DataFrame(_default_sample_rows())
 
-    if all(c in df.columns for c in _CTR_TABLE_COLUMNS) and "Category" not in df.columns:
+    if all(c in df.columns for c in _CTR_TABLE_COLUMNS):
         return _normalize_ctr_df(df)
+
+    if "Category" not in df.columns:
+        from services.sample_categories import all_sample_categories
+
+        default_label = all_sample_categories().get(
+            normalize_category(category), "Food"
+        )
+        df = df.copy()
+        df["Category"] = default_label
 
     rows: list[dict] = []
     for _, row in df.iterrows():
@@ -1269,9 +1484,12 @@ def _sync_request_prefill(request: TestRequestData) -> None:
                 params_val = ""
             else:
                 params_val = s.parameters or ""
+            cats = all_sample_categories()
+            cat_label = cats.get(cat, list(cats.values())[0])
             rows.append(
                 {
                     "Sr. No": s.sr_no,
+                    "Category": cat_label,
                     "Name of sample": s.sample_name or "",
                     "Code/batch no.": s.batch_code or "",
                     "Sample qty.": s.quantity or "",
@@ -1279,6 +1497,46 @@ def _sync_request_prefill(request: TestRequestData) -> None:
                     "_sample_id": s.id,
                     "_status": s.status,
                 }
+            )
+            st.session_state.setdefault(
+                f"f_storage_temperature_{s.sr_no}",
+                storage_temperature_select_value(
+                    getattr(s, "storage_temperature", None) or request.storage_temperature
+                ),
+            )
+            if (
+                st.session_state.get(f"f_storage_temperature_{s.sr_no}")
+                == STORAGE_TEMPERATURE_OTHER
+            ):
+                st.session_state.setdefault(
+                    f"f_storage_temperature_other_{s.sr_no}",
+                    getattr(s, "storage_temperature", None) or request.storage_temperature or "",
+                )
+            samp = getattr(s, "sampling_by_lab", None)
+            if samp is None:
+                samp = request.sampling_by_lab
+            st.session_state.setdefault(
+                f"f_sampling_choice_{s.sr_no}", _bool_to_yn_choice(samp)
+            )
+            dec = getattr(s, "decision_rule", None)
+            if dec is None:
+                dec = request.decision_rule
+            st.session_state.setdefault(
+                f"f_decision_choice_{s.sr_no}", _bool_to_yn_choice(dec)
+            )
+            st.session_state.setdefault(
+                f"f_service_type_{s.sr_no}",
+                getattr(s, "service_type", None) or request.service_type or "",
+            )
+            st.session_state.setdefault(
+                f"f_delivery_mode_{s.sr_no}",
+                parse_delivery_modes(
+                    getattr(s, "delivery_mode", None) or request.delivery_mode or ""
+                ),
+            )
+            st.session_state.setdefault(
+                f"f_test_method_spec_{s.sr_no}",
+                getattr(s, "test_method_spec", None) or request.test_method_spec or "",
             )
             st.session_state[f"workflow_analyst_{s.sr_no}"] = id_to_label.get(
                 s.assigned_analyst_id, ""
@@ -1330,6 +1588,9 @@ def _sync_request_prefill(request: TestRequestData) -> None:
             st.session_state[f"verify_lab_code_{s.sr_no}"] = (
                 s.verify_lab_code or request.lab_code or ""
             )
+            st.session_state[f"verify_sample_code_{s.sr_no}"] = (
+                getattr(s, "verify_sample_code", None) or s.sample_code or ""
+            )
             st.session_state[f"verify_sample_condition_{s.sr_no}"] = (
                 s.verify_sample_condition or ""
             )
@@ -1373,18 +1634,25 @@ def apply_request_prefill(request: TestRequestData) -> None:
 
 def clear_ctr_form_state() -> None:
     """Remove CTR intake widget keys so a fresh form can be created."""
-    prefixes = ("f_", "ctr_c", "workflow_", "custom_tests_sr_", "intake_", "verify_", "test_package_type_", "parameters_other_", "food_parameters_")
+    prefixes = (
+        "f_",
+        "ctr_c",
+        "workflow_",
+        "custom_tests_sr_",
+        "intake_",
+        "verify_",
+        "test_package_type_",
+        "parameters_other_",
+        "food_parameters_",
+        "cust_master_",
+        "ctr_edit_",
+    )
     exact = {
         "_prefill_request_key",
         "_prefill_customer_key",
         "_prefill_contacts_key",
-        "_customer_search_prev_q",
         "_gst_autoload_last",
         "customer_gst_autoload_msg",
-        "customer_search_error",
-        "customer_search_q",
-        "customer_search_results",
-        "customer_select",
         "sample_category_select",
         "ctr_contact_count",
         _SAMPLE_EDITOR_KEY,
@@ -1403,6 +1671,8 @@ def collect_form(
     edit_mode: bool = False,
     sample_first: bool = False,
     include_customer_picker: bool = False,
+    customer_from_master: bool = False,
+    pinned_package_id: int | None = None,
     submit_label: str = "Save & Generate Form",
     actor=None,
 ) -> Optional[tuple[TestRequestData, str]]:
@@ -1509,30 +1779,26 @@ def collect_form(
         apply_request_prefill(request_prefill)
         prefill = request_prefill.customer
 
+    if pinned_package_id is not None:
+        st.session_state["intake_pinned_package_id"] = int(pinned_package_id)
+
     customer_prefill = prefill
-    if not sample_first:
+    if not sample_first and not customer_from_master:
         p = _sync_customer_prefill(prefill)
 
-    # Category guidance — Food loads tests from product name (Parameters is CTR display only).
     cat_options = category_select_options()
     cat_keys = [k for k, _ in cat_options]
     cat_labels = [lbl for _, lbl in cat_options]
-    render_section_title(
-        "1. Sample category",
-        "Choose Food, Water, Micro, Cattle Feed / Fertilizer, or an Admin-added "
-        "category (e.g. Pharma). **Food** rows load tests from the sample product name; "
-        "**Parameters** is printed on the CTR only.",
-    )
-    selected_cat_label = st.selectbox(
-        "Sample category *",
-        options=cat_labels,
-        index=0,
-        key="sample_category_select",
-        help="Applies to all sample rows in this request.",
-    )
-    filter_category = cat_keys[cat_labels.index(selected_cat_label)]
+    cat_key_by_label = {lbl: key for key, lbl in cat_options}
+    editor_preview = _sample_editor_df_for_render()
+    row_categories = [
+        _category_key_from_row(row, cat_key_by_label)
+        for row in editor_preview.to_dict(orient="records")
+        if _sample_row_nonempty(row)
+    ] or [CATEGORY_FOOD]
+    filter_category = row_categories[0]
     food_package_first = (
-        not edit_mode and normalize_category(filter_category) == CATEGORY_FOOD
+        not edit_mode and CATEGORY_FOOD in row_categories
     )
     sec = ctr_section_numbers(
         sample_first=sample_first,
@@ -1594,6 +1860,7 @@ def collect_form(
             picked = customer_picker(
                 lookup_no=sec["customer_lookup"],
                 customer_details_no=sec["customer_details"],
+                key_prefix="ctr_edit_",
             )
             if picked is not None:
                 customer_prefill = picked
@@ -1616,76 +1883,10 @@ def collect_form(
             "(printed form)</b> — Fields below match the printed CTR (LLP.docx).</div>",
             unsafe_allow_html=True,
         )
-
-        render_section_title(
-            f"{sec['customer_details']}. Customer details (permanent database)",
-            "Saved to PostgreSQL. GST is optional; when provided it is the unique lookup key.",
+        return render_customer_details_form(
+            section_no=sec["customer_details"],
+            show_gst_autoload=True,
         )
-
-        c1, c2 = st.columns(2)
-        with c1:
-            st.text_input(
-                "Customer Details (Name / Company) *",
-                key="f_customer_name",
-            )
-        with c2:
-            st.text_area("Address *", height=100, key="f_address")
-
-        contact_count = _render_contact_controls()
-
-        render_section_title(
-            f"{sec['contact_persons']}. Contact persons",
-            "Up to five contacts. Contact 1 name is required.",
-        )
-        for i in range(1, contact_count + 1):
-            cc1, cc2 = st.columns(2)
-            with cc1:
-                st.text_input(
-                    f"Contact {i} — Name" + (" *" if i == 1 else ""),
-                    key=f"ctr_c{i}_name",
-                )
-            with cc2:
-                st.text_input(
-                    f"Contact {i} — Email ID"
-                    + (" (optional)" if i == 1 else ""),
-                    key=f"ctr_c{i}_email",
-                )
-
-        c3, c4 = st.columns(2)
-        with c3:
-            st.text_input(
-                "Contact Number *",
-                key="f_contact_number",
-                help="Primary phone number for the customer.",
-            )
-        with c4:
-            lookup_hint = (
-                f"Section {sec['customer_lookup']}"
-                if include_customer_picker
-                else "customer lookup"
-            )
-            st.text_input(
-                "GST Number (optional)",
-                key="f_gst_number",
-                on_change=_on_gst_lookup,
-                help=(
-                    "Optional. Enter a saved 15-character GSTIN to auto-load "
-                    f"name, address, and contacts — or use {lookup_hint} to search by name."
-                ),
-            )
-            gst_autoload_msg = st.session_state.get("customer_gst_autoload_msg")
-            if gst_autoload_msg:
-                st.info(gst_autoload_msg)
-            if include_customer_picker:
-                st.caption(
-                    "Tip: type a full GSTIN here to load saved customer details, "
-                    f"or search by name in Section {sec['customer_lookup']}."
-                )
-            else:
-                st.caption(
-                    "Tip: type a full GSTIN here to load saved customer details."
-                )
-        return contact_count
 
     def _render_request_details_section() -> None:
         render_section_title(
@@ -1713,52 +1914,6 @@ def collect_form(
                 key="f_number_of_samples",
             )
 
-        r4, r5 = st.columns(2)
-        with r4:
-            st.radio(
-                "Sampling Done by Laboratory",
-                options=["Not specified", "Yes", "No"],
-                horizontal=True,
-                key="f_sampling_choice",
-            )
-            st.radio(
-                "Decision Rule required",
-                options=["Not specified", "Yes", "No"],
-                horizontal=True,
-                key="f_decision_choice",
-            )
-        with r5:
-            st.radio(
-                "Service required",
-                options=["", "Urgent", "Regular"],
-                format_func=lambda x: "Not specified" if x == "" else x,
-                horizontal=True,
-                key="f_service_type",
-            )
-            st.multiselect(
-                "Mode of report delivery",
-                options=DELIVERY_MODE_OPTIONS,
-                key="f_delivery_mode",
-            )
-
-        st.selectbox(
-            "Storage Temperature of sample required",
-            options=[""] + list(STORAGE_TEMPERATURE_OPTIONS),
-            format_func=lambda x: "Not specified" if x == "" else x,
-            key="f_storage_temperature",
-        )
-        if st.session_state.get("f_storage_temperature") == STORAGE_TEMPERATURE_OTHER:
-            st.text_input(
-                "Storage temperature (other) *",
-                key="f_storage_temperature_other",
-                placeholder="e.g. Frozen (-20°C)",
-            )
-        st.text_area(
-            "Specific test method / Specification to be followed",
-            placeholder="e.g. FSSAI / IS method references",
-            height=70,
-            key="f_test_method_spec",
-        )
         st.text_area(
             "Payment Details",
             placeholder="Advance amount, UTR, billing notes…",
@@ -1818,9 +1973,17 @@ def collect_form(
                         + ", ".join(locked)
                     )
 
+            category_column = {
+                "Category": st.column_config.SelectboxColumn(
+                    "Category",
+                    options=cat_labels,
+                    required=True,
+                ),
+            }
             if filter_category == CATEGORY_FOOD:
                 column_config = {
                     "Sr. No": st.column_config.NumberColumn("Sr. No", min_value=1, step=1),
+                    **category_column,
                     "Name of sample": st.column_config.TextColumn("Name of sample"),
                     "Code/batch no.": st.column_config.TextColumn(
                         "Code/batch no.",
@@ -1857,6 +2020,7 @@ def collect_form(
                     }
                 column_config = {
                     "Sr. No": st.column_config.NumberColumn("Sr. No", min_value=1, step=1),
+                    **category_column,
                     "Name of sample": st.column_config.TextColumn("Name of sample"),
                     "Code/batch no.": st.column_config.TextColumn(
                         "Code/batch no.",
@@ -2002,7 +2166,7 @@ def collect_form(
                 locked = status != "pending"
                 sample_label = _cell_text(row.get("Name of sample")).strip() or "(unnamed)"
 
-                row_category = normalize_category(filter_category)
+                row_category = _category_key_from_row(row, cat_key_by_label)
                 if row_category != CATEGORY_FOOD:
                     st.session_state.setdefault(
                         f"workflow_report_format_{sr_no}",
@@ -2103,8 +2267,67 @@ def collect_form(
                     st.session_state[f"verify_lab_code_{sr_no}"] = str(
                         st.session_state.get("f_lab_code", "") or ""
                     )
+                sync_verify_sample_code(
+                    derived_codes.get(sr_no, ""),
+                    session=st.session_state,
+                    sr_no=sr_no,
+                )
+                st.markdown("**Test request details (this sample)**")
+                rd1, rd2 = st.columns(2)
+                with rd1:
+                    st.selectbox(
+                        "Storage Temperature",
+                        options=[""] + list(STORAGE_TEMPERATURE_OPTIONS),
+                        format_func=lambda x: "Not specified" if x == "" else x,
+                        key=f"f_storage_temperature_{sr_no}",
+                        disabled=locked,
+                    )
+                    if (
+                        st.session_state.get(f"f_storage_temperature_{sr_no}")
+                        == STORAGE_TEMPERATURE_OTHER
+                    ):
+                        st.text_input(
+                            "Storage temperature (other)",
+                            key=f"f_storage_temperature_other_{sr_no}",
+                            disabled=locked,
+                        )
+                    st.radio(
+                        "Sampling Done by Laboratory",
+                        options=["Not specified", "Yes", "No"],
+                        horizontal=True,
+                        key=f"f_sampling_choice_{sr_no}",
+                        disabled=locked,
+                    )
+                with rd2:
+                    st.radio(
+                        "Service required",
+                        options=["", "Urgent", "Regular"],
+                        format_func=lambda x: "Not specified" if x == "" else x,
+                        horizontal=True,
+                        key=f"f_service_type_{sr_no}",
+                        disabled=locked,
+                    )
+                    st.multiselect(
+                        "Mode of report delivery",
+                        options=DELIVERY_MODE_OPTIONS,
+                        key=f"f_delivery_mode_{sr_no}",
+                        disabled=locked,
+                    )
+                    st.radio(
+                        "Decision Rule required",
+                        options=["Not specified", "Yes", "No"],
+                        horizontal=True,
+                        key=f"f_decision_choice_{sr_no}",
+                        disabled=locked,
+                    )
+                st.text_area(
+                    "Specific test method / Specification",
+                    height=60,
+                    key=f"f_test_method_spec_{sr_no}",
+                    disabled=locked,
+                )
                 st.markdown("**Sample verification (printed on checklist)**")
-                v1, v2 = st.columns(2)
+                v1, v2, v3 = st.columns(3)
                 with v1:
                     st.date_input(
                         "Review Date *",
@@ -2116,6 +2339,13 @@ def collect_form(
                         "Lab Code *",
                         key=f"verify_lab_code_{sr_no}",
                         disabled=locked,
+                    )
+                with v3:
+                    st.text_input(
+                        "Sample Code",
+                        key=f"verify_sample_code_{sr_no}",
+                        disabled=True,
+                        help="Auto-filled from registration sample ID.",
                     )
                 st.text_input(
                     "Sample condition *",
@@ -2183,19 +2413,25 @@ def collect_form(
         )
         if not packages_ready:
             st.warning(
-                "Define test packages for these products first (Test packages workspace), "
-                "then continue with customer details."
+                "Define test packages for these products first (Sample registration tab), "
+                "then continue with request details."
             )
             for item in blocked:
                 st.markdown(f"- {item}")
             return None
 
-        contact_count = _render_customer_sections()
+        if customer_from_master:
+            contact_count = 1
+        else:
+            contact_count = _render_customer_sections()
         _render_request_details_section()
         _render_lab_code_section()
         _sample_workflow_fragment(phase="workflow")
     else:
-        contact_count = _render_customer_sections()
+        if customer_from_master:
+            contact_count = 1
+        else:
+            contact_count = _render_customer_sections()
         _render_request_details_section()
         _render_lab_code_section()
         _sample_workflow_fragment(phase="all")
@@ -2245,7 +2481,13 @@ def collect_form(
         return None
 
     samples: list[SampleRow] = []
-    row_category = normalize_category(filter_category)
+
+    def _yn_local(choice: str) -> Optional[bool]:
+        if choice == "Yes":
+            return True
+        if choice == "No":
+            return False
+        return None
 
     for i, row in enumerate(sample_df.to_dict(orient="records"), start=1):
         sr = row.get("Sr. No") or i
@@ -2261,7 +2503,8 @@ def collect_form(
             or ""
         ).strip()
         report_format = LABEL_TO_REPORT_FORMAT.get(fmt_label, REPORT_FORMAT_WITH_LOGO)
-        row_keys = _row_test_keys(row, filter_category, report_format=report_format)
+        row_category = _category_key_from_row(row, cat_key_by_label)
+        row_keys = _row_test_keys(row, row_category, report_format=report_format)
         params_text = _cell_text(row.get("Parameters")).strip()
         parameters_select = params_text
         resolved = None
@@ -2358,6 +2601,9 @@ def collect_form(
             verify_lab_code = str(
                 st.session_state.get(f"verify_lab_code_{sr_no}", "") or ""
             ).strip()
+            verify_sample_code = str(
+                st.session_state.get(f"verify_sample_code_{sr_no}", "") or ""
+            ).strip()
             verify_sample_condition = str(
                 st.session_state.get(f"verify_sample_condition_{sr_no}", "") or ""
             ).strip()
@@ -2394,6 +2640,10 @@ def collect_form(
                     or ""
                 )
             )
+        row_storage = storage_temperature_for_save(
+            str(st.session_state.get(f"f_storage_temperature_{sr_no}", "") or ""),
+            str(st.session_state.get(f"f_storage_temperature_other_{sr_no}", "") or ""),
+        )
         samples.append(
             SampleRow(
                 id=sample_id,
@@ -2418,8 +2668,25 @@ def collect_form(
                 package_version_no=resolved.package_version_no if resolved else None,
                 package_type=ptype if row_category == CATEGORY_FOOD else None,
                 parameters_select=parameters_select if row_category == CATEGORY_FOOD else "",
+                storage_temperature=row_storage,
+                sampling_by_lab=_yn_local(
+                    str(st.session_state.get(f"f_sampling_choice_{sr_no}", "") or "")
+                ),
+                decision_rule=_yn_local(
+                    str(st.session_state.get(f"f_decision_choice_{sr_no}", "") or "")
+                ),
+                service_type=str(
+                    st.session_state.get(f"f_service_type_{sr_no}", "") or ""
+                ),
+                delivery_mode=format_delivery_modes(
+                    st.session_state.get(f"f_delivery_mode_{sr_no}", [])
+                ),
+                test_method_spec=str(
+                    st.session_state.get(f"f_test_method_spec_{sr_no}", "") or ""
+                ),
                 verify_review_date=verify_review_date,
                 verify_lab_code=verify_lab_code,
+                verify_sample_code=verify_sample_code,
                 verify_sample_condition=verify_sample_condition,
                 verify_qty_checked=verify_qty_checked,
                 verify_chemical_available=verify_chemical_available,
@@ -2431,31 +2698,43 @@ def collect_form(
             )
         )
 
-    contacts = _read_contacts_from_session(contact_count)
-    primary = contacts[0] if contacts else ContactPerson()
-    p = p_holder[0] or _sync_customer_prefill(customer_prefill)
-    customer = Customer(
-        id=_resolved_customer_id(p, gst_number),
-        customer_name=customer_name,
-        address=address,
-        contact_person=(primary.contact_name or "").strip(),
-        contact_number=contact_number,
-        email=(primary.email or "").strip(),
-        gst_number=gst_number,
-        contacts=contacts,
-    )
+    if customer_from_master and not edit_mode:
+        from services.customers import get_customer_by_id
+
+        cust_id = st.session_state.get("intake_customer_id")
+        if not cust_id:
+            st.error("Select a customer in the Customers tab or above before saving.")
+            return None
+        customer = get_customer_by_id(int(cust_id))
+        if customer is None:
+            st.error("Selected customer was not found. Pick another customer.")
+            return None
+    else:
+        contacts = _read_contacts_from_session(contact_count)
+        primary = contacts[0] if contacts else ContactPerson()
+        p = p_holder[0] or _sync_customer_prefill(customer_prefill)
+        customer = Customer(
+            id=_resolved_customer_id(p, gst_number),
+            customer_name=customer_name,
+            address=address,
+            contact_person=(primary.contact_name or "").strip(),
+            contact_number=contact_number,
+            email=(primary.email or "").strip(),
+            gst_number=gst_number,
+            contacts=contacts,
+        )
 
     data = TestRequestData(
         customer=customer,
         request_date=request_date,
         lab_code=lab_code,
         number_of_samples=int(number_of_samples) if number_of_samples else None,
-        sampling_by_lab=yn(sampling_choice),
-        storage_temperature=storage_temperature,
-        test_method_spec=test_method_spec,
-        decision_rule=yn(decision_choice),
-        service_type=service_type,
-        delivery_mode=delivery_mode,
+        sampling_by_lab=None,
+        storage_temperature="",
+        test_method_spec="",
+        decision_rule=None,
+        service_type="",
+        delivery_mode="",
         payment_details=payment_details,
         sample_description=sample_description,
         samples=samples,

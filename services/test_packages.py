@@ -348,6 +348,39 @@ def diff_package_versions(
     return rows
 
 
+def package_to_resolved(pkg: TestPackage) -> ResolvedPackage:
+    """Build a ResolvedPackage from a loaded TestPackage row."""
+    return ResolvedPackage(
+        package_id=pkg.id,
+        package_version_no=pkg.current_version_no,
+        package_type=pkg.package_type,
+        sample_product_name=pkg.sample_product_name,
+        test_keys=list(pkg.test_keys),
+        test_keys_with_logo=list(pkg.test_keys_with_logo),
+        test_keys_without_logo=list(pkg.test_keys_without_logo),
+        display_label=pkg.display_label,
+    )
+
+
+def search_packages(
+    query: str = "",
+    *,
+    active_only: bool = True,
+    limit: int = 50,
+) -> list[TestPackage]:
+    """Search active packages by product name substring (case-insensitive)."""
+    lim = max(1, min(int(limit), 200))
+    packages = list_packages(active_only=active_only, limit=500 if query.strip() else lim)
+    q = (query or "").strip().lower()
+    if not q:
+        return packages[:lim]
+    return [
+        p
+        for p in packages
+        if q in (p.sample_product_name or "").strip().lower()
+    ][:lim]
+
+
 def list_packages(
     *,
     sample_product_name: Optional[str] = None,

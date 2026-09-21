@@ -362,3 +362,41 @@ Reception assigns tests → Analyst finds sample → saves header → reviews **
 | **Steps** | Enter worksheet readings with up to 4 decimal places; **Calculate & save**. Change readings; **Calculate & save** again. Generate protocol. |
 | **Expected** | Inputs accept up to 4 dp; saved final result shows 2 dp (e.g. `6.00`). Protocol **Sample Issued to** shows analyst full name only (no username in parentheses). First save fills Readings column 1; second save keeps column 1 and fills column 2 with recalculated readings. Values with >4 dp are rejected. |
 | **Automated** | `test_number_format.py`, `test_input_store.py`, `test_protocol_precision.py` |
+
+---
+
+## TC-ANL-028 — Editable protocol disclaimer
+
+| Field | Value |
+|-------|-------|
+| **Priority** | P0 |
+| **Type** | Positive |
+| **Preconditions** | Sample open on Analyst page |
+| **Steps** | In protocol header section, edit **Protocol disclaimer** text (e.g. change point 4 retention wording); save header; complete at least one test; generate protocol DOCX/PDF. |
+| **Expected** | Disclaimer stored on `sample_protocols.protocol_disclaimer_text`; edited text appears below protocol tables in generated Word/PDF output. Default 5-point disclaimer pre-filled when empty. |
+| **Automated** | `tests/test_analyst_workflow.py::test_editable_disclaimer_persistence` |
+
+---
+
+## TC-ANL-029 — Micro method editing by analyst
+
+| Field | Value |
+|-------|-------|
+| **Priority** | P0 |
+| **Type** | Positive |
+| **Preconditions** | Micro category sample with 6 tests assigned |
+| **Steps** | Open a micro test; edit **Method of Analysis** (e.g. custom IS reference); enter Result and custom Unit (`cfu/100ml`); save; generate Micro protocol. |
+| **Expected** | `sample_test_results.method` and `unit` persist analyst edits; Micro protocol table shows saved method and unit/result text. |
+| **Automated** | `tests/test_analyst_workflow.py::test_micro_sample_custom_unit_and_method_editing` |
+
+---
+
+## Analyst workflow automated suite
+
+| Coverage | Automated |
+|----------|-----------|
+| Logo/branding test visibility + protocol letterhead toggle | `tests/test_analyst_workflow.py::test_analyst_screen_branding_logo` |
+| Formula → protocol reflection | `tests/test_analyst_workflow.py::test_formula_evaluation_and_report_reflection` |
+| Multi-sample result isolation | `tests/test_analyst_workflow.py::test_multi_sample_partial_execution` |
+| Water micro final page + procedure edit | `tests/test_analyst_workflow.py::test_water_protocol_parameters_and_micro_final_page` |
+| Protocol preview artifacts (water / micro / food) | `tests/test_analyst_workflow.py::test_protocol_preview_generates_water_micro_food` → `tests/output_preview/protocol/` |

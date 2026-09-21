@@ -29,7 +29,11 @@ from services.audit import (  # noqa: E402
     now_lab,
 )
 from services.auth import get_session_user  # noqa: E402
-from services.protocol_store import get_protocol_header, list_results  # noqa: E402
+from services.protocol_store import (  # noqa: E402
+    format_analysis_date_range,
+    get_protocol_header,
+    list_results,
+)
 from services.protocols.test_catalog import (  # noqa: E402
     CATEGORY_MICRO,
     CATEGORY_WATER,
@@ -56,13 +60,14 @@ from services.report_settings import (  # noqa: E402
     default_authorized_signatory,
     load_report_settings,
     signatory_names,
-    signatory_role,
 )
-from services.test_report_micro_docx import MicroReportFillOptions  # noqa: E402
+from services.reviewer_report import (  # noqa: E402
+    build_generation_params,
+    generate_reviewer_final_report,
+)
 from services.test_report_pdf import (  # noqa: E402
     build_test_report_data,
     default_checked_by_analysts,
-    generate_final_report,
     suggest_test_report_filename,
 )
 from services.test_report_water_docx import (  # noqa: E402
@@ -74,9 +79,27 @@ from services.micro_report_catalog import (  # noqa: E402
     micro_report_keys_ordered,
     spec_for_key,
 )
-from services.ulr import generate_ulr_no, lab_code_for_ulr  # noqa: E402
-from services.water_report_catalog import WaterReportLimits  # noqa: E402
+from services.reviewer_report_defaults import (  # noqa: E402
+    default_reviewer_report_fields,
+)
+from services.ulr import (  # noqa: E402
+    ULR_TOTAL_LENGTH,
+    generate_ulr_no,
+    lab_code_for_ulr,
+)
 from ui.auth import require_page_access  # noqa: E402
+from ui.reviewer_state import (  # noqa: E402
+    get_specs_df,
+    get_widget,
+    is_initialized,
+    mark_initialized,
+    on_sample_selected,
+    set_specs_df,
+    set_widget,
+    set_widget_default,
+    spec_editor_key,
+    widget_key,
+)
 from ui.components import (  # noqa: E402
     inject_styles,
     render_db_status,
@@ -232,6 +255,9 @@ def main() -> None:
         st.session_state.pop("reviewer_pdf_name", None)
         st.session_state["reviewer_pdf_for"] = selected.sample_code
 
+    on_sample_selected(selected.sample_code)
+    code = selected.sample_code
+
     if selected.status == "in_progress":
         st.warning(
             "This sample is still **in progress**. Analyst may not have finished "
@@ -305,7 +331,7 @@ def main() -> None:
         with h3:
             st.markdown(
                 f"**Analysis date:** "
-                f"{header.date_of_analysis.isoformat() if header.date_of_analysis else '—'}"
+                f"{format_analysis_date_range(header.date_of_analysis_from, header.date_of_analysis_to, legacy_single=header.date_of_analysis) or '—'}"
             )
             st.markdown(f"**Appearance:** {header.appearance_text or '—'}")
 
@@ -340,64 +366,51 @@ def main() -> None:
 
     is_water = normalize_category(selected.category) == CATEGORY_WATER
     is_micro = normalize_category(selected.category) == CATEGORY_MICRO
-    fields_key = "reviewer_report_fields_for"
-    cond_key = f"reviewer_condition_{selected.sample_code}"
-    tests_key = f"reviewer_tests_processed_{selected.sample_code}"
-    spec_key = f"reviewer_specs_{selected.sample_code}"
-    appearance_key = f"reviewer_appearance_{selected.sample_code}"
-    testing_at_key = f"reviewer_testing_at_{selected.sample_code}"
-    ulr_key = f"reviewer_ulr_{selected.sample_code}"
-    report_chem_key = f"reviewer_report_chem_{selected.sample_code}"
-    report_micro_key = f"reviewer_report_micro_{selected.sample_code}"
-    report_no_key = f"reviewer_report_no_{selected.sample_code}"
-    customer_sid_key = f"reviewer_customer_sid_{selected.sample_code}"
-    loc_key = f"reviewer_location_{selected.sample_code}"
-    samp_method_key = f"reviewer_sampling_method_{selected.sample_code}"
-    auth_key = f"reviewer_auth_signatory_{selected.sample_code}"
-    checked_key = f"reviewer_checked_by_{selected.sample_code}"
-    remark_key = f"reviewer_remark_{selected.sample_code}"
-    disclaimer_key = f"reviewer_disclaimer_{selected.sample_code}"
+    cond_key = widget_key("condition", code)
+    tests_key = widget_key("tests_processed", code)
+    appearance_key = widget_key("appearance", code)
+    testing_at_key = widget_key("testing_at", code)
+    ulr_key = widget_key("ulr", code)
+    report_chem_key = widget_key("report_chem", code)
+    report_micro_key = widget_key("report_micro", code)
+    report_no_key = widget_key("report_no", code)
+    customer_sid_key = widget_key("customer_sid", code)
+    customer_addr_key = widget_key("customer_addr", code)
+    report_date_key = widget_key("report_date", code)
+    batch_no_key = widget_key("batch_no", code)
+    lab_code_key = widget_key("lab_code", code)
+    loc_key = widget_key("location", code)
+    samp_method_key = widget_key("sampling_method", code)
+    auth_key = widget_key("auth_signatory", code)
+    remark_key = widget_key("remark", code)
+    disclaimer_key = widget_key("disclaimer", code)
     report_settings = load_report_settings()
     signatory_options = signatory_names(report_settings) or [""]
 
-    def _render_signatory_pickers() -> None:
-        analyst_checked = default_checked_by_analysts(selected)
-        s1, s2 = st.columns(2)
-        with s1:
-            st.selectbox(
-                "Authorized signatory",
-                options=signatory_options,
-                key=auth_key,
-            )
-        with s2:
-            st.text_input(
-                "Checked by (assigned analyst)",
-                value=analyst_checked,
-                disabled=True,
-                help="Filled from the analyst assigned at reception. Each analyst signs on the printed report.",
-            )
-            st.session_state[checked_key] = analyst_checked
-
     if is_water:
-        if st.session_state.get(fields_key) != selected.sample_code:
-            st.session_state[fields_key] = selected.sample_code
-            st.session_state[cond_key] = ""
-            st.session_state[appearance_key] = (header.appearance_text or "").strip()
-            st.session_state[testing_at_key] = DEFAULT_TESTING_CONDUCTED_AT
-            st.session_state[ulr_key] = generate_ulr_no(
-                lab_code_for_ulr(selected.lab_code, selected.sample_code)
+        if not is_initialized(code):
+            set_widget_default("condition", code, "")
+            set_widget_default("appearance", code, (header.appearance_text or "").strip())
+            set_widget_default("testing_at", code, DEFAULT_TESTING_CONDUCTED_AT)
+            set_widget_default(
+                "ulr",
+                code,
+                generate_ulr_no(lab_code_for_ulr(selected.lab_code, selected.sample_code)),
             )
             report_no = default_test_report_no(
                 selected, with_logo=default_report_with_logo(selected)
             )
-            st.session_state[report_chem_key] = report_no
-            st.session_state[report_micro_key] = report_no
-            st.session_state[customer_sid_key] = (
-                (selected.parameters or "").strip() or "Drinking Water"
+            set_widget_default("report_chem", code, report_no)
+            set_widget_default("report_micro", code, report_no)
+            set_widget_default(
+                "customer_sid",
+                code,
+                (selected.parameters or "").strip() or "Drinking Water",
             )
-            st.session_state[auth_key] = default_authorized_signatory(report_settings)
-            st.session_state[checked_key] = default_checked_by_analysts(selected)
-            st.session_state[spec_key] = pd.DataFrame(build_water_report_limit_rows(selected, results))
+            set_widget_default("auth_signatory", code, default_authorized_signatory(report_settings))
+            set_widget_default("checked_by", code, default_checked_by_analysts(selected))
+            set_specs_df(code, pd.DataFrame(build_water_report_limit_rows(selected, results)))
+            mark_initialized(code)
 
         p1, p2 = st.columns(2)
         with p1:
@@ -415,7 +428,7 @@ def main() -> None:
             )
             st.markdown(
                 f"**Analysis date:** "
-                f"{header.date_of_analysis.strftime('%d/%m/%Y') if header.date_of_analysis else '—'}"
+                f"{format_analysis_date_range(header.date_of_analysis_from, header.date_of_analysis_to, legacy_single=header.date_of_analysis) or '—'}"
             )
             st.markdown(f"**Quantity:** {selected.quantity or '—'}")
 
@@ -430,10 +443,11 @@ def main() -> None:
             st.text_input("Report No (Chemical page)", key=report_chem_key)
             st.text_input("Report No (Physical/Micro page)", key=report_micro_key)
 
-        if not st.session_state[spec_key].empty:
+        specs_df = get_specs_df(code)
+        if not specs_df.empty:
             st.markdown("**Test results and IS 10500 limits**")
             edited_specs = st.data_editor(
-                st.session_state[spec_key],
+                specs_df,
                 column_config={
                     "Test": st.column_config.TextColumn("Test key", disabled=True),
                     "Result": st.column_config.TextColumn("Result", disabled=True),
@@ -443,41 +457,49 @@ def main() -> None:
                 },
                 use_container_width=True,
                 hide_index=True,
-                key=f"reviewer_water_spec_editor_{selected.sample_code}",
+                key=spec_editor_key(code, is_water=True),
             )
-            st.session_state[spec_key] = edited_specs
+            set_specs_df(code, edited_specs)
         st.caption(
             "Microbiological results are taken from the water micro protocol "
             "observations (Present / Absent)."
         )
-        _render_signatory_pickers()
     elif is_micro:
-        if st.session_state.get(fields_key) != selected.sample_code:
-            st.session_state[fields_key] = selected.sample_code
-            st.session_state[cond_key] = ""
-            st.session_state[appearance_key] = (header.appearance_text or "").strip()
-            st.session_state[report_no_key] = default_test_report_no(
-                selected, with_logo=default_report_with_logo(selected)
+        if not is_initialized(code):
+            set_widget_default("condition", code, "")
+            set_widget_default("appearance", code, (header.appearance_text or "").strip())
+            set_widget_default(
+                "report_no",
+                code,
+                default_test_report_no(
+                    selected, with_logo=default_report_with_logo(selected)
+                ),
             )
-            st.session_state[customer_sid_key] = (selected.parameters or "").strip() or (
-                selected.sample_name or ""
+            set_widget_default(
+                "customer_sid",
+                code,
+                (selected.parameters or "").strip() or (selected.sample_name or ""),
             )
-            st.session_state[auth_key] = default_authorized_signatory(report_settings)
-            st.session_state[checked_key] = default_checked_by_analysts(selected)
+            set_widget_default("auth_signatory", code, default_authorized_signatory(report_settings))
+            set_widget_default("checked_by", code, default_checked_by_analysts(selected))
             by_key = {r.test_key: r for r in results}
             keys = micro_report_keys_ordered(set(selected.selected_test_keys()) or set(by_key))
-            st.session_state[spec_key] = pd.DataFrame(
-                [
-                    {
-                        "Sr": spec_for_key(k).sr_no,
-                        "Test": spec_for_key(k).name,
-                        "Result": (by_key[k].result_value if k in by_key else "") or "",
-                        "Limits": spec_for_key(k).limits,
-                        "Method": spec_for_key(k).method,
-                    }
-                    for k in keys
-                ]
+            set_specs_df(
+                code,
+                pd.DataFrame(
+                    [
+                        {
+                            "Sr": spec_for_key(k).sr_no,
+                            "Test": spec_for_key(k).name,
+                            "Result": (by_key[k].result_value if k in by_key else "") or "",
+                            "Limits": spec_for_key(k).limits,
+                            "Method": spec_for_key(k).method,
+                        }
+                        for k in keys
+                    ]
+                ),
             )
+            mark_initialized(code)
 
         p1, p2 = st.columns(2)
         with p1:
@@ -495,7 +517,7 @@ def main() -> None:
             )
             st.markdown(
                 f"**Analysis date:** "
-                f"{header.date_of_analysis.strftime('%d/%m/%Y') if header.date_of_analysis else '—'}"
+                f"{format_analysis_date_range(header.date_of_analysis_from, header.date_of_analysis_to, legacy_single=header.date_of_analysis) or '—'}"
             )
             st.markdown(f"**Quantity:** {selected.quantity or '—'}")
 
@@ -507,10 +529,11 @@ def main() -> None:
         with m2:
             st.text_input("Report No", key=report_no_key)
 
-        if not st.session_state[spec_key].empty:
+        specs_df = get_specs_df(code)
+        if not specs_df.empty:
             st.markdown("**Microbiological Test — results (limits & methods are fixed)**")
             st.dataframe(
-                st.session_state[spec_key],
+                specs_df,
                 use_container_width=True,
                 hide_index=True,
             )
@@ -518,56 +541,84 @@ def main() -> None:
             "Name of Test, Limits, and Method of Analysis are fixed for all Micro samples. "
             "Only Results come from the analyst."
         )
-        _render_signatory_pickers()
     else:
         preview = build_test_report_data(selected, header, results)
-        if st.session_state.get(fields_key) != selected.sample_code:
-            st.session_state[fields_key] = selected.sample_code
-            st.session_state[cond_key] = ""
-            st.session_state[tests_key] = preview.tests_processed
-            st.session_state[ulr_key] = generate_ulr_no(
-                lab_code_for_ulr(selected.lab_code, selected.sample_code)
+        report_defaults = default_reviewer_report_fields(selected, header)
+        if not is_initialized(code):
+            set_widget_default("condition", code, "")
+            set_widget_default("tests_processed", code, preview.tests_processed)
+            set_widget_default("ulr", code, report_defaults["ulr"])
+            set_widget_default("report_date", code, report_defaults["report_date"])
+            set_widget_default("customer_addr", code, report_defaults["customer_addr"])
+            set_widget_default("customer_sid", code, report_defaults["customer_sid"])
+            set_widget_default("batch_no", code, report_defaults["batch_no"])
+            set_widget_default("lab_code", code, report_defaults["lab_code"])
+            set_widget_default("location", code, "--")
+            set_widget_default(
+                "sampling_method",
+                code,
+                "Laboratory sampling" if selected.sampling_by_lab else "--",
             )
-            st.session_state[loc_key] = "--"
-            st.session_state[samp_method_key] = (
-                "Laboratory sampling" if selected.sampling_by_lab else "--"
+            set_widget_default("auth_signatory", code, default_authorized_signatory(report_settings))
+            set_widget_default("checked_by", code, default_checked_by_analysts(selected))
+            set_widget_default("remark", code, report_settings.default_remark_text)
+            set_widget_default(
+                "disclaimer",
+                code,
+                "\n".join(report_settings.disclaimer_bullets),
             )
-            st.session_state[auth_key] = default_authorized_signatory(report_settings)
-            st.session_state[checked_key] = default_checked_by_analysts(selected)
-            st.session_state[remark_key] = report_settings.default_remark_text
-            st.session_state[disclaimer_key] = "\n".join(
-                report_settings.disclaimer_bullets
+            set_specs_df(
+                code,
+                pd.DataFrame(
+                    [
+                        {
+                            "Sr": row.sr_no,
+                            "Test": row.test_name,
+                            "Result": row.result or "",
+                            "Specification": row.specification or "",
+                            "Method": row.method or "",
+                        }
+                        for row in preview.rows
+                    ]
+                ),
             )
-            st.session_state[spec_key] = pd.DataFrame(
-                [
-                    {
-                        "Sr": row.sr_no,
-                        "Test": row.test_name,
-                        "Result": row.result or "",
-                        "Specification": row.specification or "",
-                        "Method": row.method or "",
-                    }
-                    for row in preview.rows
-                ]
-            )
+            mark_initialized(code)
 
         p1, p2 = st.columns(2)
         with p1:
-            st.markdown(f"**Name / address:**\n\n{preview.customer_name_address or '—'}")
             st.markdown(f"**Sample:** {preview.sample_name or '—'}")
-            st.markdown(f"**Batch:** {preview.batch_no or '—'}")
-            st.markdown(f"**Lab code:** {preview.lab_code or '—'}")
         with p2:
             st.markdown(f"**Receipt date:** {preview.date_of_sample_receipt or '—'}")
             st.markdown(f"**Analysis date:** {preview.test_performance_date or '—'}")
             st.markdown(f"**Quantity:** {preview.sample_quantity or '—'}")
+
+        st.text_area(
+            "Customer name & address",
+            key=customer_addr_key,
+            height=100,
+            help="From reception CTR; editable before generating the Word report.",
+        )
+        f1, f2 = st.columns(2)
+        with f1:
+            st.text_input("Customer Sample ID", key=customer_sid_key)
+            st.text_input("Batch No.", key=batch_no_key)
+            st.text_input("Lab Code", key=lab_code_key)
+        with f2:
+            st.date_input("Report date", key=report_date_key, format="DD/MM/YYYY")
+            st.text_input(
+                "ULR No",
+                key=ulr_key,
+                help=(
+                    f"Auto-generated from lab code ({ULR_TOTAL_LENGTH}-character ULR, "
+                    "e.g. TC1611826000030601F). Edit if needed."
+                ),
+            )
 
         st.text_input(
             "Condition of Sample",
             key=cond_key,
             help="Printed on the final report. Enter before generating.",
         )
-        st.text_input("ULR No", key=ulr_key)
         st.text_input(
             "Tests processed",
             key=tests_key,
@@ -578,22 +629,6 @@ def main() -> None:
             st.text_input("Location of sampling", key=loc_key)
         with m2:
             st.text_input("Sampling Method", key=samp_method_key)
-        s1, s2 = st.columns(2)
-        with s1:
-            st.selectbox(
-                "Authorized signatory",
-                options=signatory_options,
-                key=auth_key,
-            )
-        with s2:
-            analyst_checked = default_checked_by_analysts(selected)
-            st.text_input(
-                "Checked by (assigned analyst)",
-                value=analyst_checked,
-                disabled=True,
-                help="Filled from the analyst assigned at reception.",
-            )
-            st.session_state[checked_key] = analyst_checked
         st.text_area(
             "Remark (optional override)",
             key=remark_key,
@@ -609,8 +644,9 @@ def main() -> None:
 
         if preview.rows:
             st.markdown("**Test results and specifications**")
+            specs_df = get_specs_df(code)
             edited_specs = st.data_editor(
-                st.session_state[spec_key],
+                specs_df,
                 column_config={
                     "Sr": st.column_config.NumberColumn("Sr", disabled=True),
                     "Test": st.column_config.TextColumn("Test", disabled=True),
@@ -620,9 +656,29 @@ def main() -> None:
                 },
                 use_container_width=True,
                 hide_index=True,
-                key=f"reviewer_spec_editor_{selected.sample_code}",
+                key=spec_editor_key(code, is_water=False),
             )
-            st.session_state[spec_key] = edited_specs
+            set_specs_df(code, edited_specs)
+
+    analyst_checked = default_checked_by_analysts(selected)
+    s1, s2 = st.columns(2)
+    with s1:
+        st.selectbox(
+            "Authorized signatory",
+            options=signatory_options,
+            key=auth_key,
+        )
+    with s2:
+        st.text_input(
+            "Checked by (assigned analyst)",
+            value=analyst_checked,
+            disabled=True,
+            help=(
+                "Filled from the analyst assigned at reception. "
+                "Each analyst signs on the printed report."
+            ),
+        )
+        set_widget("checked_by", code, analyst_checked)
 
     reviewer_note = st.text_input(
         "Reviewer note (optional, stored in analyst remarks)",
@@ -633,111 +689,22 @@ def main() -> None:
         try:
             gen_by = actor_display_name(actor)
             gen_at = format_stamp_datetime(now_lab())
-            specification_by_test_name: dict[str, str] = {}
-            limit_overrides: dict[str, WaterReportLimits] = {}
-            specs_df = st.session_state.get(spec_key)
-            if specs_df is not None and not specs_df.empty:
-                if is_water:
-                    for _, row in specs_df.iterrows():
-                        key = str(row["Test"])
-                        limit_overrides[key] = WaterReportLimits(
-                            desirable=str(row.get("Desirable Limit", "") or ""),
-                            permissible=str(row.get("Permissible limit", "") or ""),
-                        )
-                elif not is_micro:
-                    for _, row in specs_df.iterrows():
-                        specification_by_test_name[str(row["Test"])] = str(
-                            row.get("Specification", "") or ""
-                        )
-
-            water_opts = None
-            micro_opts = None
-            auth_name = st.session_state.get(auth_key, "")
-            check_name = (
-                st.session_state.get(checked_key, "")
-                or default_checked_by_analysts(selected)
+            params = build_generation_params(
+                selected,
+                is_water=is_water,
+                is_micro=is_micro,
+                specs_df=get_specs_df(code),
+                sample_code=code,
+                report_settings=report_settings,
+                generated_by=gen_by,
+                generated_at=gen_at,
+                get_field=get_widget,
             )
-            auth_role = signatory_role(auth_name, report_settings)
-            check_role = "Analyst" if check_name else "Quality Manager"
-            if is_water:
-                water_opts = WaterReportFillOptions(
-                    ulr_no=st.session_state.get(ulr_key, ""),
-                    report_no_chemical=st.session_state.get(report_chem_key, ""),
-                    report_no_micro=st.session_state.get(report_micro_key, ""),
-                    condition_of_sample=st.session_state.get(cond_key, ""),
-                    customer_sample_id=st.session_state.get(customer_sid_key, ""),
-                    sample_appearance=st.session_state.get(appearance_key, ""),
-                    testing_conducted_at=st.session_state.get(testing_at_key, ""),
-                    limit_overrides=limit_overrides,
-                    generated_by=gen_by,
-                    generated_at=gen_at,
-                    authorized_signatory=auth_name,
-                    checked_by=check_name,
-                    authorized_signatory_role=auth_role,
-                    checked_by_role=check_role,
-                )
-            elif is_micro:
-                micro_opts = MicroReportFillOptions(
-                    report_no=st.session_state.get(report_no_key, ""),
-                    condition_of_sample=st.session_state.get(cond_key, ""),
-                    customer_sample_id=st.session_state.get(customer_sid_key, ""),
-                    sample_appearance=st.session_state.get(appearance_key, ""),
-                    generated_by=gen_by,
-                    generated_at=gen_at,
-                    authorized_signatory=auth_name,
-                    checked_by=check_name,
-                    authorized_signatory_role=auth_role,
-                    checked_by_role=check_role,
-                )
-
-            output = generate_final_report(
+            output = generate_reviewer_final_report(
                 selected,
                 header,
                 results,
-                generated_by=gen_by,
-                generated_at=gen_at,
-                condition_of_sample=st.session_state.get(cond_key, ""),
-                tests_processed=(
-                    st.session_state.get(tests_key, "")
-                    if not is_water and not is_micro
-                    else None
-                ),
-                specification_by_test_name=(
-                    specification_by_test_name or None
-                    if not is_water and not is_micro
-                    else None
-                ),
-                water_opts=water_opts,
-                micro_opts=micro_opts,
-                ulr_no=(
-                    st.session_state.get(ulr_key, "")
-                    if not is_micro
-                    else None
-                ),
-                location_of_sampling=(
-                    st.session_state.get(loc_key, "")
-                    if not is_water and not is_micro
-                    else None
-                ),
-                sampling_method=(
-                    st.session_state.get(samp_method_key, "")
-                    if not is_water and not is_micro
-                    else None
-                ),
-                authorized_signatory=auth_name or None,
-                checked_by=check_name or None,
-                remark_text=(
-                    st.session_state.get(remark_key, "")
-                    if not is_water and not is_micro
-                    else None
-                ),
-                disclaimer_bullets=[
-                    ln.strip()
-                    for ln in (st.session_state.get(disclaimer_key, "") or "").splitlines()
-                    if ln.strip()
-                ]
-                if not is_water and not is_micro
-                else None,
+                params,
             )
             note = (reviewer_note or "").strip()
             remarks = selected.analyst_remarks or ""
@@ -784,10 +751,12 @@ def main() -> None:
                 use_container_width=True,
                 key="dl_final_report_pdf",
             )
-        elif st.session_state.get("reviewer_report_is_water"):
+        elif st.session_state.get("reviewer_report_is_water") or st.session_state.get(
+            "reviewer_report_is_micro"
+        ):
             st.info(
-                "Word report is ready. PDF conversion requires Microsoft Word "
-                "(docx2pdf) on this machine."
+                "Word report is ready. PDF conversion uses Microsoft Word on "
+                "Windows or LibreOffice headless on Linux/Docker."
             )
 
 

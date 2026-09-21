@@ -14,7 +14,12 @@ import json
 
 
 
-from services.requests import SampleRow, TestRequestData, validate_request
+from services.requests import (
+    SampleRow,
+    TestRequestData,
+    _apply_package_report_format_sets,
+    validate_request,
+)
 from tests.conftest import sample_verification_kwargs
 
 from services.samples import (
@@ -229,7 +234,24 @@ class TestReportFormatHelpers:
         assert no_logo_test_keys(sample) == {"total_ash"}
 
 
-
+class TestApplyPackageReportFormatSets:
+    def test_both_format_merges_logo_sets_for_analyst_tests_json(self):
+        row = SampleRow(
+            sr_no=1,
+            sample_name="Jaggery",
+            parameters="FSSAI",
+            test_keys=["moisture", "total_ash"],
+            report_format=REPORT_FORMAT_BOTH,
+            assigned_analyst_id=_VALID_ANALYST_ID,
+            protocol_no="P-001",
+            **sample_verification_kwargs(verify_lab_code="LAB/CTR/26/001"),
+        )
+        keys = _apply_package_report_format_sets(
+            row, ["moisture"], ["total_ash"]
+        )
+        assert keys == ["moisture", "total_ash"]
+        assert row.tests_with_logo == ["moisture"]
+        assert row.tests_without_logo == ["total_ash"]
 
 
 class TestValidateReportFormat:

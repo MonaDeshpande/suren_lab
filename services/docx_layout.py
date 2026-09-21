@@ -22,7 +22,7 @@ from docx.text.paragraph import Paragraph
 
 from docx.shared import Pt
 
-from services.samples import report_page_label
+from services.samples import format_report_footer_metadata, report_page_label
 
 REPORT_QSF_LABEL = "QSF No -7.8.2"
 AUTHORIZED_SIGNATORY_MARKER = "{{AUTHORIZED_SIGNATORY}}"
@@ -311,9 +311,33 @@ def _append_field_run(paragraph: Paragraph, field_code: str, placeholder: str = 
     r.append(fld_end)
 
 
-def _set_footer_page_label(footer, *, with_logo: bool) -> None:
-    """Replace footer content with one right-aligned 'page N of M' field line."""
+def _append_disclaimer_footer_paragraph(footer, disclaimer_text: str) -> None:
+    """Add compact disclaimer above footer metadata."""
+    text = (disclaimer_text or "").strip()
+    if not text:
+        return
+    para = footer.add_paragraph()
+    para.alignment = WD_ALIGN_PARAGRAPH.LEFT
+    run = para.add_run(text)
+    run.font.size = Pt(7)
+
+
+def _set_footer_page_label(
+    footer,
+    *,
+    with_logo: bool,
+    generated_by: str = "",
+    generated_at: str = "",
+    disclaimer_text: str = "",
+) -> None:
+    """Replace footer with metadata (left) and dynamic page N of M fields (right)."""
     _clear_footer_part(footer)
+    _append_disclaimer_footer_paragraph(footer, disclaimer_text)
+    meta = format_report_footer_metadata(generated_by, generated_at)
+    if meta:
+        left_para = footer.add_paragraph()
+        left_para.alignment = WD_ALIGN_PARAGRAPH.LEFT
+        left_para.add_run(meta)
     para = footer.add_paragraph()
     para.alignment = WD_ALIGN_PARAGRAPH.RIGHT
     word = "page" if with_logo else "pg"
@@ -323,9 +347,22 @@ def _set_footer_page_label(footer, *, with_logo: bool) -> None:
     _append_field_run(para, " NUMPAGES ")
 
 
-def _set_footer_static_one_of_one(footer, *, with_logo: bool) -> None:
-    """Replace footer with a fixed 'page 1 of 1' / 'pg 1 of 1' label."""
+def _set_footer_static_one_of_one(
+    footer,
+    *,
+    with_logo: bool,
+    generated_by: str = "",
+    generated_at: str = "",
+    disclaimer_text: str = "",
+) -> None:
+    """Replace footer with metadata (left) and fixed page 1 of 1 label (right)."""
     _clear_footer_part(footer)
+    _append_disclaimer_footer_paragraph(footer, disclaimer_text)
+    meta = format_report_footer_metadata(generated_by, generated_at)
+    if meta:
+        left_para = footer.add_paragraph()
+        left_para.alignment = WD_ALIGN_PARAGRAPH.LEFT
+        left_para.add_run(meta)
     para = footer.add_paragraph()
     para.alignment = WD_ALIGN_PARAGRAPH.RIGHT
     para.add_run(report_page_label(with_logo=with_logo))
@@ -412,9 +449,12 @@ def set_report_footer(
     total: int = 1,
     with_logo_per_section: list[bool] | None = None,
     static_one_of_one: bool = False,
+    generated_by: str = "",
+    generated_at: str = "",
+    disclaimer_text: str = "",
 ) -> None:
     """
-    Right-align a single page label in every section footer.
+    Stamp footer metadata (left) and page label (right) on every section.
 
     When *static_one_of_one* is True, writes literal ``page 1 of 1`` text.
     Otherwise uses Word PAGE / NUMPAGES fields (``page`` / *total* ignored).
@@ -427,9 +467,21 @@ def set_report_footer(
         )
         for footer_part in _section_footer_parts(section):
             if static_one_of_one:
-                _set_footer_static_one_of_one(footer_part, with_logo=logo_flag)
+                _set_footer_static_one_of_one(
+                    footer_part,
+                    with_logo=logo_flag,
+                    generated_by=generated_by,
+                    generated_at=generated_at,
+                    disclaimer_text=disclaimer_text,
+                )
             else:
-                _set_footer_page_label(footer_part, with_logo=logo_flag)
+                _set_footer_page_label(
+                    footer_part,
+                    with_logo=logo_flag,
+                    generated_by=generated_by,
+                    generated_at=generated_at,
+                    disclaimer_text=disclaimer_text,
+                )
 
 
 def clear_header_images(doc: Document) -> None:
@@ -456,6 +508,8 @@ def combine_docx_bytes(
     *,
     with_logo_per_section: list[bool] | None = None,
     static_one_of_one: bool = False,
+    generated_by: str = "",
+    generated_at: str = "",
 ) -> bytes:
     """Concatenate filled reports with a new page/section per part."""
     if not parts:
@@ -478,6 +532,8 @@ def combine_docx_bytes(
         with_logo=True,
         with_logo_per_section=with_logo_per_section,
         static_one_of_one=static_one_of_one,
+        generated_by=generated_by,
+        generated_at=generated_at,
     )
     out = io.BytesIO()
     dst.save(out)

@@ -420,6 +420,19 @@
 
 ---
 
+## TC-REC-037 — Multi-type CTR, same customer (with/without logo)
+
+| Field | Value |
+|-------|-------|
+| **Priority** | P0 |
+| **Type** | Positive / Regression |
+| **Preconditions** | Logged in as reception; DB connected; two distinct analysts available for water row |
+| **Steps** | 1. Select one customer (e.g. ABC Foods Pvt Ltd). 2. Set Lab Code `SLS/26/900`. 3. Add five sample rows under the same CTR: **Water** (Potable Water), **Micro** (Cooked Food: Paneer Gravy), **Food with logo** (Jaggery, format A), **Food both** (Jaggery, format A+B with WL/NWL tests from package), **Cattle Feed** (Cattle Feed Mix). 4. Assign analysts, protocol numbers, and complete verification checklist per row. 5. Use mixed storage temperatures including **Other** free text (e.g. 25). 6. **Save & Generate Form**; download CTR PDF and DOCX. |
+| **Expected** | Five sample codes `SLS/26/900/01` … `/05`; per-row category stored; food row 3 `with_logo`, row 4 `both` with separate WL/NWL sets; `verify_sample_code` auto-filled from derived sample code; storage values show `°C` where applicable; CTR checklist uses `✓` not `X`; PDF and DOCX downloadable. |
+| **Automated** | `tests/test_db_integration.py` (DB persistence), `tests/test_report_preview.py::test_ctr_preview_from_db_round_trip` (CTR artifacts → `tests/output_preview/ctr/`) |
+
+---
+
 ## Known gap (exploratory)
 
 | ID | Note |
