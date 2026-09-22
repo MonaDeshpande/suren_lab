@@ -6,8 +6,8 @@ Fill the reference Word template with form data and return .docx bytes.
 Template:
   reference/Customer Test Request form LLP.docx
 
-PDF is generated separately via ReportLab (services/pdf_generator.py).
-This module serves the Word (.docx) download only.
+PDF download uses ReportLab layout via services/ctr_pdf.py.
+This module serves the Word (.docx) download (LLP body + CTR_template header only).
 """
 
 from __future__ import annotations
@@ -25,8 +25,10 @@ from docx.table import Table
 
 from services.ctr_verification import (
     CHECKLIST_TITLE,
+    CUSTOMER_SIGNATURE_LABEL,
     SAMPLE_SECTION_HEADING,
     SAMPLE_TABLE_HEADERS,
+    ctr_signature_date,
     ctr_test_names_for_sample,
     verification_checklist_rows,
 )
@@ -39,11 +41,28 @@ from services.requests import (
     delivery_mode_is_selected,
     effective_sample_request_details,
 )
-from services.document_templates import CTR_TEMPLATE_PATH
-from services.docx_layout import set_ctr_signature_footer
-from services.pdf_generator import FOOTER_RIGHT_TEXT, _ctr_footer_left
+from docx.text.paragraph import Paragraph
 
-TEMPLATE_PATH = CTR_TEMPLATE_PATH
+from services.document_templates import CTR_FORM_BODY_PATH, CTR_LETTERHEAD_PATH
+from services.docx_layout import (
+    apply_ctr_header_only,
+    apply_table_cell_font_size,
+    compact_paragraph_spacing,
+    find_paragraph,
+    read_table_grid_column_widths,
+    remove_body_paragraph_containing,
+    remove_empty_paragraphs_following_table,
+    remove_table,
+    replace_table_grid_columns,
+)
+
+TEMPLATE_PATH = CTR_FORM_BODY_PATH
+
+# ~6.5" content width in twips (matches ReportLab usable width).
+_CTR_CONTENT_WIDTH_TWIPS = 9360
+_CTR_CHECKLIST_COL_WIDTHS = [650, 3400, _CTR_CONTENT_WIDTH_TWIPS - 650 - 3400]
+_CTR_DEFAULT_SAMPLE_COL_WIDTHS = [720, 2000, 1600, 1200, 3840]
+_STALE_SAMPLE_DESCRIPTION_NEEDLE = "Sample Description & tests to be perform"
 
 
 def _fmt_date(d: Optional[date]) -> str:
@@ -102,10 +121,16 @@ def _add_page_break(doc: Document) -> None:
     run.add_break(WD_BREAK.PAGE)
 
 
-def _trim_table_rows(table: Table, keep_rows: int) -> None:
-    """Remove trailing rows from a Word table (keep header + data rows)."""
-    while len(table.rows) > keep_rows:
-        table._element.remove(table.rows[-1]._element)
+def _style_ctr_heading(paragraph: Paragraph) -> None:
+    compact_paragraph_spacing(paragraph, space_before_pt=4, space_after_pt=2)
+
+
+def _add_ctr_bold_heading(doc: Document, text: str) -> Paragraph:
+    para = doc.add_paragraph()
+    run = para.add_run(text)
+    run.bold = True
+    _style_ctr_heading(para)
+    return para
 
 
 def _set_table_borders(table: Table) -> None:
@@ -125,9 +150,18 @@ def _set_table_borders(table: Table) -> None:
     tbl_pr.append(borders)
 
 
-def _add_sample_table(doc: Document, sample: SampleRow, sr_index: int) -> Table:
+def _add_sample_table(
+    doc: Document,
+    sample: SampleRow,
+    sr_index: int,
+    *,
+    col_widths: list[int] | None = None,
+) -> Table:
     table = doc.add_table(rows=2, cols=5)
     _set_table_borders(table)
+    widths = col_widths or _CTR_DEFAULT_SAMPLE_COL_WIDTHS
+    if len(widths) == 5:
+        replace_table_grid_columns(table, widths)
     header_cells = table.rows[0].cells
     for idx, label in enumerate(SAMPLE_TABLE_HEADERS):
         _set_cell_text(header_cells[idx], label)
@@ -137,6 +171,7 @@ def _add_sample_table(doc: Document, sample: SampleRow, sr_index: int) -> Table:
     _set_cell_text(data_cells[2], sample.batch_code or "")
     _set_cell_text(data_cells[3], sample.quantity or "")
     _set_cell_text(data_cells[4], ctr_parameters_display(sample))
+    apply_table_cell_font_size(table, size_pt=10)
     return table
 
 
@@ -144,10 +179,10 @@ def _add_tests_paragraphs(doc: Document, sample: SampleRow) -> None:
     names = ctr_test_names_for_sample(sample)
     if not names:
         return
-    doc.add_paragraph("Tests to be performed:")
+    _add_ctr_bold_heading(doc, "Tests to be performed:")
     for index, name in enumerate(names, start=1):
-        doc.add_paragraph(f"{index}. {name}")
-
+        line = doc.add_paragraph(f"{index}. {name}")
+        compact_paragraph_spacing(line, space_before_pt=0, space_after_pt=0)
 
 def _add_verification_table(
     doc: Document,
@@ -170,7 +205,59 @@ def _add_verification_table(
         _set_cell_text(cells[0], str(row.sr))
         _set_cell_text(cells[1], row.particular)
         _set_cell_text(cells[2], row.remark)
+    replace_table_grid_columns(table, _CTR_CHECKLIST_COL_WIDTHS)
+    apply_table_cell_font_size(table, size_pt=10)
     return table
+
+
+def _apply_ctr_signature_block(
+    doc: Document,
+    *,
+    generated_by: str,
+    generated_at: str,
+    request_date: Optional[date],
+) -> None:
+    """Replace template Receiver line with name, date, Receiver | customer sign."""
+    idx = find_paragraph(doc, "Sign & date")
+    if idx is not None:
+        element = doc.paragraphs[idx]._element
+        parent = element.getparent()
+        if parent is not None:
+            parent.remove(element)
+    else:
+        remove_body_paragraph_containing(doc, "Receiver")
+
+    if len(doc.tables) < 2:
+        return
+
+    note_table = doc.tables[1]
+    remove_empty_paragraphs_following_table(doc, note_table, max_remove=15)
+
+    reception_name = (generated_by or "Reception").strip()
+    sig_date = ctr_signature_date(generated_at, request_date)
+
+    sign_table = doc.add_table(rows=3, cols=2)
+    replace_table_grid_columns(
+        sign_table,
+        [_CTR_CONTENT_WIDTH_TWIPS // 2, _CTR_CONTENT_WIDTH_TWIPS // 2],
+    )
+    _set_cell_text(sign_table.rows[0].cells[0], reception_name)
+    _set_cell_text(sign_table.rows[0].cells[1], CUSTOMER_SIGNATURE_LABEL)
+    _set_cell_text(sign_table.rows[1].cells[0], sig_date)
+    _set_cell_text(sign_table.rows[1].cells[1], "")
+    _set_cell_text(sign_table.rows[2].cells[0], "Receiver")
+    _set_cell_text(sign_table.rows[2].cells[1], "")
+    apply_table_cell_font_size(sign_table, size_pt=11)
+
+    note_tbl = note_table._tbl
+    tbl_el = sign_table._tbl
+    tbl_el.getparent().remove(tbl_el)
+
+    blank1 = OxmlElement("w:p")
+    blank2 = OxmlElement("w:p")
+    note_tbl.addnext(blank1)
+    blank1.addnext(blank2)
+    blank2.addnext(tbl_el)
 
 
 def fill_docx_bytes(
@@ -188,6 +275,8 @@ def fill_docx_bytes(
     """
     if not TEMPLATE_PATH.exists():
         raise FileNotFoundError(f"Word template not found at: {TEMPLATE_PATH}")
+    if not CTR_LETTERHEAD_PATH.exists():
+        raise FileNotFoundError(f"CTR letterhead template not found at: {CTR_LETTERHEAD_PATH}")
 
     raw = TEMPLATE_PATH.read_bytes()
     doc = Document(io.BytesIO(raw))
@@ -236,7 +325,8 @@ def fill_docx_bytes(
         )
 
         nos = "" if data.number_of_samples is None else str(data.number_of_samples)
-        _append_to_label(t0.rows[4].cells[0], "Number of Samples", nos)
+        _set_cell_text(t0.rows[4].cells[0], "Number of Samples")
+        _set_cell_text(t0.rows[4].cells[1], nos)
 
         filled_preview = [s for s in data.samples if not s.is_empty()]
         first_details = (
@@ -251,9 +341,12 @@ def fill_docx_bytes(
             _yes_no_cell(first_details.get("sampling_by_lab")),
         )
 
-        _append_to_label(
+        _set_cell_text(
             t0.rows[6].cells[0],
             "Storage Temperature of sample required:",
+        )
+        _set_cell_text(
+            t0.rows[6].cells[1],
             str(first_details.get("storage_temperature") or ""),
         )
 
@@ -286,25 +379,36 @@ def fill_docx_bytes(
 
     filled = [s for s in data.samples if not s.is_empty()]
 
+    sample_col_widths = _CTR_DEFAULT_SAMPLE_COL_WIDTHS
     if len(tables) >= 3:
-        _trim_table_rows(tables[2], 1)
+        grid = read_table_grid_column_widths(tables[2])
+        if len(grid) == 5:
+            sample_col_widths = grid
+        remove_table(tables[2])
 
-    if filled:
-        doc.add_paragraph("")
-        doc.add_paragraph("")
+    remove_body_paragraph_containing(doc, _STALE_SAMPLE_DESCRIPTION_NEEDLE)
+
+    _apply_ctr_signature_block(
+        doc,
+        generated_by=generated_by,
+        generated_at=generated_at,
+        request_date=data.request_date,
+    )
 
     for index, sample in enumerate(filled, start=1):
         details = effective_sample_request_details(sample, data)
         storage_temp = str(details.get("storage_temperature") or "")
-        _add_page_break(doc)
-        doc.add_paragraph(CHECKLIST_TITLE)
+        if index > 1:
+            _add_page_break(doc)
+        _add_ctr_bold_heading(doc, CHECKLIST_TITLE)
         _add_verification_table(doc, sample, storage_temperature=storage_temp)
-        doc.add_paragraph(SAMPLE_SECTION_HEADING)
-        _add_sample_table(doc, sample, index)
+        _add_ctr_bold_heading(doc, SAMPLE_SECTION_HEADING)
+        _add_sample_table(
+            doc, sample, index, col_widths=sample_col_widths
+        )
         _add_tests_paragraphs(doc, sample)
 
-    left_text = _ctr_footer_left(generated_by, generated_at, data.request_date)
-    set_ctr_signature_footer(doc, left_text=left_text, right_text=FOOTER_RIGHT_TEXT)
+    apply_ctr_header_only(doc)
 
     out = io.BytesIO()
     doc.save(out)

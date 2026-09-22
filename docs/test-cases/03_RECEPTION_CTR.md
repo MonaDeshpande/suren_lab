@@ -1,13 +1,14 @@
 # Reception / CTR — Test Cases
 
 **Module:** Customer Test Request intake  
-**Related code:** `pages/1_Reception.py`, `ui/components.py`, `services/requests.py`, `services/customers.py`, `services/test_packages.py`, `services/pdf_generator.py`, `services/docx_filler.py`  
+**Related code:** `pages/1_Reception.py`, `ui/components.py`, `services/requests.py`, `services/customers.py`, `services/test_packages.py`, `services/ctr_pdf.py`, `services/docx_filler.py`, `services/docx_to_pdf.py`  
 **Access:** `admin`, `reception`
 
 **UI layout (sample intake):**
 - **New request flow:** sample category → sample table → package tests (report format + with-logo / without-logo multiselects) → customer lookup & details → request header fields → lab workflow.
-- **Printed CTR blocks:** customer details, request header fields, and the 5-column sample table match LLP.docx. Lab Code (`SLS/26/306`) is the primary identifier; Code/batch no. is optional customer reference. Food **Parameters** column shows the package type label (FSSAI, Basic Nutrition, Detailed Nutrition, or custom text for Other); full test names appear in the list below the sample table on the CTR. **Storage temperature** is chosen from a dropdown (2°C to 8°C, 4°C, Room Temp, or Other with free text). **Mode of report delivery** allows multiple selections (Collect, Courier, Email/Whatsapp).
-- **Lab workflow (not printed):** per-row Sample ID preview (derived from Lab Code), protocol number, assigned analyst, and **Sample verification** checklist inputs. Report format for Food is chosen in the **Sample & test selection** block.
+- **Test package (product):** on **New sample registration**, each **Apply package to sample table** fills row 1 when empty, then adds each selected product as the next Sr. No (2, 3, …) without clearing prior rows; **Apply the same package again** for another batch/packing (separate Code/batch no. and Sample qty. per Sr.). **Water / Micro / other categories:** use **+** on the sample table and set the **Category** column on the same CTR (mixed categories, TC-REC-037). Switching to **Edit existing request** clears the new-intake draft (by design); other workspaces do not.
+- **Printed CTR blocks:** customer details, request header fields, and the 5-column sample table match LLP.docx. **Lab Code** (`SLS/26/306`) is entered **once per request**; each sample uses the same base with `/01`, `/02`, … on IDs and the verification checklist (not re-typed per Sr.). Code/batch no. is optional customer reference per row. Food **Parameters** column shows the package type label (FSSAI, Basic Nutrition, Detailed Nutrition, or custom text for Other); full test names appear in the list below the sample table on the CTR. **Storage temperature** is chosen from a dropdown (2°C to 8°C, 4°C, Room Temp, or Other with free text). **Mode of report delivery** allows multiple selections (Collect, Courier, Email/Whatsapp).
+- **Lab workflow (not printed):** per-row Sample ID preview (derived from Lab Code), protocol number, assigned analyst, and **Sample verification** checklist inputs. **Water** and **Micro** rows always appear here with **fixed tests assigned automatically**; reception enters protocol no., analyst(s) (water: chemical + micro), and per-sample test request details. Report format for Food is chosen in the **Sample & test selection** block.
 - **Generated CTR layout:** page 1 = request header; each sample gets its own page (one-row sample table + tests list below); final page(s) = per-sample **Sample Verification Checklist** (Sr No / Particulars / Remark).
 
 ---
@@ -429,7 +430,7 @@
 | **Preconditions** | Logged in as reception; DB connected; two distinct analysts available for water row |
 | **Steps** | 1. Select one customer (e.g. ABC Foods Pvt Ltd). 2. Set Lab Code `SLS/26/900`. 3. Add five sample rows under the same CTR: **Water** (Potable Water), **Micro** (Cooked Food: Paneer Gravy), **Food with logo** (Jaggery, format A), **Food both** (Jaggery, format A+B with WL/NWL tests from package), **Cattle Feed** (Cattle Feed Mix). 4. Assign analysts, protocol numbers, and complete verification checklist per row. 5. Use mixed storage temperatures including **Other** free text (e.g. 25). 6. **Save & Generate Form**; download CTR PDF and DOCX. |
 | **Expected** | Five sample codes `SLS/26/900/01` … `/05`; per-row category stored; food row 3 `with_logo`, row 4 `both` with separate WL/NWL sets; `verify_sample_code` auto-filled from derived sample code; storage values show `°C` where applicable; CTR checklist uses `✓` not `X`; PDF and DOCX downloadable. |
-| **Automated** | `tests/test_db_integration.py` (DB persistence), `tests/test_report_preview.py::test_ctr_preview_from_db_round_trip` (CTR artifacts → `tests/output_preview/ctr/`) |
+| **Automated** | `tests/test_db_integration.py` (DB persistence), `tests/test_report_preview.py::test_ctr_multi_sample_document_bundle_writes_preview` and `test_ctr_preview_from_db_round_trip` (CTR via `generate_ctr_documents`: ReportLab PDF with lab header/footer + Word DOCX with CTR template letterhead → `tests/output_preview/ctr/`) |
 
 ---
 

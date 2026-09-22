@@ -13,13 +13,13 @@ def test_new_request_food_package_first_order():
     )
     assert sec == {
         "category": 1,
-        "sample_table": 2,
-        "test_selection": 3,
-        "customer_lookup": 4,
-        "customer_details": 5,
-        "contact_persons": 6,
-        "request_details": 7,
-        "lab_code": 8,
+        "customer_lookup": 2,
+        "customer_details": 3,
+        "contact_persons": 4,
+        "request_details": 5,
+        "lab_code": 6,
+        "sample_table": 7,
+        "test_selection": 8,
         "lab_workflow": 9,
     }
 

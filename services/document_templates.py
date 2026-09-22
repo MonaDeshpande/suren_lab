@@ -5,8 +5,9 @@ Client-editable Word template paths under reference/.
 
 Four header/footer formats (designed in Word at the client site):
 
-  1. CTR          — Customer Test Request form LLP.docx
-  2. Protocol     — same header/footer copied into each category protocol .docx
+  1. CTR          — body: Customer Test Request form LLP.docx;
+                    header only: CTR_template.docx (cloned onto filled body)
+  2. Protocol     — header/footer reference: protocol.docx (source layout also kept as protocol_1.docx)
   3. Final report — with-logo template per category
   4. Final report — without-logo template per category (separate .docx file)
 
@@ -29,8 +30,11 @@ logger = logging.getLogger(__name__)
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 REFERENCE = PROJECT_ROOT / "reference"
 
-# --- Format 1: CTR (same header/footer for every CTR) ---
-CTR_TEMPLATE_PATH = REFERENCE / "Customer Test Request form LLP.docx"
+# --- Format 1: CTR ---
+CTR_FORM_BODY_PATH = REFERENCE / "Customer Test Request form LLP.docx"
+CTR_LETTERHEAD_PATH = REFERENCE / "CTR_template.docx"
+# Backward-compatible alias (body template for form tables)
+CTR_TEMPLATE_PATH = CTR_FORM_BODY_PATH
 
 # --- Format 2: Protocol (client copies the same header/footer into each file) ---
 PROTOCOL_HEADER_FOOTER_PATH = REFERENCE / "protocol.docx"
@@ -91,7 +95,8 @@ def final_report_template_path(category: str, *, with_logo: bool) -> Path:
 def client_template_manifest() -> list[dict[str, str]]:
     """Human-readable list of client-editable template files."""
     return [
-        {"format": "CTR", "role": "header/footer", "path": str(CTR_TEMPLATE_PATH)},
+        {"format": "CTR (form body)", "role": "body", "path": str(CTR_FORM_BODY_PATH)},
+        {"format": "CTR (letterhead)", "role": "header", "path": str(CTR_LETTERHEAD_PATH)},
         {
             "format": "Protocol header/footer reference",
             "role": "header/footer",

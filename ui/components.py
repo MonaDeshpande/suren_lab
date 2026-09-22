@@ -14,6 +14,7 @@ from typing import Optional
 import pandas as pd
 import streamlit as st
 
+from services.branding import ORGANIZATION_NAME
 from services.customers import (
     MAX_CONTACTS,
     ContactPerson,
@@ -32,6 +33,7 @@ from services.requests import (
     assign_derived_sample_codes,
     format_delivery_modes,
     parse_delivery_modes,
+    request_lab_code_for_verification,
     storage_temperature_for_save,
     storage_temperature_select_value,
     sync_verify_sample_code,
@@ -106,6 +108,15 @@ def _food_resolved_for_row(row: dict, category: str):
         sr_no = int(row.get("Sr. No") or 0)
     except (TypeError, ValueError):
         sr_no = 0
+    row_pin = st.session_state.get(f"intake_row_package_id_{sr_no}")
+    if row_pin:
+        pkg = get_package(int(row_pin))
+        if (
+            pkg
+            and pkg.sample_product_name.strip().lower()
+            == sample_name.strip().lower()
+        ):
+            return package_to_resolved(pkg)
     pinned = st.session_state.get("intake_pinned_package_id")
     if pinned and sr_no == 1:
         pkg = get_package(int(pinned))
@@ -166,6 +177,9 @@ def _render_food_parameters_for_row(
         key=key,
         disabled=locked,
         help="FSSAI, Basic Nutrition, Detailed Nutrition, or Other — printed in the CTR Parameters column.",
+    )
+    st.caption(
+        "Printed on the CTR only; the analyst protocol follows **selected tests** below."
     )
     if label == CTR_PARAMETER_OTHER:
         st.text_input(
@@ -460,7 +474,7 @@ def inject_styles() -> None:
 
 
 def render_hero(
-    title: str = "S Testing Laboratory",
+    title: str = ORGANIZATION_NAME,
     subtitle: str = (
         "Customer Test Request — capture intake details, save permanent "
         "customer records, and generate a filled request form."
@@ -524,6 +538,22 @@ def should_clear_ctr_form_on_mode_change(old_mode: str, new_mode: str) -> bool:
     )
 
 
+def apply_reception_workspace_selection(current_workspace: str) -> None:
+    """Update Reception navigation once per rerun when workspace radio changes."""
+    current = str(current_workspace or RECEPTION_TAB_NEW)
+    previous = str(
+        st.session_state.get("_reception_tab_last")
+        or st.session_state.get("_reception_mode_last")
+        or RECEPTION_TAB_NEW
+    )
+    if previous != current:
+        mark_reception_tab(current)
+    else:
+        st.session_state["reception_tab"] = current
+        st.session_state["_reception_tab_last"] = current
+        st.session_state["_reception_mode_last"] = current
+
+
 def mark_reception_tab(tab_name: str) -> None:
     """Track active Reception tab; persist/clear CTR draft on tab switches."""
     new_mode = str(tab_name or RECEPTION_TAB_NEW)
@@ -565,6 +595,7 @@ def food_intake_packages_ready(
     Used to gate customer sections on New request until packages exist.
     """
     from services.protocols.test_catalog import CATEGORY_FOOD, normalize_category
+    from services.sample_categories import category_select_options
     from services.test_packages import (
         describe_sample_package_for_product,
         parameters_label_to_package_type,
@@ -576,9 +607,14 @@ def food_intake_packages_ready(
     state = session if session is not None else st.session_state
     blocked: list[str] = []
     has_named_row = False
+    cat_options = category_select_options()
+    cat_key_by_label = {lbl: key for key, lbl in cat_options}
 
     for row in rows:
         if not _sample_row_nonempty(row):
+            continue
+        row_category = _category_key_from_row(row, cat_key_by_label)
+        if normalize_category(row_category) != CATEGORY_FOOD:
             continue
         sample_name = _cell_text(row.get("Name of sample")).strip()
         if not sample_name:
@@ -589,7 +625,9 @@ def food_intake_packages_ready(
         except (TypeError, ValueError):
             sr_no = 0
 
-        desc = describe_sample_package_for_product(sample_name, category=category)
+        desc = describe_sample_package_for_product(
+            sample_name, category=CATEGORY_FOOD
+        )
         status = desc.get("status")
 
         if status == "defined":
@@ -616,6 +654,26 @@ def food_intake_packages_ready(
     return len(blocked) == 0, blocked
 
 
+def intake_auto_test_keys_for_row(
+    row: dict,
+    cat_key_by_label: dict[str, str],
+) -> list[str]:
+    """Fixed-catalog test keys for Water/Micro rows (empty for other categories)."""
+    from services.protocols.test_catalog import (
+        CATEGORY_MICRO,
+        CATEGORY_WATER,
+        default_test_keys_for_category,
+        normalize_category,
+    )
+
+    row_category = normalize_category(_category_key_from_row(row, cat_key_by_label))
+    if row_category == CATEGORY_WATER:
+        return list(default_test_keys_for_category(CATEGORY_WATER))
+    if row_category == CATEGORY_MICRO:
+        return list(default_test_keys_for_category(CATEGORY_MICRO))
+    return []
+
+
 def ctr_section_numbers(
     *,
     sample_first: bool,
@@ -631,7 +689,6 @@ def ctr_section_numbers(
 
     order = ["category"]
     if food_package_first and include_test_selection:
-        order.extend(["sample_table", "test_selection"])
         if include_customer_picker:
             order.append("customer_lookup")
         order.extend(
@@ -640,6 +697,8 @@ def ctr_section_numbers(
                 "contact_persons",
                 "request_details",
                 "lab_code",
+                "sample_table",
+                "test_selection",
             ]
         )
     else:
@@ -1110,6 +1169,7 @@ _SAMPLE_EDITOR_WIDGET_KEY = "sample_editor_widget"
 # data_editor's widget key stores EditingState (dict), not a DataFrame.
 # Persist the editor return value here so Save (outside the fragment) can read it.
 _SAMPLE_EDITOR_LIVE_KEY = "sample_editor_live"
+INTAKE_PACKAGE_APPLY_STACK_KEY = "intake_package_apply_stack"
 
 
 def _default_sample_rows(count: int = 1, *, default_category: str = "Food") -> list[dict]:
@@ -1248,28 +1308,183 @@ def persist_sample_editor_state() -> None:
     st.session_state[_SAMPLE_EDITOR_LIVE_KEY] = merged
 
 
-def apply_pinned_package_to_intake(pkg) -> None:
-    """Pre-fill row 1 of the sample table from a selected test package."""
+def _package_row_from_test_package(pkg, *, sr_no: int, param_label: str) -> dict:
+    """One CTR sample-table row dict from a test package."""
+    return {
+        "Sr. No": sr_no,
+        "Category": "Food",
+        "Name of sample": pkg.sample_product_name,
+        "Code/batch no.": "",
+        "Sample qty.": "",
+        "Parameters": param_label,
+        "_sample_id": None,
+        "_status": "pending",
+    }
+
+
+def rebuild_sample_df_from_apply_stack(
+    stack: list[int],
+    preserved_rows: list[dict] | None = None,
+    *,
+    get_package_fn=None,
+) -> pd.DataFrame:
+    """Build sample table rows from applied package ids (canonical multi-Apply list)."""
+    from services.test_packages import PACKAGE_TYPES, get_package
+
+    loader = get_package_fn or get_package
+    preserved = preserved_rows or []
+    records: list[dict] = []
+    for i, pkg_id in enumerate(stack):
+        pkg = loader(int(pkg_id))
+        if pkg is None:
+            continue
+        sr_no = i + 1
+        param_label = PACKAGE_TYPES.get(pkg.package_type, pkg.package_type_label)
+        row = _package_row_from_test_package(
+            pkg, sr_no=sr_no, param_label=param_label
+        )
+        if i < len(preserved):
+            prev = preserved[i]
+            row["Code/batch no."] = _cell_text(prev.get("Code/batch no."))
+            row["Sample qty."] = _cell_text(prev.get("Sample qty."))
+        records.append(row)
+    for extra in preserved[len(stack) :]:
+        if not isinstance(extra, dict):
+            continue
+        suffix = {col: extra.get(col, "") for col in _CTR_TABLE_COLUMNS}
+        if not suffix.get("_status"):
+            suffix["_status"] = "pending"
+        if suffix.get("_sample_id") is None:
+            suffix["_sample_id"] = None
+        records.append(suffix)
+    for i, row in enumerate(records):
+        row["Sr. No"] = i + 1
+    if not records:
+        return _normalize_ctr_df(pd.DataFrame(_default_sample_rows(1)))
+    return _normalize_ctr_df(pd.DataFrame(records))
+
+
+def build_sample_df_after_package_apply(
+    current_df: pd.DataFrame,
+    pkg,
+) -> tuple[pd.DataFrame, int]:
+    """
+    Fill row 1 when the table is a single empty row; otherwise append the next row.
+
+    Returns (normalized DataFrame, target Sr. No that received the package).
+    Used in unit tests; production Apply uses intake_package_apply_stack.
+    """
     from services.test_packages import PACKAGE_TYPES
 
-    st.session_state["intake_pinned_package_id"] = int(pkg.id)
+    base = _normalize_ctr_df(current_df)
     param_label = PACKAGE_TYPES.get(pkg.package_type, pkg.package_type_label)
-    df = pd.DataFrame(
-        [
-            {
-                "Sr. No": 1,
-                "Name of sample": pkg.sample_product_name,
-                "Code/batch no.": "",
-                "Sample qty.": "",
-                "Parameters": param_label,
-                "_sample_id": None,
-                "_status": "pending",
-            }
-        ]
+    records = base.to_dict(orient="records")
+    single_empty = len(records) == 1 and not _sample_row_nonempty(records[0])
+    if single_empty:
+        target_idx = 0
+        records[0] = _package_row_from_test_package(
+            pkg, sr_no=1, param_label=param_label
+        )
+    else:
+        target_idx = len(records)
+        next_sr = 1
+        if records:
+            next_sr = max(int(r.get("Sr. No") or 0) for r in records) + 1
+        records.append(
+            _package_row_from_test_package(
+                pkg, sr_no=next_sr, param_label=param_label
+            )
+        )
+    for i, row in enumerate(records, start=1):
+        row["Sr. No"] = i
+    target_sr = target_idx + 1
+    return _normalize_ctr_df(pd.DataFrame(records)), target_sr
+
+
+def _seed_intake_row_from_package(sr_no: int, pkg) -> None:
+    """Bind session state for a Food row filled from Apply package."""
+    from services.samples import REPORT_FORMAT_LABELS, REPORT_FORMAT_WITH_LOGO
+    from services.test_packages import PACKAGE_TYPES, package_to_resolved
+
+    param_label = PACKAGE_TYPES.get(pkg.package_type, pkg.package_type_label)
+    st.session_state[f"intake_row_package_id_{sr_no}"] = int(pkg.id)
+    st.session_state[f"food_parameters_{sr_no}"] = param_label
+    st.session_state[f"test_package_type_{sr_no}"] = pkg.package_type_label
+    st.session_state.setdefault(
+        f"workflow_report_format_{sr_no}",
+        REPORT_FORMAT_LABELS[REPORT_FORMAT_WITH_LOGO],
     )
+    resolved = package_to_resolved(pkg)
+    pool_wl = list(resolved.test_keys_with_logo)
+    pool_nwl = list(resolved.test_keys_without_logo)
+    wl_labels, wl_map = _intake_test_label_options(pool_wl)
+    nwl_labels, nwl_map = _intake_test_label_options(pool_nwl)
+    st.session_state[f"intake_wl_labels_{sr_no}"] = _test_keys_to_labels(pool_wl, wl_map)
+    st.session_state[f"intake_nwl_labels_{sr_no}"] = _test_keys_to_labels(
+        pool_nwl, nwl_map
+    )
+    st.session_state[f"intake_wl_keys_{sr_no}"] = list(pool_wl)
+    st.session_state[f"intake_nwl_keys_{sr_no}"] = list(pool_nwl)
+
+
+def apply_pinned_package_to_intake(pkg) -> int:
+    """Append a test package to the intake stack and rebuild the sample table. Returns target Sr. No."""
+    from services.test_packages import get_package
+
+    st.session_state["intake_pinned_package_id"] = int(pkg.id)
+    persist_sample_editor_state()
+    preserved = _sample_editor_df_for_render().to_dict(orient="records")
+    stack = list(st.session_state.get(INTAKE_PACKAGE_APPLY_STACK_KEY, []))
+    stack.append(int(pkg.id))
+    st.session_state[INTAKE_PACKAGE_APPLY_STACK_KEY] = stack
+    df = rebuild_sample_df_from_apply_stack(stack, preserved)
+    for sr_no, pkg_id in enumerate(stack, start=1):
+        loaded = get_package(int(pkg_id))
+        if loaded is not None:
+            _seed_intake_row_from_package(sr_no, loaded)
     _reset_sample_editor(df)
-    st.session_state["food_parameters_1"] = param_label
-    st.session_state["test_package_type_1"] = pkg.package_type_label
+    return len(stack)
+
+
+def _apply_stack_prefix_matches(stack: list[int]) -> bool:
+    """True when live table rows 1..len(stack) match the apply stack."""
+    from services.test_packages import get_package
+
+    live = _current_sample_editor_df()
+    if len(live) < len(stack):
+        return False
+    for i, pkg_id in enumerate(stack):
+        sr = i + 1
+        expected_pin = int(pkg_id)
+        pin = st.session_state.get(f"intake_row_package_id_{sr}")
+        if pin is not None and int(pin) == expected_pin:
+            continue
+        pkg = get_package(expected_pin)
+        if pkg is None:
+            return False
+        row = live.iloc[i]
+        if (
+            _cell_text(row.get("Name of sample")).strip().lower()
+            != pkg.sample_product_name.strip().lower()
+        ):
+            return False
+    return True
+
+
+def sync_sample_table_from_apply_stack() -> None:
+    """Realign stack-driven rows; keep manual rows after the apply prefix."""
+    stack = list(st.session_state.get(INTAKE_PACKAGE_APPLY_STACK_KEY, []))
+    if not stack:
+        return
+    live = _current_sample_editor_df()
+    if len(live) < len(stack):
+        preserved = live.to_dict(orient="records")
+        _reset_sample_editor(rebuild_sample_df_from_apply_stack(stack, preserved))
+        return
+    if _apply_stack_prefix_matches(stack):
+        return
+    preserved = live.to_dict(orient="records")
+    _reset_sample_editor(rebuild_sample_df_from_apply_stack(stack, preserved))
 
 
 def _sample_editor_df_for_render() -> pd.DataFrame:
@@ -1585,9 +1800,7 @@ def _sync_request_prefill(request: TestRequestData) -> None:
             st.session_state[f"verify_review_date_{s.sr_no}"] = (
                 s.verify_review_date or request.request_date
             )
-            st.session_state[f"verify_lab_code_{s.sr_no}"] = (
-                s.verify_lab_code or request.lab_code or ""
-            )
+            st.session_state[f"verify_lab_code_{s.sr_no}"] = request.lab_code or ""
             st.session_state[f"verify_sample_code_{s.sr_no}"] = (
                 getattr(s, "verify_sample_code", None) or s.sample_code or ""
             )
@@ -1706,13 +1919,20 @@ def collect_form(
 
     report_format_options = list(REPORT_FORMAT_LABELS.values())
 
+    cat_options = category_select_options()
+    cat_keys = [k for k, _ in cat_options]
+    cat_labels = [lbl for _, lbl in cat_options]
+    cat_key_by_label = {lbl: key for key, lbl in cat_options}
+
     def _row_base_test_keys(
         row: dict,
         category: str,
         *,
         report_format: str = REPORT_FORMAT_WITH_LOGO,
     ) -> list[str]:
-        row_category = normalize_category(category)
+        row_category = normalize_category(
+            _category_key_from_row(row, cat_key_by_label)
+        )
         if row_category == CATEGORY_WATER:
             return default_test_keys_for_category(CATEGORY_WATER)
         if row_category == CATEGORY_MICRO:
@@ -1739,7 +1959,9 @@ def collect_form(
         return []
 
     def _custom_options_for_row(row: dict, category: str) -> dict[str, str]:
-        row_category = normalize_category(category)
+        row_category = normalize_category(
+            _category_key_from_row(row, cat_key_by_label)
+        )
         ptype_key = ""
         if row_category == CATEGORY_FOOD:
             resolved = _food_resolved_for_row(row, row_category)
@@ -1771,8 +1993,9 @@ def collect_form(
         *,
         report_format: str = REPORT_FORMAT_WITH_LOGO,
     ) -> list[str]:
-        base = _row_base_test_keys(row, category, report_format=report_format)
-        custom = _custom_keys_for_row(row, category)
+        row_cat = normalize_category(_category_key_from_row(row, cat_key_by_label))
+        base = _row_base_test_keys(row, row_cat, report_format=report_format)
+        custom = _custom_keys_for_row(row, row_cat)
         return _merge_test_keys(base, custom)
 
     if request_prefill is not None:
@@ -1786,10 +2009,6 @@ def collect_form(
     if not sample_first and not customer_from_master:
         p = _sync_customer_prefill(prefill)
 
-    cat_options = category_select_options()
-    cat_keys = [k for k, _ in cat_options]
-    cat_labels = [lbl for _, lbl in cat_options]
-    cat_key_by_label = {lbl: key for key, lbl in cat_options}
     editor_preview = _sample_editor_df_for_render()
     row_categories = [
         _category_key_from_row(row, cat_key_by_label)
@@ -1798,7 +2017,9 @@ def collect_form(
     ] or [CATEGORY_FOOD]
     filter_category = row_categories[0]
     food_package_first = (
-        not edit_mode and CATEGORY_FOOD in row_categories
+        not edit_mode
+        and row_categories
+        and all(c == CATEGORY_FOOD for c in row_categories)
     )
     sec = ctr_section_numbers(
         sample_first=sample_first,
@@ -1924,16 +2145,16 @@ def collect_form(
     def _render_lab_code_section() -> None:
         render_section_title(
             f"{sec['lab_code']}. Lab code",
-            "Printed on the CTR form. Sample IDs in the lab workflow section "
-            "are derived from this code.",
+            "One code for the whole request (printed on the CTR). Each sample gets "
+            "the same base with /01, /02, … in Lab workflow and the verification checklist.",
         )
         st.text_input(
             "Lab Code *",
             key="f_lab_code",
             placeholder="e.g. SLS/26/306",
             help=(
-                "Sample IDs use this code with /01, /02 for each row "
-                f"(see Section {sec['lab_workflow']})."
+                "Enter once for all samples on this request. Sample IDs use /01, /02 "
+                f"per row (Section {sec['lab_workflow']})."
             ),
         )
 
@@ -1953,6 +2174,7 @@ def collect_form(
 
         default_rows = _default_sample_rows()
         if run_table:
+            sync_sample_table_from_apply_stack()
             editor_df = _sample_editor_df_for_render()
             st.session_state[_SAMPLE_EDITOR_KEY] = editor_df
             if _SAMPLE_EDITOR_WIDGET_KEY not in st.session_state:
@@ -2046,13 +2268,27 @@ def collect_form(
             st.session_state[_SAMPLE_EDITOR_LIVE_KEY] = sample_df
 
             for row in sample_df.to_dict(orient="records"):
-                if normalize_category(filter_category) != CATEGORY_FOOD:
-                    continue
-                sample_name = _cell_text(row.get("Name of sample")).strip()
+                row_category = _category_key_from_row(row, cat_key_by_label)
                 try:
                     sr_no = int(row.get("Sr. No") or 0)
                 except (TypeError, ValueError):
                     sr_no = 0
+                if normalize_category(row_category) != CATEGORY_FOOD:
+                    if _sample_row_nonempty(row) and sr_no:
+                        sample_label = _cell_text(row.get("Name of sample")).strip()
+                        if row_category == CATEGORY_WATER:
+                            st.caption(
+                                f"Sr. {sr_no} — **Water**: 13 protocol tests apply automatically "
+                                f"(assign chemical and micro analysts in Section {sec['lab_workflow']})."
+                            )
+                        elif row_category == CATEGORY_MICRO:
+                            st.caption(
+                                f"Sr. {sr_no} — **Micro**: 6 microbiological tests apply automatically."
+                            )
+                        elif sample_label:
+                            st.caption(f"Sr. {sr_no} — **{sample_label}**")
+                    continue
+                sample_name = _cell_text(row.get("Name of sample")).strip()
                 if not sample_name:
                     if _sample_row_nonempty(row):
                         st.caption(f"Sr. {sr_no}: enter sample name to load tests.")
@@ -2072,7 +2308,7 @@ def collect_form(
                     sr_no=sr_no,
                     sample_name=sample_name,
                     parameters_label=parameters_label,
-                    filter_category=filter_category,
+                    filter_category=row_category,
                     custom_count=custom_count,
                     actor=actor,
                 )
@@ -2083,7 +2319,7 @@ def collect_form(
                         locked=locked,
                         report_format_options=report_format_options,
                     )
-                    options = _custom_options_for_row(row, filter_category)
+                    options = _custom_options_for_row(row, row_category)
                     if options:
                         st.multiselect(
                             f"Sr. {sr_no}: Additional formulas",
@@ -2233,7 +2469,7 @@ def collect_form(
                     )
 
                 if row_category != CATEGORY_FOOD:
-                    options = _custom_options_for_row(row, filter_category)
+                    options = _custom_options_for_row(row, row_category)
                     if options:
                         st.multiselect(
                             f"Sr. {sr_no}: Additional formulas",
@@ -2243,7 +2479,15 @@ def collect_form(
                             help="Optional custom tests from Admin for this category.",
                         )
 
-                if row_category != CATEGORY_FOOD:
+                if row_category in (CATEGORY_WATER, CATEGORY_MICRO):
+                    auto_keys = intake_auto_test_keys_for_row(row, cat_key_by_label)
+                    auto_names = ", ".join(get_test(k).name for k in auto_keys)
+                    label = "Water" if row_category == CATEGORY_WATER else "Micro"
+                    st.success(
+                        f"**{label} — tests assigned automatically** ({len(auto_keys)}): "
+                        f"{auto_names or '—'}"
+                    )
+                elif row_category != CATEGORY_FOOD:
                     fmt_label = str(
                         st.session_state.get(
                             f"workflow_report_format_{sr_no}",
@@ -2254,7 +2498,7 @@ def collect_form(
                         fmt_label, REPORT_FORMAT_WITH_LOGO
                     )
                     row_keys = _row_test_keys(
-                        row, filter_category, report_format=fmt_key
+                        row, row_category, report_format=fmt_key
                     )
                     names = ", ".join(get_test(k).name for k in row_keys)
                     st.caption(f"Tests included: {names or '—'}")
@@ -2263,14 +2507,11 @@ def collect_form(
                     st.session_state[f"verify_review_date_{sr_no}"] = (
                         st.session_state.get("f_request_date")
                     )
-                if f"verify_lab_code_{sr_no}" not in st.session_state:
-                    st.session_state[f"verify_lab_code_{sr_no}"] = str(
-                        st.session_state.get("f_lab_code", "") or ""
-                    )
                 sync_verify_sample_code(
                     derived_codes.get(sr_no, ""),
                     session=st.session_state,
                     sr_no=sr_no,
+                    overwrite=True,
                 )
                 st.markdown("**Test request details (this sample)**")
                 rd1, rd2 = st.columns(2)
@@ -2327,7 +2568,16 @@ def collect_form(
                     disabled=locked,
                 )
                 st.markdown("**Sample verification (printed on checklist)**")
-                v1, v2, v3 = st.columns(3)
+                shared_lab = request_lab_code_for_verification(lab_code_preview)
+                if shared_lab:
+                    st.caption(
+                        f"Lab code: **{shared_lab}** (same for all samples on this request)"
+                    )
+                else:
+                    st.caption(
+                        "Lab code: enter **Lab Code** above — it applies to every sample."
+                    )
+                v1, v2 = st.columns(2)
                 with v1:
                     st.date_input(
                         "Review Date *",
@@ -2336,16 +2586,10 @@ def collect_form(
                     )
                 with v2:
                     st.text_input(
-                        "Lab Code *",
-                        key=f"verify_lab_code_{sr_no}",
-                        disabled=locked,
-                    )
-                with v3:
-                    st.text_input(
                         "Sample Code",
                         key=f"verify_sample_code_{sr_no}",
                         disabled=True,
-                        help="Auto-filled from registration sample ID.",
+                        help="Auto-filled from Lab Code (/01, /02, … per sample).",
                     )
                 st.text_input(
                     "Sample condition *",
@@ -2405,9 +2649,21 @@ def collect_form(
                         disabled=locked,
                     )
 
-    if food_package_first:
-        _sample_workflow_fragment(phase="table")
-        sample_rows = _current_sample_editor_df().to_dict(orient="records")
+    if customer_from_master:
+        contact_count = 1
+    else:
+        contact_count = _render_customer_sections()
+    _render_request_details_section()
+    _render_lab_code_section()
+
+    _sample_workflow_fragment(phase="all")
+    sample_rows = _current_sample_editor_df().to_dict(orient="records")
+    row_cats_in_table = [
+        _category_key_from_row(r, cat_key_by_label)
+        for r in sample_rows
+        if _sample_row_nonempty(r)
+    ]
+    if CATEGORY_FOOD in row_cats_in_table:
         packages_ready, blocked = food_intake_packages_ready(
             sample_rows, filter_category
         )
@@ -2419,22 +2675,6 @@ def collect_form(
             for item in blocked:
                 st.markdown(f"- {item}")
             return None
-
-        if customer_from_master:
-            contact_count = 1
-        else:
-            contact_count = _render_customer_sections()
-        _render_request_details_section()
-        _render_lab_code_section()
-        _sample_workflow_fragment(phase="workflow")
-    else:
-        if customer_from_master:
-            contact_count = 1
-        else:
-            contact_count = _render_customer_sections()
-        _render_request_details_section()
-        _render_lab_code_section()
-        _sample_workflow_fragment(phase="all")
 
     if edit_mode:
         edit_reason = edit_reason_field(key="ctr_edit_reason")
@@ -2481,6 +2721,8 @@ def collect_form(
         return None
 
     samples: list[SampleRow] = []
+    save_derived_codes = _sample_code_preview_map(lab_code, sample_df)
+    request_verify_lab = request_lab_code_for_verification(lab_code)
 
     def _yn_local(choice: str) -> Optional[bool]:
         if choice == "Yes":
@@ -2587,7 +2829,12 @@ def collect_form(
             ).strip()
         if locked and edit_mode and old_sample is not None:
             verify_review_date = old_sample.verify_review_date
-            verify_lab_code = old_sample.verify_lab_code or ""
+            verify_lab_code = old_sample.verify_lab_code or request_verify_lab
+            verify_sample_code = (
+                getattr(old_sample, "verify_sample_code", None)
+                or old_sample.sample_code
+                or ""
+            )
             verify_sample_condition = old_sample.verify_sample_condition or ""
             verify_qty_checked = old_sample.verify_qty_checked
             verify_chemical_available = old_sample.verify_chemical_available
@@ -2598,10 +2845,8 @@ def collect_form(
             verify_conformity_statement = old_sample.verify_conformity_statement
         else:
             verify_review_date = st.session_state.get(f"verify_review_date_{sr_no}")
-            verify_lab_code = str(
-                st.session_state.get(f"verify_lab_code_{sr_no}", "") or ""
-            ).strip()
-            verify_sample_code = str(
+            verify_lab_code = request_verify_lab
+            verify_sample_code = save_derived_codes.get(sr_no, "") or str(
                 st.session_state.get(f"verify_sample_code_{sr_no}", "") or ""
             ).strip()
             verify_sample_condition = str(

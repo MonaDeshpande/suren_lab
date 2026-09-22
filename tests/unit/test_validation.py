@@ -383,7 +383,31 @@ class TestValidateRequest:
         assert validate_request(data) == []
         warnings = validation_warnings(data)
         assert len(warnings) == 1
-        assert "protocol templates" in warnings[0].lower()
+        assert "FSSAI (standard food)" in warnings[0]
+        assert "Basic Nutrition protocol" in warnings[0]
+        assert "Parameters label is separate" in warnings[0]
+
+    def test_mixed_food_families_warning_uses_wl_nwl_when_test_keys_empty(self):
+        data = _valid_request(
+            samples=[
+                SampleRow(
+                    sr_no=2,
+                    sample_name="Jaggery",
+                    parameters="Basic Nutrition",
+                    test_keys=[],
+                    tests_with_logo=["moisture", "bn_protein"],
+                    tests_without_logo=[],
+                    sample_code="SLS-260717-0105",
+                    assigned_analyst_id=_VALID_ANALYST_ID,
+                    protocol_no="P-002",
+                    package_type="basic_nutrition",
+                    **sample_verification_kwargs(),
+                )
+            ]
+        )
+        warnings = validation_warnings(data)
+        assert len(warnings) == 1
+        assert "Sr. 2" in warnings[0]
 
     def test_contact_two_email_optional_when_named(self):
         data = _valid_request()

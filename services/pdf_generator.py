@@ -5,10 +5,10 @@ Generate a filled Customer Test Request PDF via ReportLab.
 
 Layout mirrors reference/Customer Test Request form LLP.docx:
   Page 1 — request header table, notes, signature lines
-  Pages 2+ — one sample per page (single-row table + tests list)
-  Final pages — per-sample Sample Verification Checklist (table 1 only)
+  Pages 2+ — one sample per page (checklist + single-row table + tests list)
 
-Word (.docx) download is handled separately by services/docx_filler.py.
+Every page includes CTR footer (Prepared by, Page n of total). No ReportLab logo band.
+Used as CTR PDF fallback when Word cannot export the header-only DOCX (see ctr_pdf).
 """
 
 from __future__ import annotations
@@ -23,6 +23,7 @@ from reportlab.lib.pagesizes import letter
 from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import inch
 from reportlab.platypus import (
+    KeepTogether,
     PageBreak,
     Paragraph,
     SimpleDocTemplate,
@@ -33,12 +34,15 @@ from reportlab.platypus import (
 
 from services.ctr_verification import (
     CHECKLIST_TITLE,
+    CUSTOMER_SIGNATURE_LABEL,
     SAMPLE_SECTION_HEADING,
     SAMPLE_TABLE_HEADERS,
+    ctr_signature_date,
     ctr_test_names_for_sample,
     verification_checklist_rows,
 )
 from services.customers import format_contacts_for_display
+from services.branding import ORGANIZATION_NAME
 from services.requests import (
     SampleRow,
     TestRequestData,
@@ -53,6 +57,14 @@ FONT_BOLD = "Helvetica-Bold"
 FONT_SIZE = 11  # Word template labels ~12 pt
 SMALL = 9
 FOOTER_RIGHT_TEXT = "Review"
+
+CTR_FOOTER_BAND_IN = 0.85
+
+
+def ctr_total_pages(data: TestRequestData) -> int:
+    """One summary page plus one page per non-empty sample."""
+    filled = [s for s in data.samples if not s.is_empty()]
+    return 1 + len(filled)
 
 
 def _ctr_footer_left(
@@ -73,8 +85,34 @@ def _ctr_footer_left(
     return f"{name}  {date_part}".strip()
 
 
+def _draw_ctr_header(canvas, doc) -> None:
+    """ReportLab fallback: no logo overlay (CTR letterhead is on the Word DOCX path)."""
+    _ = canvas, doc
+
+
+def _draw_ctr_footer(
+    canvas,
+    doc,
+    *,
+    prepared_by: str,
+    page_num: int,
+    total_pages: int,
+) -> None:
+    """Prepared by / Reviewed & Issued by (left); Page n of total (right)."""
+    canvas.saveState()
+    canvas.setFont(FONT, 8)
+    y1 = 0.62 * inch
+    y2 = 0.42 * inch
+    name = (prepared_by or "Reception").strip()
+    canvas.drawString(doc.leftMargin, y1, f"Prepared by: {name}")
+    canvas.drawString(doc.leftMargin, y2, "Reviewed & Issued by:")
+    page_label = f"Page {page_num} of {total_pages}"
+    canvas.drawRightString(doc.pagesize[0] - doc.rightMargin, y1, page_label)
+    canvas.restoreState()
+
+
 def _draw_footer(canvas, doc, *, left_text: str = "", right_text: str = FOOTER_RIGHT_TEXT) -> None:
-    """Reception name/date left; Review right — on every CTR page."""
+    """Legacy footer (Reception left / Review right). Prefer _draw_ctr_footer."""
     canvas.saveState()
     canvas.setFont(FONT, 9)
     canvas.drawString(doc.leftMargin, 0.45 * inch, left_text or "")
@@ -142,13 +180,12 @@ def _lv_br(label: str, value: str, style: ParagraphStyle) -> Paragraph:
 
 
 def _sample_col_widths(usable: float) -> list[float]:
-    return [
-        0.55 * inch,
-        1.7 * inch,
-        1.35 * inch,
-        1.0 * inch,
-        usable - (0.55 + 1.7 + 1.35 + 1.0) * inch,
-    ]
+    sr = 0.38 * inch
+    batch = 1.35 * inch
+    qty = 1.0 * inch
+    name = 1.65 * inch
+    params = usable - (sr + name + batch + qty)
+    return [sr, name, batch, qty, params]
 
 
 def _build_one_sample_table(
@@ -194,11 +231,15 @@ def _build_one_sample_table(
 def _build_tests_block(
     sample: SampleRow,
     td_style: ParagraphStyle,
+    heading_style: ParagraphStyle,
 ) -> list:
     names = ctr_test_names_for_sample(sample)
     if not names:
         return []
-    blocks: list = [Spacer(1, 8), _p("Tests to be performed:", td_style)]
+    blocks: list = [
+        Spacer(1, 4),
+        _p("Tests to be performed:", heading_style),
+    ]
     for index, name in enumerate(names, start=1):
         blocks.append(_p(f"{index}. {name}", td_style))
     return blocks
@@ -231,7 +272,7 @@ def _build_verification_table(
     ]
     table = Table(
         [header] + body,
-        colWidths=[0.55 * inch, 2.6 * inch, usable - 3.15 * inch],
+        colWidths=[0.38 * inch, 2.6 * inch, usable - 2.98 * inch],
         hAlign="LEFT",
         repeatRows=1,
     )
@@ -259,10 +300,11 @@ def _generate_ctr_pdf(
     """
     Letter-size CTR: header page, one sample per page, checklist per sample.
 
-    Footer on every page: Reception name + date (left), Review (right).
+    ReportLab fallback only — footer on every page; no assets/logo.png header band.
     """
     buffer = io.BytesIO()
-    footer_left = _ctr_footer_left(generated_by, generated_at, data.request_date)
+    total_pages = ctr_total_pages(data)
+    prepared_by = (generated_by or "Reception").strip()
 
     doc = SimpleDocTemplate(
         buffer,
@@ -270,9 +312,9 @@ def _generate_ctr_pdf(
         leftMargin=1.0 * inch,
         rightMargin=1.0 * inch,
         topMargin=1.0 * inch,
-        bottomMargin=0.75 * inch,
+        bottomMargin=(0.75 + CTR_FOOTER_BAND_IN) * inch,
         title="Customer Test Request Form",
-        author="S Testing Laboratory",
+        author=ORGANIZATION_NAME,
     )
 
     styles = getSampleStyleSheet()
@@ -358,12 +400,11 @@ def _generate_ctr_pdf(
             _lv("GST Number of Customer:", c.gst_number or "", value),
         ],
         [
-            _lv(
-                "Number of Samples",
+            _lv("Number of Samples", "", value),
+            _p(
                 "" if data.number_of_samples is None else str(data.number_of_samples),
                 value,
             ),
-            _p("", value),
         ],
         [
             _lv("Sampling Done by Laboratory:", "", value),
@@ -372,10 +413,10 @@ def _generate_ctr_pdf(
         [
             _lv(
                 "Storage Temperature of sample required:",
-                str(first_details.get("storage_temperature") or ""),
+                "",
                 value,
             ),
-            _p("", value),
+            _p(str(first_details.get("storage_temperature") or ""), value),
         ],
         [
             _lv_br(
@@ -414,8 +455,6 @@ def _generate_ctr_pdf(
                 ("RIGHTPADDING", (0, 0), (-1, -1), 4),
                 ("TOPPADDING", (0, 0), (-1, -1), 4),
                 ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
-                ("SPAN", (0, 4), (1, 4)),
-                ("SPAN", (0, 6), (1, 6)),
                 ("SPAN", (0, 7), (1, 7)),
             ]
         )
@@ -444,40 +483,72 @@ def _generate_ctr_pdf(
     )
     story.append(note_table)
     story.append(Spacer(1, 14))
-    story.append(Spacer(1, 28))
+    story.append(Spacer(1, 14))
+
+    reception_name = (generated_by or "Reception").strip()
+    sig_date = ctr_signature_date(generated_at, data.request_date)
 
     sign_table = Table(
         [
             [
-                _p("Receiver's Sign & date", sign_style),
-                _p("Customer Signature & date:", sign_style),
-            ]
+                _p(reception_name, sign_style),
+                _p(CUSTOMER_SIGNATURE_LABEL, sign_style),
+            ],
+            [
+                _p(sig_date, sign_style),
+                _p("", sign_style),
+            ],
+            [
+                _p("Receiver", sign_style),
+                _p("", sign_style),
+            ],
         ],
         colWidths=col_w,
+    )
+    sign_table.setStyle(
+        TableStyle(
+            [
+                ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                ("LEFTPADDING", (0, 0), (-1, -1), 4),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 4),
+                ("TOPPADDING", (0, 0), (-1, -1), 2),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
+            ]
+        )
     )
     story.append(sign_table)
 
     for index, sample in enumerate(filled, start=1):
         details = effective_sample_request_details(sample, data)
         storage_temp = str(details.get("storage_temperature") or "")
-        story.append(PageBreak())
-        story.append(Paragraph(CHECKLIST_TITLE, section_style))
-        story.append(
+        if index > 1:
+            story.append(PageBreak())
+        sample_block: list = [
+            Paragraph(CHECKLIST_TITLE, section_style),
             _build_verification_table(
                 sample,
                 usable,
                 th_style,
                 td_style,
                 storage_temperature=storage_temp,
-            )
-        )
-        story.append(Spacer(1, 10))
-        story.append(Paragraph(SAMPLE_SECTION_HEADING, section_style))
-        story.append(_build_one_sample_table(sample, index, usable, th_style, td_style))
-        story.extend(_build_tests_block(sample, td_style))
+            ),
+            Spacer(1, 6),
+            Paragraph(SAMPLE_SECTION_HEADING, section_style),
+            _build_one_sample_table(sample, index, usable, th_style, td_style),
+        ]
+        sample_block.extend(_build_tests_block(sample, td_style, section_style))
+        story.append(KeepTogether(sample_block))
 
     def _on_page(canvas, doc_obj) -> None:
-        _draw_footer(canvas, doc_obj, left_text=footer_left)
+        page_num = canvas.getPageNumber()
+        _draw_ctr_header(canvas, doc_obj)
+        _draw_ctr_footer(
+            canvas,
+            doc_obj,
+            prepared_by=prepared_by,
+            page_num=page_num,
+            total_pages=total_pages,
+        )
 
     doc.build(story, onFirstPage=_on_page, onLaterPages=_on_page)
     return buffer.getvalue()

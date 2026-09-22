@@ -14,9 +14,10 @@ import pytest
 from docx import Document
 from pypdf import PdfReader
 
+from services.ctr_pdf import generate_ctr_documents
 from services.customers import Customer
-from services.docx_filler import fill_docx_bytes, suggest_docx_filename
-from services.pdf_generator import generate_pdf_bytes, suggest_pdf_filename
+from services.docx_filler import suggest_docx_filename
+from services.pdf_generator import ctr_total_pages, suggest_pdf_filename
 from services.requests import SampleRow, TestRequestData, get_test_request, save_test_request
 from tests.conftest import cleanup_test_data, sample_verification_kwargs
 from tests.test_db_integration import build_multi_type_ctr_data
@@ -80,11 +81,63 @@ def _assert_ctr_content(pdf_bytes: bytes, docx_bytes: bytes, *, customer_name: s
 
 
 @pytest.mark.integration
+def test_ctr_multi_sample_document_bundle_writes_preview(
+    require_db,
+    qa_analyst_pair,
+    db_test_gst,
+    preview_output_dir,
+):
+    """TC-REC-037: multi-sample CTR PDF+DOCX via generate_ctr_documents → output_preview/ctr."""
+    chem, micro = qa_analyst_pair
+    data = build_multi_type_ctr_data(chem.id, micro.id, gst=db_test_gst)
+    saved = save_test_request(data, actor=None)
+    try:
+        loaded = get_test_request(saved.request_id)
+        assert loaded is not None
+        filled = [s for s in loaded.samples if not s.is_empty()]
+        expected_pages = ctr_total_pages(loaded)
+
+        docx_bytes, pdf_bytes, docx_name, pdf_name, pdf_err = generate_ctr_documents(
+            loaded,
+            generated_by="CTR Preview Test",
+            generated_at="27/07/2026 10:00",
+        )
+        assert pdf_err is None
+        assert pdf_bytes is not None
+        _assert_ctr_content(
+            pdf_bytes,
+            docx_bytes,
+            customer_name="ABC Foods Pvt Ltd",
+        )
+
+        reader = PdfReader(io.BytesIO(pdf_bytes))
+        assert len(reader.pages) == expected_pages
+        pdf_text = _pdf_text(pdf_bytes)
+        for name in (
+            "Potable Water",
+            "Paneer Gravy",
+            "Jaggery",
+            "Cattle Feed Mix",
+        ):
+            assert name in pdf_text
+        assert "Prepared by:" in pdf_text
+        assert f"Page 1 of {expected_pages}" in pdf_text
+        assert f"Page {expected_pages} of {expected_pages}" in pdf_text
+
+        pdf_path = _write_preview(preview_output_dir, pdf_name, pdf_bytes)
+        docx_path = _write_preview(preview_output_dir, docx_name, docx_bytes)
+        print(f"\nCTR multi-sample preview written to:\n  {pdf_path}\n  {docx_path}")
+        assert len(filled) == 5
+    finally:
+        cleanup_test_data(gst=db_test_gst)
+
+
+@pytest.mark.integration
 def test_ctr_preview_from_db_round_trip(
     require_db,
     qa_analyst_pair,
     db_test_gst,
-    tmp_path,
+    preview_output_dir,
 ):
     """TC-REC-037 automation: save → reload → generate CTR artifacts for review."""
     chem, micro = qa_analyst_pair
@@ -94,8 +147,9 @@ def test_ctr_preview_from_db_round_trip(
         loaded = get_test_request(saved.request_id)
         assert loaded is not None
 
-        pdf_bytes = generate_pdf_bytes(loaded)
-        docx_bytes = fill_docx_bytes(loaded)
+        docx_bytes, pdf_bytes, _, _, pdf_err = generate_ctr_documents(loaded)
+        assert pdf_err is None
+        assert pdf_bytes is not None
         _assert_ctr_content(
             pdf_bytes,
             docx_bytes,
@@ -110,12 +164,12 @@ def test_ctr_preview_from_db_round_trip(
             assert name in _pdf_text(pdf_bytes)
 
         pdf_path = _write_preview(
-            tmp_path,
+            preview_output_dir,
             suggest_pdf_filename(loaded),
             pdf_bytes,
         )
         docx_path = _write_preview(
-            tmp_path,
+            preview_output_dir,
             suggest_docx_filename(loaded),
             docx_bytes,
         )
@@ -125,7 +179,7 @@ def test_ctr_preview_from_db_round_trip(
         cleanup_test_data(gst=db_test_gst)
 
 
-def test_ctr_preview_food_multi_sample_from_memory(tmp_path):
+def test_ctr_preview_food_multi_sample_from_memory(preview_output_dir):
     """Unit-speed preview (no DB): sauce + honey rows from docx_filler tests."""
     data = TestRequestData(
         customer=Customer(
@@ -162,19 +216,20 @@ def test_ctr_preview_food_multi_sample_from_memory(tmp_path):
         ],
     )
 
-    pdf_bytes = generate_pdf_bytes(data)
-    docx_bytes = fill_docx_bytes(data)
+    docx_bytes, pdf_bytes, _, _, pdf_err = generate_ctr_documents(data)
+    assert pdf_err is None
+    assert pdf_bytes is not None
     _assert_ctr_content(pdf_bytes, docx_bytes, customer_name="ABC Foods")
     assert "sauce" in _pdf_text(pdf_bytes)
     assert "honey" in _pdf_text(pdf_bytes)
 
     pdf_path = _write_preview(
-        tmp_path,
+        preview_output_dir,
         suggest_pdf_filename(data),
         pdf_bytes,
     )
     docx_path = _write_preview(
-        tmp_path,
+        preview_output_dir,
         suggest_docx_filename(data),
         docx_bytes,
     )

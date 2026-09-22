@@ -17,10 +17,11 @@ load_dotenv()
 
 from db.connection import test_connection  # noqa: E402
 from services.audit import (  # noqa: E402
-    actor_display_name,
+    document_actor_display_name,
     format_stamp_datetime,
     now_lab,
 )
+from services.branding import ORGANIZATION_NAME  # noqa: E402
 from services.auth import get_session_user  # noqa: E402
 from services.requests import (  # noqa: E402
     get_test_request,
@@ -40,7 +41,7 @@ from ui.components import (  # noqa: E402
     apply_request_prefill,
     collect_form,
     inject_styles,
-    mark_reception_tab,
+    apply_reception_workspace_selection,
     render_db_status,
     render_hero,
     render_section_title,
@@ -52,7 +53,7 @@ from ui.reception_save import render_ctr_downloads  # noqa: E402
 from ui.test_packages_panel import render_test_packages_panel  # noqa: E402
 
 st.set_page_config(
-    page_title="S Testing Laboratory — Reception",
+    page_title=f"{ORGANIZATION_NAME} — Reception",
     page_icon="📋",
     layout="wide",
     initial_sidebar_state="expanded",
@@ -158,7 +159,7 @@ def _edit_request_flow(actor) -> None:
     for w in validation_warnings(data):
         st.warning(w)
 
-    gen_by = actor_display_name(actor)
+    gen_by = document_actor_display_name(actor)
     gen_at = format_stamp_datetime(now_lab())
 
     try:
@@ -200,22 +201,26 @@ def main() -> None:
             pass
         st.session_state["_reception_purged"] = True
 
-    tab_reg, tab_cust, tab_new, tab_edit = st.tabs(list(RECEPTION_TABS))
+    if "reception_workspace" not in st.session_state:
+        st.session_state["reception_workspace"] = RECEPTION_TAB_NEW
 
-    with tab_reg:
-        mark_reception_tab(RECEPTION_TAB_REGISTRATION)
+    st.radio(
+        "Reception workspace",
+        options=list(RECEPTION_TABS),
+        horizontal=True,
+        key="reception_workspace",
+        label_visibility="collapsed",
+    )
+    apply_reception_workspace_selection(st.session_state["reception_workspace"])
+
+    workspace = st.session_state["reception_workspace"]
+    if workspace == RECEPTION_TAB_REGISTRATION:
         render_test_packages_panel(actor)
-
-    with tab_cust:
-        mark_reception_tab(RECEPTION_TAB_CUSTOMERS)
+    elif workspace == RECEPTION_TAB_CUSTOMERS:
         render_customer_master_panel(actor)
-
-    with tab_new:
-        mark_reception_tab(RECEPTION_TAB_NEW)
+    elif workspace == RECEPTION_TAB_NEW:
         render_new_sample_registration_panel(actor)
-
-    with tab_edit:
-        mark_reception_tab(RECEPTION_TAB_EDIT)
+    elif workspace == RECEPTION_TAB_EDIT:
         _edit_request_flow(actor)
 
 

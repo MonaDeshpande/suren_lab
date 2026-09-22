@@ -20,13 +20,14 @@ load_dotenv()
 from db.connection import test_connection  # noqa: E402
 from db.migrate import ensure_schema  # noqa: E402
 from services.auth import ensure_default_admin, get_session_user, roles_display  # noqa: E402
+from services.branding import ORGANIZATION_NAME  # noqa: E402
 from services.samples import SAMPLE_RETENTION_DAYS, delete_expired_samples  # noqa: E402
 from ui.auth import require_login, user_can_access_page  # noqa: E402
 from ui.components import inject_styles, render_db_status, render_hero  # noqa: E402
 
 
 st.set_page_config(
-    page_title="S Testing Laboratory",
+    page_title=ORGANIZATION_NAME,
     page_icon="🧪",
     layout="wide",
     initial_sidebar_state="expanded",
@@ -61,7 +62,7 @@ def main() -> None:
         return
 
     render_hero(
-        title="S Testing Laboratory",
+        title=ORGANIZATION_NAME,
         subtitle=(
             "Signed in as <b>"
             f"{user.full_name or user.username}</b> "

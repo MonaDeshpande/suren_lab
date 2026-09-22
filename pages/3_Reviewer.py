@@ -22,6 +22,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from db.connection import test_connection  # noqa: E402
+from services.branding import ORGANIZATION_NAME  # noqa: E402
 from services.audit import (  # noqa: E402
     actor_display_name,
     format_stamp_datetime,
@@ -108,7 +109,7 @@ from ui.components import (  # noqa: E402
 )
 
 st.set_page_config(
-    page_title="S Testing Laboratory — Reviewer",
+    page_title=f"{ORGANIZATION_NAME} — Reviewer",
     page_icon="✅",
     layout="wide",
     initial_sidebar_state="expanded",

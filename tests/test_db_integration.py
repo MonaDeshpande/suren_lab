@@ -231,7 +231,7 @@ class TestStorageTemperature:
 
         assert by_sr[1].storage_temperature == "4°C"
         assert by_sr[2].storage_temperature == "2°C to 8°C"
-        assert by_sr[3].storage_temperature == "Room Temp°C"
+        assert by_sr[3].storage_temperature == "Room Temp"
         assert by_sr[4].storage_temperature == "25°C"
         assert by_sr[5].storage_temperature == "18°C"
         assert loaded.storage_temperature == "4°C"

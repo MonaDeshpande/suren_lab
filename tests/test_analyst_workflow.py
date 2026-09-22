@@ -79,11 +79,28 @@ def _pdf_text(pdf_bytes: bytes) -> str:
     return "\n".join(page.extract_text() or "" for page in reader.pages)
 
 
+def _cell_text(cell) -> str:
+    return (cell.text or "").strip()
+
+
+def _header_text(doc: Document) -> str:
+    text = ""
+    for section in doc.sections:
+        for table in section.header.tables:
+            for row in table.rows:
+                for cell in row.cells:
+                    text += "\n" + _cell_text(cell)
+        for para in section.header.paragraphs:
+            text += "\n" + (para.text or "")
+    return text
+
+
 def _header_has_logo(doc: Document) -> bool:
+    """True when the cloned protocol letterhead is present (logo image or reference table)."""
     for section in doc.sections:
         if section.header._element.findall(".//" + qn("w:drawing")):
             return True
-    return False
+    return "SURENDRA" in _header_text(doc).upper()
 
 
 def _write_protocol_preview(

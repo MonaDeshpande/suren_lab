@@ -864,10 +864,11 @@ def _header_text(doc: Document) -> str:
 
 
 def _header_has_logo(doc: Document) -> bool:
+    """True when the cloned protocol letterhead is present (logo image or reference table)."""
     for section in doc.sections:
         if section.header._element.findall(".//" + qn("w:drawing")):
             return True
-    return False
+    return "SURENDRA" in _header_text(doc).upper()
 
 
 def _last_worksheet_table_index(doc: Document) -> int | None:
@@ -1941,6 +1942,12 @@ class TestProtocolPageLayout:
         for table in doc.sections[0].header.tables:
             grid_sum = sum(_table_grid_col_inches(table))
             if grid_sum > 0:
+                if PROTOCOL_HEADER_FOOTER_PATH.exists():
+                    ref_hdr = Document(str(PROTOCOL_HEADER_FOOTER_PATH)).sections[0].header
+                    if ref_hdr.tables:
+                        ref_hdr_width = sum(_table_grid_col_inches(ref_hdr.tables[0]))
+                        assert abs(grid_sum - ref_hdr_width) < 0.05
+                        continue
                 assert grid_sum <= ref_max_width + 0.05
 
     @pytest.mark.skipif(

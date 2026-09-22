@@ -18,12 +18,13 @@ from typing import Any
 from db.connection import get_db, test_connection
 from db.migrate import ensure_schema
 from services.customers import Customer
-from services.docx_filler import fill_docx_bytes, suggest_docx_filename
+from services.ctr_pdf import generate_ctr_documents
+from services.docx_filler import suggest_docx_filename
 from services.micro_protocol_docx import (
     fill_micro_protocol_docx_bytes,
     suggest_micro_protocol_filename,
 )
-from services.pdf_generator import generate_pdf_bytes, suggest_pdf_filename
+from services.pdf_generator import suggest_pdf_filename
 from services.protocol_pdf import generate_protocol_documents
 from services.protocol_store import (
     ProtocolHeader,
@@ -343,9 +344,20 @@ def export_bundle(
     protocol_dir = client_dir / "protocol"
     report_dir = client_dir / "final_report"
 
-    ctr_pdf = generate_pdf_bytes(ctr_data, generated_by=generated_by, generated_at=generated_at)
+    (
+        ctr_docx,
+        ctr_pdf,
+        _ctr_docx_name,
+        _ctr_pdf_name,
+        ctr_pdf_err,
+    ) = generate_ctr_documents(
+        ctr_data,
+        generated_by=generated_by,
+        generated_at=generated_at,
+    )
+    if ctr_pdf is None:
+        raise RuntimeError(f"CTR PDF generation failed: {ctr_pdf_err or 'unknown'}")
     _write(ctr_dir / suggest_pdf_filename(ctr_data), ctr_pdf, project_root=project_root)
-    ctr_docx = fill_docx_bytes(ctr_data, generated_by=generated_by, generated_at=generated_at)
     _write(ctr_dir / suggest_docx_filename(ctr_data), ctr_docx, project_root=project_root)
 
     if scenario.include_protocol:

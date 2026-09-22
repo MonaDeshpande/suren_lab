@@ -11,7 +11,7 @@ from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
-ORGANIZATION_NAME = "S Testing Laboratory"
+ORGANIZATION_NAME = "Surendra Testing Laboratory"
 LAB_SHORT_NAME = "SLS"
 LOGO_PATH = PROJECT_ROOT / "assets" / "logo.png"
 

@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from services.document_templates import (
+    CTR_FORM_BODY_PATH,
+    CTR_LETTERHEAD_PATH,
     CTR_TEMPLATE_PATH,
     FOOD_REPORT_WITHOUT_LOGO_PATH,
     FOOD_REPORT_WITH_LOGO_PATH,
@@ -24,5 +26,7 @@ def test_final_report_without_logo_uses_no_logo_file_when_present():
 
 
 def test_ctr_template_path_under_reference():
-    assert CTR_TEMPLATE_PATH.name == "Customer Test Request form LLP.docx"
-    assert CTR_TEMPLATE_PATH.parent.name == "reference"
+    assert CTR_FORM_BODY_PATH.name == "Customer Test Request form LLP.docx"
+    assert CTR_LETTERHEAD_PATH.name == "CTR_template.docx"
+    assert CTR_TEMPLATE_PATH == CTR_FORM_BODY_PATH
+    assert CTR_FORM_BODY_PATH.parent.name == "reference"

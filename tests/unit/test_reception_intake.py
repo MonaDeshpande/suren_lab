@@ -8,6 +8,7 @@ import pytest
 
 from services.protocols.test_catalog import CATEGORY_FOOD, CATEGORY_WATER
 from ui.components import (
+    INTAKE_PACKAGE_APPLY_STACK_KEY,
     RECEPTION_MODE_EDIT,
     RECEPTION_MODE_NEW,
     RECEPTION_MODE_PACKAGES,
@@ -16,6 +17,7 @@ from ui.components import (
     RECEPTION_TAB_NEW,
     RECEPTION_TAB_REGISTRATION,
     RECEPTION_TABS,
+    apply_reception_workspace_selection,
     food_intake_packages_ready,
     handle_reception_mode_change,
     mark_reception_tab,
@@ -149,6 +151,39 @@ class TestMarkReceptionTab:
             mark_reception_tab(RECEPTION_TAB_EDIT)
         clear_mock.assert_called_once()
         assert session_state["_reception_tab_last"] == RECEPTION_TAB_EDIT
+
+
+class TestApplyReceptionWorkspaceSelection:
+    @pytest.fixture
+    def session_state(self):
+        state = {
+            "_reception_tab_last": RECEPTION_TAB_NEW,
+            "_reception_mode_last": RECEPTION_TAB_NEW,
+            INTAKE_PACKAGE_APPLY_STACK_KEY: [1, 2],
+        }
+        with patch("ui.components.st") as mock_st:
+            mock_st.session_state = state
+            yield state
+
+    def test_staying_on_new_does_not_clear_stack(self, session_state):
+        with patch("ui.components.clear_ctr_form_state") as clear_mock:
+            apply_reception_workspace_selection(RECEPTION_TAB_NEW)
+        clear_mock.assert_not_called()
+        assert session_state[INTAKE_PACKAGE_APPLY_STACK_KEY] == [1, 2]
+
+    def test_new_to_edit_clears_once_not_sequential_tab_marks(self, session_state):
+        """Production calls apply_reception_workspace once per rerun (not st.tabs)."""
+        with patch("ui.components.clear_ctr_form_state") as clear_mock:
+            apply_reception_workspace_selection(RECEPTION_TAB_EDIT)
+        clear_mock.assert_called_once()
+        assert session_state["_reception_tab_last"] == RECEPTION_TAB_EDIT
+
+    def test_apply_stack_survives_customers_then_new(self, session_state):
+        with patch("ui.components.clear_ctr_form_state") as clear_mock:
+            mark_reception_tab(RECEPTION_TAB_CUSTOMERS)
+            mark_reception_tab(RECEPTION_TAB_NEW)
+        clear_mock.assert_not_called()
+        assert session_state[INTAKE_PACKAGE_APPLY_STACK_KEY] == [1, 2]
 
 
 class TestFoodIntakePackagesReady:

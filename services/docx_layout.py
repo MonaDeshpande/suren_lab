@@ -263,6 +263,153 @@ def delete_table_rows_range(table: Table, start_index: int, end_index: int) -> N
         delete_table_row(table, idx)
 
 
+def remove_table(table: Table) -> None:
+    """Remove a table from the document body."""
+    element = table._element
+    parent = element.getparent()
+    if parent is not None:
+        parent.remove(element)
+
+
+def read_table_grid_column_widths(table: Table) -> list[int]:
+    """Return w:tblGrid column widths in twips, or [] if missing."""
+    grid = table._tbl.find(qn("w:tblGrid"))
+    if grid is None:
+        return []
+    widths: list[int] = []
+    for col in grid.findall(qn("w:gridCol")):
+        raw = col.get(qn("w:w"))
+        if raw:
+            widths.append(int(raw))
+    return widths
+
+
+def _ensure_table_tbl_pr(table: Table):
+    tbl = table._tbl
+    doc_tbl_pr = tbl.tblPr
+    if doc_tbl_pr is None:
+        doc_tbl_pr = OxmlElement("w:tblPr")
+        tbl.insert(0, doc_tbl_pr)
+    return doc_tbl_pr
+
+
+def set_table_tbl_w(table: Table, width_twips: int) -> None:
+    """Set w:tblW so Word/PDF use the same outer width as tblGrid."""
+    doc_tbl_pr = _ensure_table_tbl_pr(table)
+    old_tbl_w = doc_tbl_pr.find(qn("w:tblW"))
+    if old_tbl_w is not None:
+        doc_tbl_pr.remove(old_tbl_w)
+    tbl_w = OxmlElement("w:tblW")
+    tbl_w.set(qn("w:w"), str(width_twips))
+    tbl_w.set(qn("w:type"), "dxa")
+    doc_tbl_pr.append(tbl_w)
+
+
+def replace_table_grid_columns(table: Table, col_widths: list[int]) -> None:
+    """Replace tblGrid and per-cell tcW with explicit column widths (twips)."""
+    if not col_widths:
+        return
+    target_twips = sum(col_widths)
+    tbl = table._tbl
+    old_grid = tbl.find(qn("w:tblGrid"))
+    if old_grid is not None:
+        tbl.remove(old_grid)
+    new_grid = OxmlElement("w:tblGrid")
+    for width in col_widths:
+        col = OxmlElement("w:gridCol")
+        col.set(qn("w:w"), str(width))
+        new_grid.append(col)
+    tbl_pr = tbl.tblPr
+    if tbl_pr is not None:
+        tbl_pr.addnext(new_grid)
+    else:
+        tbl.insert(0, new_grid)
+    for row in table.rows:
+        for col_idx, cell in enumerate(row.cells):
+            if col_idx >= len(col_widths):
+                break
+            tc_pr = cell._tc.get_or_add_tcPr()
+            tc_w = tc_pr.find(qn("w:tcW"))
+            if tc_w is None:
+                tc_w = OxmlElement("w:tcW")
+                tc_pr.append(tc_w)
+            tc_w.set(qn("w:w"), str(col_widths[col_idx]))
+            tc_w.set(qn("w:type"), "dxa")
+    set_table_tbl_w(table, target_twips)
+
+
+def compact_paragraph_spacing(
+    paragraph: Paragraph,
+    *,
+    space_before_pt: float = 2,
+    space_after_pt: float = 2,
+) -> None:
+    """Tighten vertical spacing on a body paragraph."""
+    pf = paragraph.paragraph_format
+    pf.space_before = Pt(space_before_pt)
+    pf.space_after = Pt(space_after_pt)
+
+
+def apply_table_cell_font_size(table: Table, size_pt: float = 10) -> None:
+    """Set font size on all cell paragraphs in a table."""
+    for row in table.rows:
+        for cell in row.cells:
+            for para in cell.paragraphs:
+                compact_paragraph_spacing(para, space_before_pt=0, space_after_pt=0)
+                if para.runs:
+                    for run in para.runs:
+                        run.font.size = Pt(size_pt)
+                elif (para.text or "").strip():
+                    run = para.add_run(para.text)
+                    para.text = ""
+                    run.font.size = Pt(size_pt)
+
+
+def remove_body_paragraph_containing(doc: Document, needle: str) -> None:
+    """Remove the first body paragraph whose text contains *needle*."""
+    idx = find_paragraph(doc, needle)
+    if idx is None:
+        return
+    element = doc.paragraphs[idx]._element
+    parent = element.getparent()
+    if parent is not None:
+        parent.remove(element)
+
+
+def remove_empty_paragraphs_following_table(
+    doc: Document,
+    table: Table,
+    *,
+    max_remove: int = 20,
+) -> None:
+    """Remove consecutive empty body paragraphs immediately after *table*."""
+    tbl_el = table._tbl
+    el = tbl_el.getnext()
+    removed = 0
+    while el is not None and removed < max_remove:
+        if el.tag != qn("w:p"):
+            break
+        para = Paragraph(el, doc)
+        if (para.text or "").strip():
+            break
+        next_el = el.getnext()
+        parent = el.getparent()
+        if parent is not None:
+            parent.remove(el)
+        removed += 1
+        el = next_el
+
+
+def _section_header_parts(section) -> list:
+    """Return every header variant on a section (default, first, even)."""
+    parts = [section.header]
+    if section.different_first_page_header_footer:
+        parts.append(section.first_page_header)
+    if section._sectPr.find(qn("w:evenAndOddHeaders")) is not None:
+        parts.append(section.even_page_header)
+    return parts
+
+
 def _section_footer_parts(section) -> list:
     """Return every footer variant on a section (default, first, even)."""
     parts = [section.footer]
@@ -309,6 +456,186 @@ def _append_field_run(paragraph: Paragraph, field_code: str, placeholder: str = 
     r.append(fld_sep)
     paragraph._p.append(result_run)
     r.append(fld_end)
+
+
+def _remap_embedded_images(
+    source_part,
+    target_part,
+    element,
+    r_id_map: dict[str, str] | None = None,
+) -> None:
+    """Copy inline header/footer images when cloning XML into another document."""
+    if r_id_map is None:
+        r_id_map = {}
+    embed_attr = qn("r:embed")
+    for blip in element.iter():
+        if blip.tag != qn("a:blip"):
+            continue
+        old_r_id = blip.get(embed_attr)
+        if not old_r_id:
+            continue
+        if old_r_id in r_id_map:
+            blip.set(embed_attr, r_id_map[old_r_id])
+            continue
+        try:
+            source_image = source_part.related_parts[old_r_id]
+        except KeyError:
+            continue
+        new_r_id = target_part.relate_to(source_image, source_image.content_type)
+        r_id_map[old_r_id] = new_r_id
+        blip.set(embed_attr, new_r_id)
+
+
+def _replace_header_footer_part(ref_element, ref_part, target_part) -> None:
+    """Replace target header/footer content with a deep copy of *ref_element*."""
+    target_part.is_linked_to_previous = False
+    el = target_part._element
+    for child in list(el):
+        el.remove(child)
+    r_id_map: dict[str, str] = {}
+    for child in ref_element:
+        new_child = deepcopy(child)
+        _remap_embedded_images(ref_part, target_part.part, new_child, r_id_map)
+        el.append(new_child)
+
+
+def _apply_letterhead_logo_blob(header) -> None:
+    """Swap header image bytes for the circular Surendra Laboratories logo."""
+    from services.document_templates import PROTOCOL_LETTERHEAD_LOGO_PATH
+
+    if not PROTOCOL_LETTERHEAD_LOGO_PATH.exists():
+        return
+    blob = PROTOCOL_LETTERHEAD_LOGO_PATH.read_bytes()
+    for rel in header.part.rels.values():
+        if "image" in rel.reltype:
+            rel.target_part._blob = blob
+
+
+def fill_letterhead_pages_count(header) -> None:
+    """Replace static Pages value with a Word NUMPAGES field (total page count)."""
+    for table in header.tables:
+        for row in table.rows:
+            cells = row.cells
+            for idx, cell in enumerate(cells):
+                label = (cell.text or "").strip().lower()
+                if not label.startswith("pages"):
+                    continue
+                value_cell = cells[idx + 1] if idx + 1 < len(cells) else cell
+                para = (
+                    value_cell.paragraphs[0]
+                    if value_cell.paragraphs
+                    else value_cell.add_paragraph()
+                )
+                set_paragraph_text(para, "")
+                _append_field_run(para, " NUMPAGES ", placeholder="1")
+                return
+
+
+def _fill_ctr_footer_approval_table(footer, prepared_by: str) -> None:
+    """Set Prepared-by name and clear Reviewer value cell for pen signature."""
+    if not footer.tables:
+        return
+    table = footer.tables[0]
+    if len(table.rows) >= 1 and len(table.rows[0].cells) >= 2:
+        set_cell_text(table.rows[0].cells[1], (prepared_by or "").strip())
+    if len(table.rows) >= 2 and len(table.rows[1].cells) >= 2:
+        set_cell_text(table.rows[1].cells[1], "")
+
+
+def _fill_ctr_footer_page_line(footer) -> None:
+    """Replace static 'Page N of M' footer text with Word PAGE / NUMPAGES fields."""
+    for para in footer.paragraphs:
+        lower = (para.text or "").lower()
+        if "page" not in lower or " of " not in lower:
+            continue
+        set_paragraph_text(para, "")
+        para.alignment = WD_ALIGN_PARAGRAPH.RIGHT
+        para.add_run("Page ")
+        _append_field_run(para, " PAGE ", placeholder="1")
+        para.add_run(" of ")
+        _append_field_run(para, " NUMPAGES ", placeholder="1")
+        return
+
+
+def apply_ctr_header_only(
+    doc: Document,
+    *,
+    letterhead_path: Path | None = None,
+) -> None:
+    """
+    Clone header only from reference/CTR_template.docx onto every section.
+
+    Sets header_distance from the template so the header table clears the body.
+    Leaves LLP bottom_margin, footer_distance, and footer content unchanged.
+    """
+    from services.document_templates import CTR_LETTERHEAD_PATH
+
+    path = letterhead_path or CTR_LETTERHEAD_PATH
+    if not path.exists():
+        raise FileNotFoundError(f"CTR letterhead template missing: {path}")
+
+    ref_doc = load_template(path)
+    ref_sec = ref_doc.sections[0]
+    ref_header = ref_sec.header
+    ref_hdr_part = ref_header.part
+
+    for section in doc.sections:
+        section.header_distance = ref_sec.header_distance
+
+        for header_part in _section_header_parts(section):
+            _replace_header_footer_part(
+                ref_header._element, ref_hdr_part, header_part
+            )
+            _apply_letterhead_logo_blob(header_part)
+            fill_letterhead_pages_count(header_part)
+
+
+def apply_ctr_letterhead(
+    doc: Document,
+    *,
+    prepared_by: str,
+    letterhead_path: Path | None = None,
+) -> None:
+    """
+    Clone header/footer from reference/CTR_template.docx onto every section.
+
+    Fills total page count in the header, reception name in Prepared by,
+    blanks Reviewed & Issued by, and dynamic page x of y in the footer.
+
+    Prefer apply_ctr_header_only for CTR downloads (footer clone distorts LLP layout).
+    """
+    from services.document_templates import CTR_LETTERHEAD_PATH
+
+    path = letterhead_path or CTR_LETTERHEAD_PATH
+    if not path.exists():
+        raise FileNotFoundError(f"CTR letterhead template missing: {path}")
+
+    ref_doc = load_template(path)
+    ref_sec = ref_doc.sections[0]
+    ref_header = ref_sec.header
+    ref_footer = ref_sec.footer
+    ref_hdr_part = ref_header.part
+    ref_ftr_part = ref_footer.part
+
+    for section in doc.sections:
+        section.top_margin = ref_sec.top_margin
+        section.bottom_margin = ref_sec.bottom_margin
+        section.header_distance = ref_sec.header_distance
+        section.footer_distance = ref_sec.footer_distance
+
+        for header_part in _section_header_parts(section):
+            _replace_header_footer_part(
+                ref_header._element, ref_hdr_part, header_part
+            )
+            _apply_letterhead_logo_blob(header_part)
+            fill_letterhead_pages_count(header_part)
+
+        for footer_part in _section_footer_parts(section):
+            _replace_header_footer_part(
+                ref_footer._element, ref_ftr_part, footer_part
+            )
+            _fill_ctr_footer_approval_table(footer_part, prepared_by)
+            _fill_ctr_footer_page_line(footer_part)
 
 
 def _append_disclaimer_footer_paragraph(footer, disclaimer_text: str) -> None:

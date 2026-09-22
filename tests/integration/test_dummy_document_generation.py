@@ -14,9 +14,8 @@ from pathlib import Path
 
 import pytest
 
-from services.docx_filler import fill_docx_bytes, suggest_docx_filename
+from services.ctr_pdf import generate_ctr_documents
 from services.e2e_app_flow import _micro_analyst_inputs, _water_analyst_inputs
-from services.pdf_generator import generate_pdf_bytes, suggest_pdf_filename
 from services.protocol_pdf import generate_protocol_documents
 from services.protocol_store import (
     ProtocolHeader,
@@ -117,7 +116,7 @@ def test_dummy_ctr_generates_pdf_and_docx(
     integration_preview_dirs,
 ):
     """Save one dummy sample, generate CTR PDF/DOCX, write preview, wipe DB."""
-    chem, _micro = qa_analyst_pair
+    chem, micro = qa_analyst_pair
     verify = _verification()
     sample = SampleRow(
         sr_no=1,
@@ -128,6 +127,7 @@ def test_dummy_ctr_generates_pdf_and_docx(
         category=CATEGORY_WATER,
         test_keys=["ph"],
         assigned_analyst_id=chem.id,
+        assigned_micro_analyst_id=micro.id,
         protocol_no=_PROTOCOL_NO,
         storage_temperature=storage_temperature_for_save("4°C", ""),
         **verify,
@@ -135,17 +135,26 @@ def test_dummy_ctr_generates_pdf_and_docx(
     out_dir = integration_preview_dirs["ctr"]
     try:
         loaded = _save_and_load_request(db_test_gst, sample)
-        pdf_bytes = generate_pdf_bytes(loaded)
-        docx_bytes = fill_docx_bytes(loaded)
+        (
+            docx_bytes,
+            pdf_bytes,
+            docx_name,
+            pdf_name,
+            pdf_error,
+        ) = generate_ctr_documents(
+            loaded,
+            generated_by="Integration Test",
+            generated_at="21/07/2026 12:00",
+        )
+        if pdf_bytes is None:
+            pytest.fail(
+                f"CTR PDF required for integration test: {pdf_error or 'no PDF'}"
+            )
         _assert_ctr_content(pdf_bytes, docx_bytes, customer_name=_CTR_CUSTOMER)
         assert "Dummy CTR Water Sample" in docx_body_text(docx_bytes)
 
-        pdf_path = write_preview_bytes(
-            out_dir, suggest_pdf_filename(loaded), pdf_bytes
-        )
-        docx_path = write_preview_bytes(
-            out_dir, suggest_docx_filename(loaded), docx_bytes
-        )
+        pdf_path = write_preview_bytes(out_dir, pdf_name, pdf_bytes)
+        docx_path = write_preview_bytes(out_dir, docx_name, docx_bytes)
         print(f"\nCTR preview:\n  {pdf_path}\n  {docx_path}")
     finally:
         cleanup_test_data(gst=db_test_gst)

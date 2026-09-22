@@ -126,3 +126,25 @@ SAMPLE_TABLE_HEADERS = (
     "Sample qty.",
     "Parameters",
 )
+
+CUSTOMER_SIGNATURE_LABEL = "Customer Signature & date:"
+
+
+def ctr_signature_date(
+    generated_at: str = "",
+    request_date: date | None = None,
+) -> str:
+    """Date shown on page-1 Receiver block (save time, else request date, else today)."""
+    stamp = (generated_at or "").strip()
+    if stamp and " " in stamp:
+        iso = stamp.split()[0]
+        try:
+            parsed = date.fromisoformat(iso)
+            return parsed.strftime("%d/%m/%Y")
+        except ValueError:
+            return iso
+    if stamp:
+        return stamp
+    if request_date is not None:
+        return request_date.strftime("%d/%m/%Y")
+    return date.today().strftime("%d/%m/%Y")

@@ -155,6 +155,19 @@ pytest -q -m "not integration"
 
 See `tests/` for formula, validation, auth-hash, and optional DB integration coverage.
 
+A successful **`run_tests.bat`** run refreshes CTR preview files under `tests/output_preview/ctr/` via [`tests/test_report_preview.py`](../tests/test_report_preview.py) (2-sample always; 5-sample ABC CTR when Postgres is up).
+
+**App-flow document bundle** (same services as Reception / Analyst / Reviewer, not `pytest -m e2e`):
+
+- Module: [`tests/integration/test_app_document_bundle.py`](../tests/integration/test_app_document_bundle.py)
+- Included in `run_tests.bat` when Postgres is up and **Microsoft Word** (or LibreOffice) can convert DOCX → PDF
+- Writes: `tests/output_preview/app_flow/{food,water,micro}/{ctr,protocol,final_report}/`
+- CTR PDF uses ReportLab form layout + lab header/footer (no Word required for CTR PDF); protocol/final report still need Word/LibreOffice for PDF conversion
+- Multi-sample CTR preview (5 rows, lab `SLS/26/900`): `tests/test_report_preview.py::test_ctr_multi_sample_document_bundle_writes_preview` → `tests/output_preview/ctr/`
+- Dummy GST rows are removed after each category test
+
+Manual Streamlit walkthrough (optional): see [`docs/MANUAL_PDF_QA.md`](../MANUAL_PDF_QA.md) when present.
+
 ---
 
 ## 12. Sample status lifecycle (reference)

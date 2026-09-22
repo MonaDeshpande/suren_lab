@@ -214,6 +214,13 @@ def sync_verify_sample_code(
     return code
 
 
+def request_lab_code_for_verification(lab_code: str) -> str:
+    """CTR checklist lab code — same base code for every sample on the request."""
+    from services.samples import normalize_lab_code
+
+    return normalize_lab_code(lab_code)
+
+
 @dataclass
 class TestRequestData:
     """
@@ -292,6 +299,8 @@ def storage_temperature_for_save(
     if choice == STORAGE_TEMPERATURE_OTHER:
         raw = (other_text or "").strip()
         return format_storage_temperature_celsius(raw) if raw else ""
+    if choice in _CANONICAL_STORAGE_TEMPERATURES:
+        return choice
     return format_storage_temperature_celsius(choice)
 
 
@@ -1551,7 +1560,7 @@ def validate_request(data: TestRequestData) -> list[str]:
 
 
 def validation_warnings(data: TestRequestData) -> list[str]:
-    """Non-blocking warnings (e.g. mixed Jaggery + Basic Nutrition on one sample)."""
+    """Non-blocking warnings (e.g. mixed protocol families on one Food sample)."""
     warnings: list[str] = []
     gst = (data.customer.gst_number or "").strip()
     if gst and not gst_ready_for_lookup(gst):
@@ -1563,10 +1572,21 @@ def validation_warnings(data: TestRequestData) -> list[str]:
             continue
         if normalize_category(s.category) != CATEGORY_FOOD:
             continue
-        keys = filter_keys_for_category(list(s.test_keys or []), s.category)
+        key_set: list[str] = []
+        seen: set[str] = set()
+        for key in (
+            list(s.test_keys or [])
+            + list(s.tests_with_logo or [])
+            + list(s.tests_without_logo or [])
+        ):
+            if key and key not in seen:
+                seen.add(key)
+                key_set.append(key)
+        keys = filter_keys_for_category(key_set, s.category)
         if has_mixed_food_families(keys):
             warnings.append(
-                f"Sample Sr. {s.sr_no}: Jaggery and Basic Nutrition tests use "
-                "different protocol templates — prefer one protocol per sample."
+                f"Sample Sr. {s.sr_no}: Selected tests mix FSSAI (standard food) and "
+                "Basic Nutrition protocol templates — use one test set per sample. "
+                "(CTR Parameters label is separate.)"
             )
     return warnings

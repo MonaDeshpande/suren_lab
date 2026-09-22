@@ -28,6 +28,8 @@ class TestStorageTemperatureSelectValue:
 class TestStorageTemperatureForSave:
     def test_canonical_option_saved_as_is(self):
         assert storage_temperature_for_save("4°C", "") == "4°C"
+        assert storage_temperature_for_save("Room Temp", "") == "Room Temp"
+        assert storage_temperature_for_save("2°C to 8°C", "") == "2°C to 8°C"
 
     def test_other_uses_custom_text(self):
         assert storage_temperature_for_save(

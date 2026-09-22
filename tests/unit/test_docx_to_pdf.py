@@ -7,10 +7,14 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from services import ctr_pdf
 from services import docx_to_pdf
 from services import protocol_pdf
 from services.protocol_store import ProtocolHeader, TestResultRow
+from services.requests import SampleRow, TestRequestData
 from services.samples import SampleRecord
+from services.customers import Customer
+from tests.conftest import sample_verification_kwargs
 
 
 def _sample() -> SampleRecord:
@@ -173,6 +177,92 @@ def test_generate_protocol_documents_propagates_pdf_error(monkeypatch):
     )
     assert pdf is None
     assert pdf_err == "Microsoft Word conversion failed: busy"
+
+
+def _ctr_request() -> TestRequestData:
+    return TestRequestData(
+        customer=Customer(
+            customer_name="ABC Foods",
+            address="1 Lab Road",
+            contact_person="Ravi",
+            contact_number="9876543210",
+            email="ravi@example.com",
+            gst_number="27AAAAA0000A1Z5",
+        ),
+        request_date=date(2026, 7, 30),
+        lab_code="LAB/CTR/26/001",
+        samples=[
+            SampleRow(
+                sr_no=1,
+                sample_name="sauce",
+                batch_code="01",
+                quantity="100gm",
+                test_keys=["moisture"],
+                **sample_verification_kwargs(verify_lab_code="LAB/CTR/26/001"),
+            ),
+        ],
+    )
+
+
+def test_generate_ctr_documents_returns_pdf_and_error(monkeypatch):
+    fake_docx = b"PK fake ctr docx"
+    fake_pdf = b"%PDF fake ctr"
+
+    monkeypatch.setattr(
+        ctr_pdf,
+        "fill_docx_bytes",
+        lambda *a, **k: fake_docx,
+    )
+    monkeypatch.setattr(
+        ctr_pdf,
+        "convert_docx_bytes_to_pdf",
+        lambda b: (fake_pdf, None),
+    )
+    monkeypatch.setattr(
+        ctr_pdf,
+        "generate_pdf_bytes",
+        lambda *a, **k: fake_pdf,
+    )
+    monkeypatch.setattr(
+        ctr_pdf,
+        "suggest_docx_filename",
+        lambda _d: "CTR_ABC.docx",
+    )
+    monkeypatch.setattr(
+        ctr_pdf,
+        "suggest_pdf_filename",
+        lambda _d: "CTR_ABC.pdf",
+    )
+
+    docx, pdf, docx_name, pdf_name, pdf_err = ctr_pdf.generate_ctr_documents(
+        _ctr_request(), generated_by="Reception User"
+    )
+    assert docx == fake_docx
+    assert pdf == fake_pdf
+    assert docx_name == "CTR_ABC.docx"
+    assert pdf_name == "CTR_ABC.pdf"
+    assert pdf_err is None
+
+
+def test_generate_ctr_documents_propagates_pdf_error(monkeypatch):
+    monkeypatch.setattr(ctr_pdf, "fill_docx_bytes", lambda *a, **k: b"docx")
+    monkeypatch.setattr(
+        ctr_pdf,
+        "convert_docx_bytes_to_pdf",
+        lambda b: (None, "Word not available"),
+    )
+
+    def _boom(*a, **k):
+        raise RuntimeError("ReportLab failed")
+
+    monkeypatch.setattr(ctr_pdf, "generate_pdf_bytes", _boom)
+    monkeypatch.setattr(ctr_pdf, "suggest_docx_filename", lambda _d: "CTR.docx")
+    monkeypatch.setattr(ctr_pdf, "suggest_pdf_filename", lambda _d: "CTR.pdf")
+
+    _docx, pdf, _dn, _pn, pdf_err = ctr_pdf.generate_ctr_documents(_ctr_request())
+    assert pdf is None
+    assert "Word not available" in (pdf_err or "")
+    assert "ReportLab failed" in (pdf_err or "")
 
 
 def test_word_child_script_uses_subprocess(monkeypatch, tmp_path):

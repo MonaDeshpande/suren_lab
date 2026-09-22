@@ -70,11 +70,16 @@ def render_new_sample_registration_panel(actor) -> None:
     st.caption(
         "To change customer details, use the **Customers** tab, then return here."
     )
+    st.caption(
+        "After each **Apply**, scroll to the **Sample table** below to enter qty and batch per row. "
+        "Apply the **same package again** for another packing (new Sr. with its own batch/qty)."
+    )
 
     st.divider()
     render_section_title(
         "Test package (product)",
-        "Search and select a registered package — the first sample row is pre-filled.",
+        "Search and select a registered package. **Apply** fills row 1 when the table "
+        "is empty; each further **Apply** adds the product as the next Sr. No.",
     )
     pkg_query = st.text_input(
         "Search package / product name",
@@ -104,8 +109,10 @@ def render_new_sample_registration_panel(actor) -> None:
         idx = labels.index(choice)
         selected_pkg = packages[idx]
         if st.button("Apply package to sample table", key="intake_apply_package"):
-            apply_pinned_package_to_intake(selected_pkg)
-            st.success(f"Applied package **{selected_pkg.sample_product_name}**.")
+            row_no = apply_pinned_package_to_intake(selected_pkg)
+            st.success(
+                f"Added **{selected_pkg.sample_product_name}** as sample row **{row_no}**."
+            )
             st.rerun()
 
     st.divider()

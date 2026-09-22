@@ -2781,10 +2781,9 @@ def _apply_letterhead_logo_blob(header) -> None:
 
 
 def _copy_protocol_letterhead_header(doc: Document) -> bool:
-    """Clone letterhead header from reference/protocol.docx with logo images intact."""
-    if not PROTOCOL_HEADER_FOOTER_PATH.exists():
-        return False
-    ref_doc = Document(str(PROTOCOL_HEADER_FOOTER_PATH))
+    """Clone letterhead header from protocol header/footer reference with logo images intact."""
+    ref_path = _protocol_layout_reference_path()
+    ref_doc = Document(str(ref_path))
     ref_header = ref_doc.sections[0].header
     ref_part = ref_header.part
 
@@ -2806,9 +2805,8 @@ def _copy_protocol_letterhead_header(doc: Document) -> bool:
 
 def _protocol_letterhead_header_children_xml() -> list[Any]:
     """Legacy helper — prefer _copy_protocol_letterhead_header()."""
-    if not PROTOCOL_HEADER_FOOTER_PATH.exists():
-        return []
-    ref_hdr = Document(str(PROTOCOL_HEADER_FOOTER_PATH)).sections[0].header._element
+    ref_path = _protocol_layout_reference_path()
+    ref_hdr = Document(str(ref_path)).sections[0].header._element
     return [deepcopy(child) for child in ref_hdr]
 
 

@@ -13,6 +13,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from db.connection import test_connection  # noqa: E402
+from services.branding import ORGANIZATION_NAME  # noqa: E402
 from services.audit import list_recent  # noqa: E402
 from services.versions import list_versions  # noqa: E402
 from services.auth import MAX_ROLES_PER_USER, ROLES, get_session_user, roles_display  # noqa: E402
@@ -48,7 +49,7 @@ from ui.components import (  # noqa: E402
 )
 
 st.set_page_config(
-    page_title="S Testing Laboratory — Admin",
+    page_title=f"{ORGANIZATION_NAME} — Admin",
     page_icon="👤",
     layout="wide",
     initial_sidebar_state="expanded",

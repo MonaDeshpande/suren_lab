@@ -55,6 +55,13 @@ if errorlevel 1 (
     echo [WARN] Database container not ready. Starting it...
     docker compose up -d
     timeout /t 8 /nobreak >nul
+    docker exec sls_lab_db psql -U sls_user -d sls_lab -c "SELECT 1;" >nul 2>&1
+)
+if errorlevel 1 (
+    echo [WARN] PostgreSQL not reachable on port 5433.
+    echo        Integration tests will SKIP ^(no 5-sample CTR preview; 2-sample CTR still written^).
+) else (
+    echo [OK] PostgreSQL is ready for integration tests.
 )
 
 echo.
@@ -71,6 +78,14 @@ if %RC% neq 0 (
     echo [FAIL] Tests failed ^(exit code %RC%^).
 ) else (
     echo [OK] Tests finished successfully.
+    echo.
+    echo Document previews ^(open in Explorer^):
+    echo   tests\output_preview\ctr\           — CTR PDF+DOCX ^(Reception path; 5-sample needs Postgres^)
+    echo   tests\output_preview\integration\  — dummy CTR/protocol slices ^(Postgres^)
+    echo   tests\output_preview\app_flow\     — full bundle per category ^(Postgres + Word/LibreOffice for protocol/final PDF^)
+    if exist "tests\output_preview\ctr" (
+        start "" "%CD%\tests\output_preview\ctr"
+    )
 )
 
 echo.

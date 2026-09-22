@@ -8,11 +8,16 @@ from __future__ import annotations
 
 import streamlit as st
 
-from services.audit import actor_display_name, format_stamp_datetime, log_from_user, now_lab
+from services.audit import (
+    document_actor_display_name,
+    format_stamp_datetime,
+    log_from_user,
+    now_lab,
+)
 from services.customers import customer_data_changed, get_customer_by_gst, get_customer_by_id, gst_ready_for_lookup
-from services.docx_filler import fill_docx_bytes, suggest_docx_filename
-from services.pdf_generator import generate_pdf_bytes, suggest_pdf_filename
-from services.protocols.test_catalog import CATEGORY_WATER, normalize_category
+from services.ctr_pdf import generate_ctr_documents
+from services.docx_to_pdf import format_word_conversion_error
+from services.protocols.test_catalog import CATEGORY_FOOD, CATEGORY_WATER, normalize_category
 from services.requests import TestRequestData, save_test_request, validate_request, validation_warnings
 from services.samples import REPORT_FORMAT_WITH_LOGO, report_format_label
 from services.test_packages import describe_sample_package, get_package, package_status_label
@@ -21,20 +26,23 @@ from ui.components import require_edit_reason, render_section_title
 
 def render_ctr_downloads(saved, actor, gen_by: str, gen_at: str) -> None:
     """Show success message, sample codes table, and PDF/DOCX download buttons."""
+    docx_bytes = None
+    pdf_bytes = None
+    docx_name = ""
+    pdf_name = ""
+    docx_error = None
+    pdf_error = None
     try:
-        with st.spinner("Generating filled PDF…"):
-            pdf_bytes = generate_pdf_bytes(
+        with st.spinner("Generating Customer Test Request (Word + PDF)…"):
+            (
+                docx_bytes,
+                pdf_bytes,
+                docx_name,
+                pdf_name,
+                pdf_error,
+            ) = generate_ctr_documents(
                 saved, generated_by=gen_by, generated_at=gen_at
             )
-
-        docx_bytes = None
-        docx_error = None
-        try:
-            docx_bytes = fill_docx_bytes(
-                saved, generated_by=gen_by, generated_at=gen_at
-            )
-        except Exception as exc:  # noqa: BLE001
-            docx_error = str(exc)
 
         log_from_user(
             actor,
@@ -44,7 +52,8 @@ def render_ctr_downloads(saved, actor, gen_by: str, gen_at: str) -> None:
             details=f"lab={saved.lab_code or ''}",
         )
     except Exception as exc:  # noqa: BLE001
-        st.error(f"Generate failed: {exc}")
+        docx_error = str(exc)
+        st.error(f"Generate failed: {docx_error}")
         return
 
     render_section_title("Saved — sample codes & downloads")
@@ -59,7 +68,8 @@ def render_ctr_downloads(saved, actor, gen_by: str, gen_at: str) -> None:
         + "."
     )
     st.caption(
-        "Download filled PDF or Word (.docx). Both match the Customer Test Request form."
+        "Download filled PDF (standard form layout with lab header/footer) or Word (.docx) "
+        "with full letterhead from the CTR template."
     )
 
     if saved.samples:
@@ -128,31 +138,35 @@ def render_ctr_downloads(saved, actor, gen_by: str, gen_at: str) -> None:
 
     d1, d2 = st.columns(2)
     with d1:
-        st.download_button(
-            label="Download filled PDF",
-            data=pdf_bytes,
-            file_name=suggest_pdf_filename(saved),
-            mime="application/pdf",
-            use_container_width=True,
-            type="primary",
-        )
+        if pdf_bytes is not None:
+            st.download_button(
+                label="Download filled PDF",
+                data=pdf_bytes,
+                file_name=pdf_name,
+                mime="application/pdf",
+                use_container_width=True,
+                type="primary",
+            )
+        elif pdf_error:
+            st.warning(f"PDF not available: {format_word_conversion_error(pdf_error)}")
+        else:
+            st.warning("PDF not available.")
     with d2:
         if docx_bytes is not None:
             st.download_button(
                 label="Download filled Word (.docx)",
                 data=docx_bytes,
-                file_name=suggest_docx_filename(saved),
+                file_name=docx_name,
                 mime=(
                     "application/vnd.openxmlformats-officedocument."
                     "wordprocessingml.document"
                 ),
                 use_container_width=True,
             )
-        else:
-            st.warning(f"Word download unavailable: {docx_error}")
 
-    st.session_state["last_pdf_bytes"] = pdf_bytes
-    st.session_state["last_pdf_name"] = suggest_pdf_filename(saved)
+    if pdf_bytes is not None:
+        st.session_state["last_pdf_bytes"] = pdf_bytes
+        st.session_state["last_pdf_name"] = pdf_name
 
 
 def submit_new_intake_request(
@@ -191,7 +205,7 @@ def submit_new_intake_request(
         if not require_edit_reason(edit_reason):
             return False
 
-    gen_by = actor_display_name(actor)
+    gen_by = document_actor_display_name(actor)
     gen_at = format_stamp_datetime(now_lab())
 
     try:
