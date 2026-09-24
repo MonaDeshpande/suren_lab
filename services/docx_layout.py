@@ -10,6 +10,7 @@ from __future__ import annotations
 import io
 from copy import deepcopy
 from pathlib import Path
+from typing import TypedDict
 
 from docx import Document
 from docx.enum.section import WD_SECTION
@@ -336,6 +337,190 @@ def replace_table_grid_columns(table: Table, col_widths: list[int]) -> None:
             tc_w.set(qn("w:w"), str(col_widths[col_idx]))
             tc_w.set(qn("w:type"), "dxa")
     set_table_tbl_w(table, target_twips)
+
+
+class CellBlock(TypedDict, total=False):
+    text: str
+    bold: bool
+    align: WD_ALIGN_PARAGRAPH
+    size_pt: float
+    space_after_pt: float
+    font_name: str
+    color_hex: str
+
+
+def apply_subtle_table_borders(
+    table: Table,
+    *,
+    color: str = "D0D0D0",
+    sz: int = 2,
+) -> None:
+    """Light single-line borders on all table edges (executive grid style)."""
+    tbl = table._tbl
+    tbl_pr = tbl.tblPr
+    if tbl_pr is None:
+        tbl_pr = OxmlElement("w:tblPr")
+        tbl.insert(0, tbl_pr)
+    existing = tbl_pr.find(qn("w:tblBorders"))
+    if existing is not None:
+        tbl_pr.remove(existing)
+    borders = OxmlElement("w:tblBorders")
+    color = (color or "D0D0D0").lstrip("#").upper()
+    for edge in ("top", "left", "bottom", "right", "insideH", "insideV"):
+        element = OxmlElement(f"w:{edge}")
+        element.set(qn("w:val"), "single")
+        element.set(qn("w:sz"), str(sz))
+        element.set(qn("w:space"), "0")
+        element.set(qn("w:color"), color)
+        borders.append(element)
+    tbl_pr.append(borders)
+
+
+def apply_cell_shading(cell, fill_hex: str) -> None:
+    """Set w:shd fill on a table cell (hex without #)."""
+    fill = (fill_hex or "").lstrip("#").upper()
+    if not fill:
+        return
+    tc_pr = cell._tc.get_or_add_tcPr()
+    old = tc_pr.find(qn("w:shd"))
+    if old is not None:
+        tc_pr.remove(old)
+    shd = OxmlElement("w:shd")
+    shd.set(qn("w:val"), "clear")
+    shd.set(qn("w:color"), "auto")
+    shd.set(qn("w:fill"), fill)
+    tc_pr.append(shd)
+
+
+def set_cell_paragraph_alignment(cell, alignment: WD_ALIGN_PARAGRAPH) -> None:
+    """Align all paragraphs in a cell."""
+    for para in cell.paragraphs:
+        para.alignment = alignment
+
+
+def _apply_run_font_ooxml(
+    run,
+    *,
+    name: str | None = None,
+    size_pt: float | None = None,
+    bold: bool | None = None,
+    color_hex: str | None = None,
+) -> None:
+    r_pr = run._element.get_or_add_rPr()
+    if name:
+        r_fonts = r_pr.find(qn("w:rFonts"))
+        if r_fonts is None:
+            r_fonts = OxmlElement("w:rFonts")
+            r_pr.insert(0, r_fonts)
+        for attr in (qn("w:ascii"), qn("w:hAnsi"), qn("w:cs")):
+            r_fonts.set(attr, name)
+    if size_pt is not None:
+        half = str(int(round(size_pt * 2)))
+        for tag_name in ("w:sz", "w:szCs"):
+            sz_el = r_pr.find(qn(tag_name))
+            if sz_el is None:
+                sz_el = OxmlElement(tag_name)
+                r_pr.append(sz_el)
+            sz_el.set(qn("w:val"), half)
+    if bold is not None:
+        b_el = r_pr.find(qn("w:b"))
+        if bold:
+            if b_el is None:
+                r_pr.append(OxmlElement("w:b"))
+        elif b_el is not None:
+            r_pr.remove(b_el)
+    if color_hex:
+        color = color_hex.lstrip("#").upper()
+        color_el = r_pr.find(qn("w:color"))
+        if color_el is None:
+            color_el = OxmlElement("w:color")
+            r_pr.append(color_el)
+        color_el.set(qn("w:val"), color)
+
+
+def set_cell_multiblock(cell, blocks: list[CellBlock]) -> None:
+    """Replace cell content with one paragraph per block (readable formula layout)."""
+    filtered = [b for b in blocks if (b.get("text") or "").strip()]
+    if not filtered:
+        set_cell_text(cell, "")
+        return
+    while len(cell.paragraphs) > 1:
+        p = cell.paragraphs[-1]._element
+        p.getparent().remove(p)
+    for idx, block in enumerate(filtered):
+        text = (block.get("text") or "").strip()
+        if idx == 0:
+            para = cell.paragraphs[0] if cell.paragraphs else cell.add_paragraph()
+            set_paragraph_text(para, "")
+        else:
+            para = cell.add_paragraph()
+        align = block.get("align")
+        if align is not None:
+            para.alignment = align
+        run = para.add_run(text)
+        _apply_run_font_ooxml(
+            run,
+            name=block.get("font_name"),
+            size_pt=block.get("size_pt"),
+            bold=block.get("bold"),
+            color_hex=block.get("color_hex"),
+        )
+        after = block.get("space_after_pt")
+        if after is not None:
+            para.paragraph_format.space_after = Pt(after)
+
+
+def set_metadata_label_value(
+    cell,
+    label: str,
+    value: str,
+    *,
+    font_name: str = "Arial",
+    label_size_pt: float = 10,
+    value_size_pt: float = 10,
+) -> None:
+    """Bold label run + regular value in the first cell paragraph."""
+    label = (label or "").strip()
+    value = (value or "").strip()
+    para = cell.paragraphs[0] if cell.paragraphs else cell.add_paragraph()
+    set_paragraph_text(para, "")
+    if label:
+        label_text = label if label.endswith((":", ".")) else f"{label}:"
+        lr = para.add_run(label_text + " ")
+        _apply_run_font_ooxml(
+            lr, name=font_name, size_pt=label_size_pt, bold=True
+        )
+    if value:
+        vr = para.add_run(value)
+        _apply_run_font_ooxml(
+            vr, name=font_name, size_pt=value_size_pt, bold=False
+        )
+
+
+def style_compact_disclaimer_paragraph(
+    paragraph: Paragraph,
+    *,
+    size_pt: float = 8,
+    color_hex: str = "6B7280",
+    font_name: str = "Arial",
+    space_after_pt: float = 6,
+    bold: bool = False,
+) -> None:
+    """Small grey disclaimer / legal lines."""
+    if not paragraph.runs and (paragraph.text or "").strip():
+        paragraph.add_run(paragraph.text)
+        paragraph.text = ""
+    for run in paragraph.runs:
+        _apply_run_font_ooxml(
+            run,
+            name=font_name,
+            size_pt=size_pt,
+            bold=bold,
+            color_hex=color_hex,
+        )
+    compact_paragraph_spacing(
+        paragraph, space_before_pt=2, space_after_pt=space_after_pt
+    )
 
 
 def compact_paragraph_spacing(

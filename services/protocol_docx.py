@@ -67,6 +67,9 @@ from services.test_packages import is_nutrition_package_type, normalize_package_
 
 JAGGERY_TEMPLATE_PATH = JAGGERY_PROTOCOL_PATH
 WATER_TEMPLATE_PATH = WATER_PROTOCOL_PATH
+WATER_POTABILITY_MICRO_APPENDIX_PATH = (
+    WATER_PROTOCOL_PATH.parent / "Water For  Potability Micro Protocol LLP 1.docx"
+)
 NUTRITION_TEMPLATE_PATH = NUTRITION_PROTOCOL_PATH
 
 logger = logging.getLogger(__name__)
@@ -432,6 +435,17 @@ RESULT_TABLE_TITLE_FONT = ("Cambria", 13)
 TABLE_HEADER_FONT = ("Cambria", 11)
 TABLE_DATA_FONT = ("Cambria", 10)
 
+WATER_BODY_FONT = "Arial"
+WATER_PROTOCOL_HEADER_FONT = ("Arial", 10)
+WATER_RESULT_TITLE_FONT = ("Arial", 13)
+WATER_TABLE_HEADER_FONT = ("Arial", 11)
+WATER_TABLE_DATA_FONT = ("Arial", 10)
+WATER_HEADER_FILL = "2C3E50"
+WATER_HEADER_TEXT_COLOR = "FFFFFF"
+WATER_ZEBRA_FILL = "F3F4F6"
+WATER_BORDER_COLOR = "D0D0D0"
+WATER_DISCLAIMER_COLOR = "6B7280"
+
 
 def _apply_run_font(
     run,
@@ -526,6 +540,38 @@ def _apply_protocol_identity_row_fonts(row) -> None:
 def _apply_water_page1_sample_row_fonts(table) -> None:
     label_name, label_size = TABLE_HEADER_FONT
     data_name, data_size = TABLE_DATA_FONT
+    for row_idx in (2, 3):
+        if row_idx >= len(table.rows):
+            continue
+        for col_idx, cell in enumerate(table.rows[row_idx].cells):
+            if col_idx in (0, 4):
+                _apply_cell_font(cell, label_name, label_size, bold=True)
+            elif col_idx in (3, 7):
+                _apply_cell_font(cell, data_name, data_size)
+
+
+def _apply_run_color(run, color_hex: str) -> None:
+    color = (color_hex or "").lstrip("#").upper()
+    if not color:
+        return
+    r_pr = run._element.get_or_add_rPr()
+    color_el = r_pr.find(qn("w:color"))
+    if color_el is None:
+        color_el = OxmlElement("w:color")
+        r_pr.append(color_el)
+    color_el.set(qn("w:val"), color)
+
+
+def _apply_water_protocol_identity_row_fonts(row) -> None:
+    name, size = WATER_PROTOCOL_HEADER_FONT
+    for cell in row.cells:
+        _apply_cell_font(cell, name, size)
+        _set_cell_no_wrap(cell)
+
+
+def _apply_water_page1_sample_row_fonts_styled(table) -> None:
+    label_name, label_size = WATER_TABLE_HEADER_FONT
+    data_name, data_size = WATER_TABLE_DATA_FONT
     for row_idx in (2, 3):
         if row_idx >= len(table.rows):
             continue
@@ -674,15 +720,28 @@ def _normalize_protocol_typography(doc: Document, sample: SampleRecord) -> None:
     """Apply Cambria typography to food- and water-protocol documents."""
     _normalize_result_table_title(doc)
     is_water = normalize_category(sample.category) == CATEGORY_WATER
-    header_name, header_size = PROTOCOL_HEADER_FONT
+    if is_water:
+        header_name, header_size = WATER_PROTOCOL_HEADER_FONT
+        table_header_font = WATER_TABLE_HEADER_FONT
+        table_data_font = WATER_TABLE_DATA_FONT
+        title_font = WATER_RESULT_TITLE_FONT
+    else:
+        header_name, header_size = PROTOCOL_HEADER_FONT
+        table_header_font = TABLE_HEADER_FONT
+        table_data_font = TABLE_DATA_FONT
+        title_font = RESULT_TABLE_TITLE_FONT
 
     if is_water:
+        for paragraph in doc.paragraphs:
+            if (paragraph.text or "").strip() == "Result Table:":
+                title_name, title_size = title_font
+                _apply_paragraph_font(paragraph, title_name, title_size, bold=True)
         if doc.tables:
             page1 = doc.tables[0]
             if page1.rows:
-                _apply_protocol_identity_row_fonts(page1.rows[0])
+                _apply_water_protocol_identity_row_fonts(page1.rows[0])
             if len(page1.rows) >= 4:
-                _apply_water_page1_sample_row_fonts(page1)
+                _apply_water_page1_sample_row_fonts_styled(page1)
         for table in doc.tables[1:]:
             if _is_repeat_protocol_header_table(table):
                 _apply_table_font(table, header_name, header_size)
@@ -698,15 +757,25 @@ def _normalize_protocol_typography(doc: Document, sample: SampleRecord) -> None:
 
     for table in doc.tables:
         if _is_summary_table(table):
-            _apply_table_header_row_font(table)
-            _apply_table_data_fonts(table)
+            h_name, h_size = table_header_font
+            d_name, d_size = table_data_font
+            if table.rows:
+                for cell in table.rows[0].cells:
+                    _apply_cell_font(cell, h_name, h_size, bold=True)
+            for row in table.rows[1:]:
+                for cell in row.cells:
+                    _apply_cell_font(cell, d_name, d_size)
         elif _is_worksheet_table(table):
-            _apply_table_header_row_font(table)
-            _apply_table_data_fonts(table)
+            if table.rows:
+                for cell in table.rows[0].cells:
+                    _apply_cell_font(cell, table_header_font[0], table_header_font[1], bold=True)
+            for row in table.rows[1:]:
+                for cell in row.cells:
+                    _apply_cell_font(cell, table_data_font[0], table_data_font[1])
         elif _is_sample_info_table(table) and not is_water:
             _apply_sample_info_table_fonts(table)
         elif _is_appearance_only_table(table):
-            data_name, data_size = TABLE_DATA_FONT
+            data_name, data_size = table_data_font if is_water else TABLE_DATA_FONT
             _apply_table_font(table, data_name, data_size)
 
     if not is_water:
@@ -1971,7 +2040,9 @@ def _is_body_signature_paragraph(text: str) -> bool:
         return True
     if lower.startswith("dated signature"):
         return True
-    if first.startswith("Name") and "technical manager" in lower:
+    if first.startswith("Name") and (
+        "technical manager" in lower or len(stripped) <= 48
+    ):
         return True
     return False
 
@@ -2837,6 +2908,615 @@ def _is_observation_section_title_line(first_line: str) -> bool:
     return any(head.startswith(k) for k in _OBSERVATION_SECTION_KEYWORDS)
 
 
+def _water_template_summary_column_widths() -> list[int]:
+    if not WATER_TEMPLATE_PATH.exists():
+        return []
+    ref = Document(str(WATER_TEMPLATE_PATH))
+    if len(ref.tables) < 2:
+        return []
+    return _table_grid_col_twips(ref.tables[1])
+
+
+def _water_template_footer_table():
+    if not WATER_TEMPLATE_PATH.exists():
+        return None
+    ref = Document(str(WATER_TEMPLATE_PATH))
+    if not ref.sections[0].footer.tables:
+        return None
+    return ref.sections[0].footer.tables[0]
+
+
+def _water_template_worksheet_reference_table():
+    """Canonical 3-column chemical worksheet grid (TDS table in water template)."""
+    if not WATER_TEMPLATE_PATH.exists():
+        return None
+    ref = Document(str(WATER_TEMPLATE_PATH))
+    if len(ref.tables) <= 4:
+        return None
+    return ref.tables[4]
+
+
+def _water_micro_appendix_reference_document() -> Document | None:
+    if not WATER_POTABILITY_MICRO_APPENDIX_PATH.exists():
+        return None
+    return Document(str(WATER_POTABILITY_MICRO_APPENDIX_PATH))
+
+
+def _water_micro_observation_reference_table():
+    ref = _water_micro_appendix_reference_document()
+    if ref is None or len(ref.tables) < 3:
+        return None
+    return ref.tables[2]
+
+
+def _normalize_water_protocol_table_widths(doc: Document) -> None:
+    """Lock tblGrid/tcW to water + micro reference templates (post-prune)."""
+    if not WATER_TEMPLATE_PATH.exists():
+        return
+    ref = Document(str(WATER_TEMPLATE_PATH))
+    page1_ref = ref.tables[0] if ref.tables else None
+    summary_ref = ref.tables[1] if len(ref.tables) > 1 else None
+    worksheet_ref = _water_template_worksheet_reference_table()
+    micro_obs_ref = _water_micro_observation_reference_table()
+
+    if doc.tables:
+        t0 = doc.tables[0]
+        if page1_ref is not None and len(t0.columns) == len(page1_ref.columns):
+            _replace_table_grid_from_reference(t0, page1_ref)
+    if len(doc.tables) >= 2 and summary_ref is not None:
+        summary = doc.tables[1]
+        if len(summary.columns) == len(summary_ref.columns):
+            from services.docx_layout import replace_table_grid_columns
+
+            widths = _table_grid_col_twips(summary_ref)
+            if widths:
+                replace_table_grid_columns(summary, widths)
+
+    for table in doc.tables:
+        if _is_water_micro_observation_table(table):
+            if micro_obs_ref is not None and len(table.columns) == len(
+                micro_obs_ref.columns
+            ):
+                _replace_table_grid_from_reference(table, micro_obs_ref)
+        elif _is_worksheet_table(table) and worksheet_ref is not None:
+            if len(table.columns) == len(worksheet_ref.columns):
+                _replace_table_grid_from_reference(table, worksheet_ref)
+
+
+def _style_water_page1_metadata(table) -> None:
+    from services.docx_layout import apply_cell_shading, apply_subtle_table_borders
+
+    apply_subtle_table_borders(table, color=WATER_BORDER_COLOR, sz=2)
+    _apply_worksheet_cell_padding(table)
+    label_cols = (0, 2, 4)
+    for row in table.rows:
+        for col_idx, cell in enumerate(row.cells):
+            if col_idx in label_cols:
+                apply_cell_shading(cell, WATER_ZEBRA_FILL)
+    if table.rows:
+        for col_idx, cell in enumerate(table.rows[0].cells):
+            if col_idx in (0, 2, 4):
+                _apply_cell_font(
+                    cell, WATER_TABLE_HEADER_FONT[0], WATER_TABLE_HEADER_FONT[1], bold=True
+                )
+            elif col_idx in (1, 3, 5):
+                _apply_cell_font(
+                    cell, WATER_TABLE_DATA_FONT[0], WATER_TABLE_DATA_FONT[1]
+                )
+                _set_cell_no_wrap(cell)
+
+
+def _apply_water_header_band_row(table, row_index: int = 0) -> None:
+    from services.docx_layout import apply_cell_shading, set_cell_paragraph_alignment
+
+    if row_index >= len(table.rows):
+        return
+    name, size = WATER_TABLE_HEADER_FONT
+    for cell in table.rows[row_index].cells:
+        apply_cell_shading(cell, WATER_HEADER_FILL)
+        set_cell_paragraph_alignment(cell, WD_ALIGN_PARAGRAPH.CENTER)
+        for para in cell.paragraphs:
+            for run in para.runs:
+                _apply_run_font(run, name, size, bold=True)
+                _apply_run_color(run, WATER_HEADER_TEXT_COLOR)
+
+
+def _style_water_summary_table(table) -> None:
+    from services.docx_layout import apply_subtle_table_borders, set_cell_paragraph_alignment
+
+    apply_subtle_table_borders(table, color=WATER_BORDER_COLOR, sz=2)
+    _apply_worksheet_cell_padding(table)
+    _apply_water_header_band_row(table, 0)
+    if len(table.rows) < 2:
+        return
+    align_by_col = {
+        0: WD_ALIGN_PARAGRAPH.CENTER,
+        1: WD_ALIGN_PARAGRAPH.LEFT,
+        2: WD_ALIGN_PARAGRAPH.CENTER,
+        3: WD_ALIGN_PARAGRAPH.RIGHT,
+        4: WD_ALIGN_PARAGRAPH.CENTER,
+    }
+    for row in table.rows[1:]:
+        for col_idx, cell in enumerate(row.cells):
+            align = align_by_col.get(col_idx, WD_ALIGN_PARAGRAPH.LEFT)
+            set_cell_paragraph_alignment(cell, align)
+
+
+def _style_water_worksheet_table(table) -> None:
+    from services.docx_layout import apply_subtle_table_borders, set_cell_paragraph_alignment
+
+    apply_subtle_table_borders(table, color=WATER_BORDER_COLOR, sz=2)
+    _apply_worksheet_cell_padding(table)
+    if table.rows:
+        _apply_water_header_band_row(table, 0)
+    for row in table.rows[1:]:
+        if not row.cells:
+            continue
+        set_cell_paragraph_alignment(row.cells[0], WD_ALIGN_PARAGRAPH.LEFT)
+        if len(row.cells) > 1:
+            set_cell_paragraph_alignment(row.cells[1], WD_ALIGN_PARAGRAPH.LEFT)
+        if len(row.cells) > 2:
+            set_cell_paragraph_alignment(row.cells[2], WD_ALIGN_PARAGRAPH.CENTER)
+
+
+def _is_water_micro_observation_table(table) -> bool:
+    if not table.rows:
+        return False
+    hdr = " ".join((c.text or "").strip() for c in table.rows[0].cells).lower()
+    return "procedure" in hdr and "result" in hdr
+
+
+def _style_water_observation_table(table) -> None:
+    from services.docx_layout import apply_subtle_table_borders, set_cell_paragraph_alignment
+
+    apply_subtle_table_borders(table, color=WATER_BORDER_COLOR, sz=2)
+    _apply_worksheet_cell_padding(table)
+    _apply_water_header_band_row(table, 0)
+    align_by_col = {
+        0: WD_ALIGN_PARAGRAPH.CENTER,
+        1: WD_ALIGN_PARAGRAPH.LEFT,
+        2: WD_ALIGN_PARAGRAPH.CENTER,
+        3: WD_ALIGN_PARAGRAPH.RIGHT,
+    }
+    for row in table.rows[1:]:
+        for col_idx, cell in enumerate(row.cells):
+            set_cell_paragraph_alignment(
+                cell, align_by_col.get(col_idx, WD_ALIGN_PARAGRAPH.LEFT)
+            )
+
+
+def _apply_water_protocol_visual_design(doc: Document) -> None:
+    """Executive styling for water protocols (metadata, summary, worksheets)."""
+    _normalize_water_protocol_table_widths(doc)
+    if doc.tables:
+        _style_water_page1_metadata(doc.tables[0])
+    if len(doc.tables) >= 2:
+        _style_water_summary_table(doc.tables[1])
+    for table in doc.tables:
+        if _is_worksheet_table(table):
+            _style_water_worksheet_table(table)
+        elif _is_water_micro_observation_table(table):
+            _style_water_observation_table(table)
+
+
+def _style_water_footer_tables(doc: Document) -> None:
+    from services.docx_layout import apply_subtle_table_borders
+
+    footer_ref = _water_template_footer_table()
+    for section in doc.sections:
+        for table in section.footer.tables:
+            if footer_ref is not None and len(table.columns) == len(
+                footer_ref.columns
+            ):
+                _replace_table_grid_from_reference(table, footer_ref)
+                _copy_table_layout_from_reference(table, footer_ref)
+            apply_subtle_table_borders(table, color=WATER_BORDER_COLOR, sz=2)
+            _apply_worksheet_cell_padding(table)
+            label_name, label_size = WATER_TABLE_HEADER_FONT
+            data_name, data_size = WATER_TABLE_DATA_FONT
+            for row in table.rows:
+                if row.cells:
+                    _apply_cell_font(row.cells[0], label_name, label_size, bold=True)
+                if len(row.cells) > 1:
+                    _apply_cell_font(row.cells[1], data_name, data_size)
+
+
+def _split_worked_formula_line(worked_line: str) -> tuple[str, str]:
+    line = (worked_line or "").strip()
+    if not line or "=" not in line:
+        return line, ""
+    lhs, rhs = line.rsplit("=", 1)
+    return lhs.strip(), rhs.strip()
+
+
+def _set_water_calculation_cell(
+    row,
+    reading_col: int,
+    symbolic: str,
+    worked_line: str,
+    answer: str,
+    unit: str,
+) -> None:
+    from services.docx_layout import CellBlock, set_cell_multiblock, set_cell_paragraph_alignment
+
+    if reading_col >= len(row.cells):
+        return
+    subst, result_tail = _split_worked_formula_line(worked_line)
+    final = (answer or result_tail or "").strip()
+    blocks: list[CellBlock] = []
+    if subst:
+        blocks.append(
+            {
+                "text": subst,
+                "font_name": WATER_BODY_FONT,
+                "size_pt": WATER_TABLE_DATA_FONT[1],
+                "align": WD_ALIGN_PARAGRAPH.LEFT,
+                "space_after_pt": 4,
+            }
+        )
+    if final:
+        blocks.append(
+            {
+                "text": final,
+                "font_name": WATER_BODY_FONT,
+                "size_pt": WATER_TABLE_DATA_FONT[1],
+                "bold": True,
+                "align": WD_ALIGN_PARAGRAPH.RIGHT,
+            }
+        )
+    set_cell_multiblock(row.cells[reading_col], blocks)
+    if row.cells:
+        set_cell_paragraph_alignment(row.cells[0], WD_ALIGN_PARAGRAPH.LEFT)
+    for cell in row.cells:
+        for para in cell.paragraphs:
+            if (para.text or "").strip():
+                _set_paragraph_keep_with_next(para)
+                _set_paragraph_keep_lines(para)
+
+
+def _apply_water_formula_row_layout(table, row_indices: list[int]) -> None:
+    """Keep TDS/chloride/alkalinity formula rows from splitting across columns/pages."""
+    for row_idx in row_indices:
+        if row_idx >= len(table.rows):
+            continue
+        row = table.rows[row_idx]
+        _set_row_cant_split(row)
+        for cell in row.cells:
+            for para in cell.paragraphs:
+                if (para.text or "").strip():
+                    _set_paragraph_keep_with_next(para)
+                    _set_paragraph_keep_lines(para)
+
+
+def _water_signature_reference_layout() -> list[Any]:
+    """Three-line Analyzed By block from micro appendix or water template."""
+    micro_ref = _water_micro_appendix_reference_document()
+    if micro_ref is not None and len(micro_ref.paragraphs) >= 7:
+        return [deepcopy(micro_ref.paragraphs[i]._p) for i in (4, 5, 6)]
+    if WATER_TEMPLATE_PATH.exists():
+        ref = Document(str(WATER_TEMPLATE_PATH))
+        if len(ref.paragraphs) >= 62:
+            return [deepcopy(ref.paragraphs[i]._p) for i in (59, 60, 61)]
+    return []
+
+
+def _water_signature_line_texts(
+    sample: SampleRecord,
+    header: ProtocolHeader,
+) -> list[str]:
+    analyst = _protocol_issued_to(sample, header)
+    date_str = _analysis_date_display(header)
+    return [
+        "Analyzed By:",
+        analyst or "Name",
+        date_str or "Dated signature:",
+    ]
+
+
+def _last_chemical_worksheet_body_element(doc: Document):
+    """Last worksheet table in the chemical section (exclude micro appendix)."""
+    last = None
+    for child in doc.element.body:
+        if not child.tag.endswith("tbl"):
+            continue
+        table = Table(child, doc)
+        if _is_water_micro_observation_table(table):
+            continue
+        if _is_worksheet_table(table) or _is_appearance_only_table(table):
+            last = child
+    return last
+
+
+def _insert_water_signature_paragraphs_after(
+    doc: Document,
+    after_el,
+    sample: SampleRecord,
+    header: ProtocolHeader,
+) -> list[Paragraph]:
+    para_xml = _water_signature_reference_layout()
+    if not para_xml:
+        return []
+    lines = _water_signature_line_texts(sample, header)
+    sig_paras = _insert_signature_paragraphs_after(
+        doc, after_el, para_xml, lines[: len(para_xml)]
+    )
+    _keep_signature_lines_together(sig_paras)
+    return sig_paras
+
+
+def _apply_water_body_signatures(
+    doc: Document,
+    sample: SampleRecord,
+    header: ProtocolHeader,
+) -> None:
+    """Chemical-only water: three-line signature block after last worksheet."""
+    _remove_body_signature_blocks(doc)
+    para_xml = _water_signature_reference_layout()
+    if not para_xml:
+        return
+
+    anchor = _last_chemical_worksheet_body_element(doc)
+    if anchor is None:
+        anchor = doc.element.body[-1] if len(doc.element.body) else None
+    if anchor is None:
+        return
+
+    insert_after = anchor
+    next_el = insert_after.getnext()
+    while next_el is not None and next_el.tag.endswith("p"):
+        para = Paragraph(next_el, doc)
+        if (para.text or "").strip() or _paragraph_has_page_break(next_el):
+            break
+        to_remove = next_el
+        next_el = next_el.getnext()
+        parent = to_remove.getparent()
+        if parent is not None:
+            parent.remove(to_remove)
+
+    for _ in range(2):
+        insert_after = _insert_blank_paragraph_after(doc, insert_after)._element
+
+    _insert_water_signature_paragraphs_after(doc, insert_after, sample, header)
+
+
+def _fill_water_micro_appendix_metadata_table(
+    table,
+    table_index: int,
+    sample: SampleRecord,
+    header: ProtocolHeader,
+) -> None:
+    if table_index == 0 and table.rows:
+        cells = table.rows[0].cells
+        if len(cells) >= 2:
+            _set_cell(cells[1], header.protocol_no or "")
+        if len(cells) >= 4:
+            _set_cell(cells[3], header.issued_to or "")
+        if len(cells) >= 6:
+            _fill_water_issued_by_cell(cells[5], header.issued_by)
+    elif table_index == 1 and len(table.rows) >= 2:
+        r0, r1 = table.rows[0], table.rows[1]
+        if len(r0.cells) >= 4:
+            _set_cell(r0.cells[1], sample.sample_name or "")
+            _set_cell(r0.cells[3], _fmt_date(header.sample_received_on))
+        if len(r1.cells) >= 4:
+            _set_cell(r1.cells[1], sample.lab_code or sample.sample_code or "")
+            _set_cell(r1.cells[3], _analysis_date_display(header))
+
+
+def _fill_water_micro_observation_table_rows(
+    table,
+    by_key: dict[str, TestResultRow],
+) -> None:
+    while len(table.rows) > 1:
+        table._tbl.remove(table.rows[-1]._tr)
+    needed = 1 + len(WATER_MICRO_OBSERVATION_ROWS)
+    while len(table.rows) < needed:
+        table.add_row()
+    headers = ("Sr.No", "Name of test", "Procedure", "Result")
+    for col_idx, label in enumerate(headers):
+        if col_idx < len(table.rows[0].cells):
+            _set_cell(table.rows[0].cells[col_idx], label)
+
+    for row_idx, (sr_no, test_key, display_name) in enumerate(
+        WATER_MICRO_OBSERVATION_ROWS, start=1
+    ):
+        if row_idx >= len(table.rows):
+            break
+        row = table.rows[row_idx]
+        res = by_key.get(test_key)
+        procedure = ""
+        result = ""
+        if res:
+            procedure = str((res.inputs or {}).get("procedure") or "").strip()
+            result = str(res.result_value or "").strip()
+            if not result:
+                result = str((res.inputs or {}).get("result_obs") or "").strip()
+        if not procedure:
+            procedure = default_water_micro_procedure(test_key)
+        test = get_test(test_key)
+        name = test.name if test else display_name
+        if len(row.cells) >= 4:
+            _set_cell(row.cells[0], sr_no)
+            _set_cell(row.cells[1], name)
+            _set_cell(row.cells[2], procedure)
+            _set_cell(row.cells[3], result)
+
+
+def _append_water_micro_final_page(
+    doc: Document,
+    sample: SampleRecord,
+    header: ProtocolHeader,
+    by_key: dict[str, TestResultRow],
+) -> Table | None:
+    """Last page: micro reference header + observation table + signatures."""
+    doc.add_page_break()
+    anchor = doc.paragraphs[-1]._element
+    insert_after = anchor
+    observation_table: Table | None = None
+
+    micro_ref = _water_micro_appendix_reference_document()
+    if micro_ref is not None and len(micro_ref.tables) >= 3:
+        for table_index in (0, 1):
+            new_tbl = deepcopy(micro_ref.tables[table_index]._tbl)
+            insert_after.addnext(new_tbl)
+            insert_after = new_tbl
+            meta = Table(new_tbl, doc)
+            _fill_water_micro_appendix_metadata_table(
+                meta, table_index, sample, header
+            )
+        if len(micro_ref.paragraphs) > 2:
+            obs_title = deepcopy(micro_ref.paragraphs[2]._p)
+            insert_after.addnext(obs_title)
+            insert_after = obs_title
+        new_tbl = deepcopy(micro_ref.tables[2]._tbl)
+        insert_after.addnext(new_tbl)
+        insert_after = new_tbl
+        observation_table = Table(new_tbl, doc)
+    else:
+        identity = doc.add_paragraph()
+        identity.alignment = WD_ALIGN_PARAGRAPH.LEFT
+        run = identity.add_run(
+            f"Lab Code No\t{(sample.lab_code or sample.sample_code or '').strip()}\t"
+            f"Date of Analysis:\t{_analysis_date_display(header)}"
+        )
+        _apply_run_font(run, *WATER_PROTOCOL_HEADER_FONT)
+        insert_after = identity._element
+        title = doc.add_paragraph()
+        title_run = title.add_run("Observation Table:")
+        _apply_run_font(title_run, *WATER_RESULT_TITLE_FONT, bold=True)
+        insert_after = title._element
+        observation_table = doc.add_table(
+            rows=1 + len(WATER_MICRO_OBSERVATION_ROWS), cols=4
+        )
+        insert_after = observation_table._tbl
+
+    if observation_table is not None:
+        _fill_water_micro_observation_table_rows(observation_table, by_key)
+        micro_obs_ref = _water_micro_observation_reference_table()
+        if micro_obs_ref is not None and len(observation_table.columns) == len(
+            micro_obs_ref.columns
+        ):
+            _replace_table_grid_from_reference(observation_table, micro_obs_ref)
+        _style_water_observation_table(observation_table)
+        _insert_water_signature_paragraphs_after(
+            doc, observation_table._tbl, sample, header
+        )
+    return observation_table
+
+
+def _disclaimer_paragraph_chain(doc: Document) -> list[Paragraph]:
+    chain: list[Paragraph] = []
+    for para in doc.paragraphs:
+        text = (para.text or "").strip().lower()
+        if text.startswith("disclaimer"):
+            chain.append(para)
+        elif chain and text:
+            chain.append(para)
+        elif chain and not text:
+            break
+    return chain
+
+
+def _apply_water_final_page_keep_together(doc: Document, *, has_micro: bool) -> None:
+    chain: list[Paragraph] = []
+    if has_micro:
+        micro_table = None
+        for table in doc.tables:
+            if _is_water_micro_observation_table(table):
+                micro_table = table
+        if micro_table is not None:
+            prefix: list[Paragraph] = []
+            prev = micro_table._tbl.getprevious()
+            while prev is not None:
+                if prev.tag.endswith("tbl"):
+                    meta = Table(prev, doc)
+                    for row in meta.rows:
+                        _set_row_cant_split(row)
+                    prefix = _paragraphs_in_table(meta) + prefix
+                elif prev.tag.endswith("p"):
+                    para = Paragraph(prev, doc)
+                    if _paragraph_is_page_break_only(prev):
+                        break
+                    text = (para.text or "").strip()
+                    if text:
+                        prefix.insert(0, para)
+                prev = prev.getprevious()
+            chain.extend(prefix)
+            for row in micro_table.rows:
+                _set_row_cant_split(row)
+            chain.extend(_paragraphs_in_table(micro_table))
+            next_el = micro_table._tbl.getnext()
+            while next_el is not None:
+                if next_el.tag.endswith("tbl"):
+                    break
+                if next_el.tag.endswith("p"):
+                    para = Paragraph(next_el, doc)
+                    text = (para.text or "").strip()
+                    if not text:
+                        next_el = next_el.getnext()
+                        continue
+                    if text.lower().startswith("disclaimer"):
+                        chain.extend(_disclaimer_paragraph_chain(doc))
+                        break
+                    if _is_body_signature_paragraph(text):
+                        chain.append(para)
+                next_el = next_el.getnext()
+        if not any(
+            (p.text or "").strip().lower().startswith("disclaimer") for p in chain
+        ):
+            chain.extend(_disclaimer_paragraph_chain(doc))
+    else:
+        blocks = _iter_observation_worksheet_tables(doc)
+        if blocks:
+            _title, last_table, _app = blocks[-1]
+            chain.extend(_tail_formula_paragraphs_after_table(doc, last_table._tbl))
+        for para in doc.paragraphs:
+            if _is_body_signature_paragraph(para.text or ""):
+                chain.append(para)
+        chain.extend(_disclaimer_paragraph_chain(doc))
+
+    if chain:
+        _chain_keep_with_next(chain)
+        for para in chain:
+            _set_paragraph_keep_lines(para)
+
+
+def _finalize_water_protocol_doc(
+    doc: Document,
+    sample: SampleRecord,
+    header: ProtocolHeader,
+    by_key: dict[str, TestResultRow],
+) -> None:
+    has_micro = _water_sample_includes_micro(sample)
+    _apply_protocol_table_borders(doc, water=True)
+    _apply_water_protocol_visual_design(doc)
+    if has_micro:
+        _append_water_micro_final_page(doc, sample, header, by_key)
+    else:
+        _apply_water_body_signatures(doc, sample, header)
+    _append_water_protocol_disclaimer(doc, header)
+    _apply_water_final_page_keep_together(doc, has_micro=has_micro)
+    _style_water_footer_tables(doc)
+
+
+def _append_water_protocol_disclaimer(doc: Document, header: ProtocolHeader) -> None:
+    from services.docx_layout import style_compact_disclaimer_paragraph
+
+    lines = format_protocol_disclaimer_paragraphs(header.protocol_disclaimer_text)
+    if not lines:
+        return
+    doc.add_paragraph("")
+    for line in lines:
+        para = doc.add_paragraph(line)
+        is_title = line.strip().lower().startswith("disclaimer")
+        style_compact_disclaimer_paragraph(
+            para,
+            bold=is_title,
+            color_hex=WATER_DISCLAIMER_COLOR,
+            font_name=WATER_BODY_FONT,
+        )
+
+
 def _apply_table_borders(table) -> None:
     """Full box borders on summary and worksheet tables."""
     tbl = table._tbl
@@ -2858,18 +3538,33 @@ def _apply_table_borders(table) -> None:
     tbl_pr.append(borders)
 
 
-def _apply_protocol_table_borders(doc: Document) -> None:
+def _apply_protocol_table_borders(doc: Document, *, water: bool = False) -> None:
     """Border page-1 summary and observation worksheet tables (all protocol types)."""
+    from services.docx_layout import apply_subtle_table_borders
+
+    border_fn = (
+        (lambda t: apply_subtle_table_borders(t, color=WATER_BORDER_COLOR, sz=2))
+        if water
+        else _apply_table_borders
+    )
     summary = _find_summary_table(doc)
-    if summary is not None:
-        _apply_table_borders(summary)
+    if summary is not None and not water:
+        border_fn(summary)
     for table in doc.tables:
         if _is_repeat_protocol_header_table(table):
             continue
-        if table is summary:
+        if table is summary and not water:
+            continue
+        if water and table is doc.tables[0]:
+            continue
+        if water and (
+            _is_worksheet_table(table)
+            or _is_water_micro_observation_table(table)
+            or table is summary
+        ):
             continue
         if _is_worksheet_table(table) or _is_appearance_only_table(table):
-            _apply_table_borders(table)
+            border_fn(table)
 
 
 def _nutrition_page1_header_table_xml():
@@ -4073,10 +4768,21 @@ def _fill_worksheet_formulas(
                         overwrite = True
                     if overwrite:
                         _set_cell(row.cells[0], symbolic)
-                _set_cell_no_wrap(row.cells[0])
 
                 worked_line = worked[i] if i < len(worked) else ""
                 is_final = len(row_indices) == 1 or i == len(row_indices) - 1
+                if is_water:
+                    _set_water_calculation_cell(
+                        row,
+                        reading_col,
+                        symbolic,
+                        worked_line,
+                        answer if is_final else "",
+                        unit if is_final else "",
+                    )
+                    continue
+
+                _set_cell_no_wrap(row.cells[0])
                 is_dual_first = len(row_indices) > 1 and i == 0
                 reading_text = _formula_readings_text(
                     worked_line,
@@ -4087,6 +4793,9 @@ def _fill_worksheet_formulas(
                 )
                 if reading_text:
                     _set_reading_cell(row, reading_col, reading_text)
+
+        if is_water:
+            _apply_water_formula_row_layout(table, row_indices)
 
 
 def _fill_jaggery_header_and_summary(
@@ -4215,55 +4924,6 @@ WATER_MICRO_OBSERVATION_ROWS: list[tuple[str, str, str]] = [
 ]
 
 
-def _append_water_micro_observation_page(
-    doc: Document,
-    sample: SampleRecord,
-    header: ProtocolHeader,
-    by_key: dict[str, TestResultRow],
-) -> None:
-    """Append the water micro Observation Table as the last protocol page."""
-    doc.add_page_break()
-
-    identity = doc.add_paragraph()
-    identity.alignment = WD_ALIGN_PARAGRAPH.LEFT
-    run = identity.add_run(
-        f"Lab Code No\t{(sample.lab_code or sample.sample_code or '').strip()}\t"
-        f"Date of Analysis:\t{_analysis_date_display(header)}"
-    )
-    _apply_run_font(run, *PROTOCOL_HEADER_FONT)
-
-    title = doc.add_paragraph()
-    title_run = title.add_run("OBSERVATION TABLE:")
-    _apply_run_font(title_run, *RESULT_TABLE_TITLE_FONT, bold=True)
-
-    table = doc.add_table(rows=1 + len(WATER_MICRO_OBSERVATION_ROWS), cols=4)
-    _apply_table_borders(table)
-    headers = ("Sr.No", "Name of test", "Procedure", "Result")
-    for col_idx, label in enumerate(headers):
-        _set_cell(table.rows[0].cells[col_idx], label)
-
-    for row_idx, (sr_no, test_key, display_name) in enumerate(
-        WATER_MICRO_OBSERVATION_ROWS, start=1
-    ):
-        row = table.rows[row_idx]
-        res = by_key.get(test_key)
-        procedure = ""
-        result = ""
-        if res:
-            procedure = str((res.inputs or {}).get("procedure") or "").strip()
-            result = str(res.result_value or "").strip()
-            if not result:
-                result = str((res.inputs or {}).get("result_obs") or "").strip()
-        if not procedure:
-            procedure = default_water_micro_procedure(test_key)
-        test = get_test(test_key)
-        name = test.name if test else display_name
-        _set_cell(row.cells[0], sr_no)
-        _set_cell(row.cells[1], name)
-        _set_cell(row.cells[2], procedure)
-        _set_cell(row.cells[3], result)
-
-
 def append_protocol_disclaimer(doc: Document, header: ProtocolHeader) -> None:
     """Append analyst-editable disclaimer below the protocol body."""
     lines = format_protocol_disclaimer_paragraphs(header.protocol_disclaimer_text)
@@ -4358,7 +5018,7 @@ def fill_protocol_docx_bytes(
     _renumber_worksheet_section_titles(doc, conducted)
     _apply_worksheet_section_page_breaks(doc)
     _apply_worksheet_page_layout(doc)
-    if is_food_house_style or is_water:
+    if is_food_house_style:
         _apply_protocol_end_signatures(doc, sample, header)
     if is_food_house_style:
         _normalize_food_protocol_table_widths(doc)
@@ -4369,13 +5029,14 @@ def fill_protocol_docx_bytes(
         _ensure_blank_line_before_result_table(doc, sample)
         _normalize_protocol_typography(doc, sample)
     _blank_director_approval(doc)
-    if is_water and _water_sample_includes_micro(sample):
-        _append_water_micro_observation_page(doc, sample, header, by_key)
     _remove_existing_disclaimer_blocks(doc)
-    append_protocol_disclaimer(doc, header)
     _remove_trailing_empty_paragraphs(doc)
     _remove_orphan_breaks_before_end_blocks(doc)
-    _apply_protocol_table_borders(doc)
+    if is_water:
+        _finalize_water_protocol_doc(doc, sample, header, by_key)
+    else:
+        _apply_protocol_table_borders(doc, water=False)
+        append_protocol_disclaimer(doc, header)
 
     from services.docx_layout import finalize_docx_document
 

@@ -30,7 +30,11 @@ from services.protocol_docx import (
     unsaved_selected_test_names,
 )
 from services.document_templates import PROTOCOL_HEADER_FOOTER_PATH
-from services.protocol_store import ProtocolHeader, TestResultRow
+from services.protocol_store import (
+    ProtocolHeader,
+    TestResultRow,
+    default_protocol_disclaimer_text,
+)
 from services.protocols.test_catalog import (
     CATEGORY_WATER,
     TEST_CATALOG,
@@ -94,6 +98,39 @@ def _table_has_borders(table) -> bool:
     if tbl_pr is None:
         return False
     return tbl_pr.find(qn("w:tblBorders")) is not None
+
+
+def _table_border_top_color_sz(table) -> tuple[str | None, str | None]:
+    tbl_pr = table._tbl.tblPr
+    if tbl_pr is None:
+        return None, None
+    borders = tbl_pr.find(qn("w:tblBorders"))
+    if borders is None:
+        return None, None
+    top = borders.find(qn("w:top"))
+    if top is None:
+        return None, None
+    return top.get(qn("w:color")), top.get(qn("w:sz"))
+
+
+def _cell_shading_fill(cell) -> str | None:
+    tc_pr = cell._tc.tcPr
+    if tc_pr is None:
+        return None
+    shd = tc_pr.find(qn("w:shd"))
+    if shd is None:
+        return None
+    return shd.get(qn("w:fill"))
+
+
+def _paragraph_alignment_val(paragraph: Paragraph) -> str | None:
+    p_pr = paragraph._element.pPr
+    if p_pr is None:
+        return None
+    jc = p_pr.find(qn("w:jc"))
+    if jc is None:
+        return None
+    return jc.get(qn("w:val"))
 
 
 def _find_summary_table(doc: Document):
@@ -282,7 +319,7 @@ class TestWaterProtocolGeneration:
             if (paragraph.text or "").strip() == "Result Table:":
                 assert paragraph.text == "Result Table:"
                 name, size, bold = _paragraph_run_font(paragraph)
-                assert name == "Cambria"
+                assert name == "Arial"
                 assert size == "26"
                 assert bold
                 return
@@ -305,7 +342,7 @@ class TestWaterProtocolGeneration:
         summary = doc.tables[1]
         for cell in summary.rows[0].cells:
             name, size, bold = _cell_run_font(cell)
-            assert name == "Cambria"
+            assert name == "Arial"
             assert size == "22"
             assert bold
         for row in summary.rows[1:]:
@@ -313,21 +350,80 @@ class TestWaterProtocolGeneration:
                 name, size, bold = _cell_run_font(cell)
                 if name is None and size is None:
                     continue
-                assert name == "Cambria"
+                assert name == "Arial"
                 assert size == "20"
                 assert not bold
 
     def test_water_protocol_header_row_10pt(self):
         sample = _sample(category=CATEGORY_WATER, tests_json=json.dumps(["ph"]))
         doc = Document(io.BytesIO(fill_protocol_docx_bytes(sample, _header(), [])))
-        for cell in doc.tables[0].rows[0].cells:
+        for col_idx, cell in enumerate(doc.tables[0].rows[0].cells):
             name, size, bold = _cell_run_font(cell)
             if name is None and size is None:
                 continue
-            assert name == "Cambria"
-            assert size == "20"
-            assert not bold
-            assert _cell_has_no_wrap(cell)
+            assert name == "Arial"
+            if col_idx in (0, 2, 4):
+                assert size == "22"
+                assert bold
+            else:
+                assert size == "20"
+                assert not bold
+                assert _cell_has_no_wrap(cell)
+
+    def test_water_summary_subtle_borders_and_header_band(self):
+        sample = _sample(category=CATEGORY_WATER, tests_json=json.dumps(["ph"]))
+        doc = Document(io.BytesIO(fill_protocol_docx_bytes(sample, _header(), [])))
+        summary = doc.tables[1]
+        color, sz = _table_border_top_color_sz(summary)
+        assert color == "D0D0D0"
+        assert sz == "2"
+        assert _cell_shading_fill(summary.rows[0].cells[0]) == "2C3E50"
+
+    def test_water_chlorides_calculation_cell_multiblock(self):
+        sample = _sample(category=CATEGORY_WATER, tests_json=json.dumps(["chlorides"]))
+        results = [
+            TestResultRow(
+                test_key="chlorides",
+                test_name="Chlorides",
+                method=TEST_CATALOG["chlorides"].method,
+                unit="mg/L",
+                inputs={"v3": 50.0, "v1": 10.0, "v2": 0.0, "n": 0.01},
+                result_value="70.9",
+                result_numeric=70.9,
+            )
+        ]
+        doc = Document(io.BytesIO(fill_protocol_docx_bytes(sample, _header(), results)))
+        table = _worksheet_table_with_text(doc, "Chloride")
+        assert table is not None
+        formula_row = None
+        for row in table.rows:
+            if len(row.cells) > 1 and len(row.cells[1].paragraphs) >= 2:
+                formula_row = row
+                break
+        assert formula_row is not None
+        reading_cell = formula_row.cells[1]
+        assert len(reading_cell.paragraphs) >= 2
+        assert "70.9" in _cell_text(reading_cell)
+        last_para = reading_cell.paragraphs[-1]
+        assert _paragraph_alignment_val(last_para) == "right"
+        _, _, bold = _paragraph_run_font(last_para)
+        assert bold
+
+    def test_water_disclaimer_grey_compact_font(self):
+        header = _header()
+        header.protocol_disclaimer_text = default_protocol_disclaimer_text()
+        sample = _sample(category=CATEGORY_WATER, tests_json=json.dumps(["ph"]))
+        doc = Document(
+            io.BytesIO(fill_protocol_docx_bytes(sample, header, []))
+        )
+        for para in doc.paragraphs:
+            if (para.text or "").strip().lower().startswith("disclaimer"):
+                name, size, bold = _paragraph_run_font(para)
+                assert name == "Arial"
+                assert size == "16"
+                assert bold
+                return
+        pytest.fail("Disclaimer paragraph not found")
 
     def test_water_blank_line_before_result_table(self):
         sample = _sample(category=CATEGORY_WATER, tests_json=json.dumps(["ph"]))
@@ -439,6 +535,87 @@ class TestWaterProtocolGeneration:
         assert "absent" in full_text
         # Page-1 summary stays chemical-only (11 data rows)
         assert len(doc.tables[1].rows) == 12
+
+    def test_water_micro_observation_column_widths(self):
+        sample = _sample(
+            category=CATEGORY_WATER,
+            tests_json=json.dumps(WATER_MICRO_TEST_KEYS),
+        )
+        out = fill_protocol_docx_bytes(sample, _header(), [])
+        doc = Document(io.BytesIO(out))
+        micro_tbl = None
+        for table in doc.tables:
+            hdr = " ".join((c.text or "").strip() for c in table.rows[0].cells).lower()
+            if "procedure" in hdr and "result" in hdr:
+                micro_tbl = table
+                break
+        assert micro_tbl is not None
+        assert _table_grid_col_twips(micro_tbl) == [810, 2790, 4230, 2340]
+
+    def test_water_micro_signatures_after_coliform_not_nutrition_style(self):
+        from services.protocols.test_catalog import default_water_micro_procedure
+
+        sample = _sample(
+            category=CATEGORY_WATER,
+            tests_json=json.dumps(WATER_TEST_KEYS + WATER_MICRO_TEST_KEYS),
+        )
+        results = [
+            TestResultRow(
+                test_key="water_total_coliform",
+                test_name="Total Coliform",
+                method="",
+                unit="",
+                inputs={
+                    "procedure": default_water_micro_procedure("water_total_coliform"),
+                    "result_obs": "present",
+                },
+                result_value="present",
+                result_numeric=None,
+            ),
+        ]
+        doc = Document(io.BytesIO(fill_protocol_docx_bytes(sample, _header(), results)))
+        micro_tbl = None
+        for table in doc.tables:
+            hdr = " ".join((c.text or "").strip() for c in table.rows[0].cells).lower()
+            if "name of test" in hdr and "procedure" in hdr:
+                micro_tbl = table
+                break
+        assert micro_tbl is not None
+        next_el = micro_tbl._tbl.getnext()
+        sig_found = False
+        while next_el is not None:
+            if next_el.tag.endswith("p"):
+                if "analyzed by" in (Paragraph(next_el, doc).text or "").lower():
+                    sig_found = True
+                    break
+            next_el = next_el.getnext()
+        assert sig_found
+        assert "checked by" not in _full_document_text(doc).lower()
+
+    def test_water_worksheet_grid_matches_template_tds(self):
+        sample = _sample(category=CATEGORY_WATER, tests_json=json.dumps(["tds"]))
+        results = [
+            TestResultRow(
+                test_key="tds",
+                test_name="TDS",
+                method=TEST_CATALOG["tds"].method,
+                unit="mg/L",
+                inputs={"w": 100.0, "w1": 50.0, "w2": 50.5},
+                result_value="500",
+                result_numeric=500.0,
+            )
+        ]
+        doc = Document(io.BytesIO(fill_protocol_docx_bytes(sample, _header(), results)))
+        worksheet = None
+        for table in doc.tables[2:]:
+            if len(table.columns) != 3 or not table.rows:
+                continue
+            hdr = (table.rows[0].cells[1].text or "").strip().lower()
+            if hdr == "description":
+                worksheet = table
+                break
+        assert worksheet is not None
+        assert _table_grid_col_twips(worksheet) == [1080, 4504, 5311]
 
 
 @pytest.mark.skipif(not NUTRITION_TEMPLATE_PATH.exists(), reason="Nutrition template missing")
