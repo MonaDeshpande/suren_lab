@@ -116,3 +116,13 @@ class TestMicroProtocolDocx:
         assert "Absent" not in result_cell
         assert "IS:5402:2018" in t2.rows[2].cells[3].text
         assert "Absent cfu/25g" in t2.rows[4].cells[2].text
+
+    def test_disclaimer_renders_once_at_end(self):
+        docx_bytes = fill_micro_protocol_docx_bytes(_sample(), _header(), [])
+        doc = Document(BytesIO(docx_bytes))
+        disclaimer_paras = [
+            p.text.strip()
+            for p in doc.paragraphs
+            if (p.text or "").strip().lower().startswith("disclaimer")
+        ]
+        assert len(disclaimer_paras) == 1

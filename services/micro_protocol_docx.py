@@ -12,17 +12,28 @@ from pathlib import Path
 from typing import Optional
 
 from docx import Document
+from docx.enum.text import WD_LINE_SPACING
 
 from services.document_templates import MICRO_PROTOCOL_PATH
 from services.docx_layout import finalize_docx_document
 from services.catalog_specs import get_spec
 from services.micro_report_catalog import spec_for_key
-from services.protocol_docx import append_protocol_disclaimer
+from services.protocol_docx import (
+    _apply_table_borders,
+    _apply_table_data_fonts,
+    _apply_table_header_row_font,
+    _remove_existing_disclaimer_blocks,
+    append_protocol_disclaimer,
+)
 from services.protocol_store import ProtocolHeader, TestResultRow
 from services.protocols.test_catalog import MICRO_TEST_KEYS
 from services.samples import SampleRecord
 
 MICRO_PROTOCOL_TEMPLATE = MICRO_PROTOCOL_PATH
+
+_MICRO_HEADER_FONT = ("Cambria", 11)
+_MICRO_BODY_FONT = ("Cambria", 10)
+_MICRO_LINE_SPACING = 1.15
 
 
 def suggest_micro_protocol_filename(sample: SampleRecord) -> str:
@@ -39,6 +50,62 @@ def _fmt_date(d: Optional[date]) -> str:
 def _set_cell(cell, text: str) -> None:
     """Replace cell content; use cell.text so template runs do not leave stray digits."""
     cell.text = text or ""
+
+
+def _apply_run_font(run, name: str, size_pt: float, *, bold: bool = False) -> None:
+    from docx.oxml import OxmlElement
+    from docx.oxml.ns import qn
+
+    r_pr = run._element.get_or_add_rPr()
+    r_fonts = r_pr.find(qn("w:rFonts"))
+    if r_fonts is None:
+        r_fonts = OxmlElement("w:rFonts")
+        r_pr.insert(0, r_fonts)
+    for attr in (qn("w:ascii"), qn("w:hAnsi"), qn("w:cs")):
+        r_fonts.set(attr, name)
+    half = str(int(round(size_pt * 2)))
+    for tag in ("w:sz", "w:szCs"):
+        el = r_pr.find(qn(tag))
+        if el is None:
+            el = OxmlElement(tag)
+            r_pr.append(el)
+        el.set(qn("w:val"), half)
+    b_el = r_pr.find(qn("w:b"))
+    if bold:
+        if b_el is None:
+            r_pr.append(OxmlElement("w:b"))
+    elif b_el is not None:
+        r_pr.remove(b_el)
+
+
+def _apply_paragraph_typography(paragraph, *, bold: bool = False) -> None:
+    name, size = _MICRO_BODY_FONT if not bold else _MICRO_HEADER_FONT
+    fmt = paragraph.paragraph_format
+    fmt.line_spacing_rule = WD_LINE_SPACING.MULTIPLE
+    fmt.line_spacing = _MICRO_LINE_SPACING
+    fmt.space_before = 0
+    fmt.space_after = 6
+    if not paragraph.runs:
+        paragraph.add_run(paragraph.text or "")
+    for run in paragraph.runs:
+        _apply_run_font(run, name, size, bold=bold)
+
+
+def _normalize_micro_protocol_layout(doc: Document) -> None:
+    """Uniform typography, spacing, and table borders for micro protocols."""
+    for para in doc.paragraphs:
+        text = (para.text or "").strip()
+        if not text:
+            continue
+        is_title = text.lower().startswith(
+            ("result", "observation", "protocol", "sample")
+        ) or text.endswith(":")
+        _apply_paragraph_typography(para, bold=is_title and len(text) < 80)
+
+    for table in doc.tables:
+        _apply_table_header_row_font(table)
+        _apply_table_data_fonts(table)
+        _apply_table_borders(table)
 
 
 def _result_display(result: Optional[TestResultRow]) -> str:
@@ -116,6 +183,8 @@ def fill_micro_protocol_docx_bytes(
         _set_cell(row.cells[2], _result_display(by_key.get(key)))
         _set_cell(row.cells[3], method)
 
+    _normalize_micro_protocol_layout(doc)
+    _remove_existing_disclaimer_blocks(doc)
     append_protocol_disclaimer(doc, header)
     finalize_docx_document(doc, set_qsf=False)
 

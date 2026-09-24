@@ -43,6 +43,36 @@ def list_appearances(*, active_only: bool = True, limit: int = 200) -> list[Appe
     return [AppearanceOption(id=row[0], appearance_text=row[1]) for row in rows]
 
 
+def search_appearances(query: str, *, limit: int = 40) -> list[AppearanceOption]:
+    """
+    Search master appearances by partial text (case-insensitive).
+
+    Empty query returns the most recent alphabetical list (same as list_appearances).
+    """
+    cap = max(1, min(limit, 500))
+    q = (query or "").strip()
+    if not q:
+        return list_appearances(limit=cap)
+
+    pattern = f"%{q}%"
+    sql = """
+        SELECT id, appearance_text
+          FROM appearance_master
+         WHERE is_active = TRUE
+           AND appearance_text ILIKE %s
+         ORDER BY appearance_text
+         LIMIT %s
+    """
+    try:
+        with get_db() as conn:
+            with conn.cursor() as cur:
+                cur.execute(sql, (pattern, cap))
+                rows = cur.fetchall()
+    except Exception:
+        return []
+    return [AppearanceOption(id=row[0], appearance_text=row[1]) for row in rows]
+
+
 def get_or_create_appearance(text: str) -> AppearanceOption:
     """Insert a new appearance option when analyst enters a custom value."""
     cleaned = (text or "").strip()

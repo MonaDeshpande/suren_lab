@@ -37,9 +37,10 @@ from services.protocol_docx import (  # noqa: E402
     unsaved_selected_test_names,
 )
 from services.protocol_pdf import generate_protocol_documents  # noqa: E402
-from services.appearance_master import (  # noqa: E402
-    get_or_create_appearance,
-    list_appearances,
+from services.appearance_master import get_or_create_appearance  # noqa: E402
+from ui.appearance_picker import (  # noqa: E402
+    render_appearance_picker,
+    resolve_appearance_text,
 )
 from services.protocol_store import (  # noqa: E402
     ProtocolHeader,
@@ -338,18 +339,7 @@ def main() -> None:
     with h3:
         st.text_input("Sample Issued by", value=issued_by_display, disabled=True)
 
-    _APPEARANCE_OTHER = "Other (custom)"
     _stored_appearance = (existing.appearance_text if existing else "") or ""
-    _appearance_options = [o.appearance_text for o in list_appearances()]
-    if _stored_appearance and _stored_appearance not in _appearance_options:
-        _appearance_options.append(_stored_appearance)
-    _appearance_select_options = [""] + _appearance_options + [_APPEARANCE_OTHER]
-    if _stored_appearance in _appearance_options:
-        _default_appearance_choice = _stored_appearance
-    elif _stored_appearance:
-        _default_appearance_choice = _APPEARANCE_OTHER
-    else:
-        _default_appearance_choice = ""
     _default_analysis_from = (
         (existing.date_of_analysis_from if existing else None)
         or (existing.date_of_analysis if existing else None)
@@ -374,22 +364,10 @@ def main() -> None:
             "Analysis Date To",
             value=_default_analysis_to,
         )
-        appearance_choice = st.selectbox(
-            "Appearance",
-            options=_appearance_select_options,
-            index=(
-                _appearance_select_options.index(_default_appearance_choice)
-                if _default_appearance_choice in _appearance_select_options
-                else 0
-            ),
-            help="Pick from master list or enter a custom value.",
+        appearance_choice, custom_appearance = render_appearance_picker(
+            f"hdr_{selected.id}",
+            _stored_appearance,
         )
-        custom_appearance = ""
-        if appearance_choice == _APPEARANCE_OTHER:
-            custom_appearance = st.text_input(
-                "Custom appearance",
-                value=_stored_appearance if _default_appearance_choice == _APPEARANCE_OTHER else "",
-            )
         protocol_disclaimer = st.text_area(
             "Protocol disclaimer",
             value=_default_disclaimer,
@@ -404,27 +382,31 @@ def main() -> None:
             for msg in range_errors:
                 st.error(msg)
         else:
-            if appearance_choice == _APPEARANCE_OTHER:
-                appearance_text = get_or_create_appearance(custom_appearance).appearance_text
-            else:
-                appearance_text = appearance_choice
-            hdr = existing or ProtocolHeader(sample_id=selected.id)
-            upsert_protocol_header(
-                ProtocolHeader(
-                    sample_id=selected.id,
-                    protocol_no=hdr.protocol_no or getattr(selected, "protocol_no", ""),
-                    issued_to=hdr.issued_to or selected.assigned_analyst_name,
-                    issued_by=hdr.issued_by,
-                    sample_received_on=received_on,
-                    date_of_analysis=analysis_from,
-                    date_of_analysis_from=analysis_from,
-                    date_of_analysis_to=analysis_to,
-                    appearance_text=appearance_text,
-                    protocol_disclaimer_text=protocol_disclaimer,
-                ),
-                actor=actor,
-            )
-            st.success("Analysis date, appearance, and disclaimer saved.")
+            try:
+                appearance_text = resolve_appearance_text(
+                    appearance_choice, custom_appearance
+                )
+            except ValueError as exc:
+                st.error(str(exc))
+                appearance_text = None
+            if appearance_text is not None:
+                hdr = existing or ProtocolHeader(sample_id=selected.id)
+                upsert_protocol_header(
+                    ProtocolHeader(
+                        sample_id=selected.id,
+                        protocol_no=hdr.protocol_no or getattr(selected, "protocol_no", ""),
+                        issued_to=hdr.issued_to or selected.assigned_analyst_name,
+                        issued_by=hdr.issued_by,
+                        sample_received_on=received_on,
+                        date_of_analysis=analysis_from,
+                        date_of_analysis_from=analysis_from,
+                        date_of_analysis_to=analysis_to,
+                        appearance_text=appearance_text,
+                        protocol_disclaimer_text=protocol_disclaimer,
+                    ),
+                    actor=actor,
+                )
+                st.success("Analysis date, appearance, and disclaimer saved.")
 
     # ----- Assigned tests -----
     cat = normalize_category(selected.category)
@@ -513,8 +495,12 @@ def main() -> None:
 
     def _run_save(form_inputs: dict) -> None:
         if choice == "appearance" and form_inputs.get("appearance_obs"):
+            canon = get_or_create_appearance(
+                str(form_inputs["appearance_obs"])
+            ).appearance_text
+            form_inputs["appearance_obs"] = canon
             hdr = get_protocol_header(selected.id) or ProtocolHeader(sample_id=selected.id)
-            hdr.appearance_text = str(form_inputs["appearance_obs"])
+            hdr.appearance_text = canon
             upsert_protocol_header(hdr, actor=actor)
         row = save_test_result(selected.id, choice, form_inputs, actor=actor)
         st.success(f"Saved **{row.test_name}** = **{row.result_value}** {row.unit}")
@@ -615,6 +601,8 @@ def main() -> None:
                 )
 
         inputs: dict = {}
+        ws_appearance_choice = ""
+        ws_appearance_custom = ""
         with st.form("worksheet_form"):
             st.markdown(f"#### Worksheet — {test.name}")
             protein_titrant = (
@@ -628,7 +616,18 @@ def main() -> None:
                 if session_key in st.session_state:
                     draft_inputs[field.key] = st.session_state[session_key]
             draft_inputs = apply_composite_defaults(choice, draft_inputs)
+            if choice == "appearance":
+                ws_stored = (
+                    str(draft_inputs.get("appearance_obs") or "").strip()
+                    or _stored_appearance
+                )
+                ws_appearance_choice, ws_appearance_custom = render_appearance_picker(
+                    f"ws_{selected.id}",
+                    ws_stored,
+                )
             for field in test.inputs:
+                if choice == "appearance" and field.key == "appearance_obs":
+                    continue
                 if field.key == "moisture_pct":
                     continue
                 if choice == "bn_protein" and field.key in ("n_naoh", "n_hcl"):
@@ -682,6 +681,19 @@ def main() -> None:
                     "Calculate & save result", type="primary", use_container_width=True
                 )
 
+        def _apply_worksheet_appearance() -> bool:
+            if choice != "appearance":
+                return True
+            try:
+                inputs["appearance_obs"] = resolve_appearance_text(
+                    ws_appearance_choice,
+                    ws_appearance_custom,
+                )
+            except ValueError as exc:
+                show_missing_or_error(str(exc))
+                return False
+            return True
+
         def _run_preview(form_inputs: dict) -> None:
             preview = preview_test_calculation(selected.id, choice, form_inputs)
             if preview.error:
@@ -691,7 +703,8 @@ def main() -> None:
 
         if recalc_test:
             try:
-                _run_preview(inputs)
+                if _apply_worksheet_appearance():
+                    _run_preview(inputs)
             except ValueError as exc:
                 show_missing_or_error(str(exc))
             except Exception as exc:  # noqa: BLE001
@@ -699,7 +712,9 @@ def main() -> None:
 
         if save_test:
             try:
-                if is_dry_basis_test(choice):
+                if not _apply_worksheet_appearance():
+                    pass
+                elif is_dry_basis_test(choice):
                     m_val = str(inputs.get("moisture_pct") or "").strip()
                     if not m_val and saved_moisture is None:
                         show_missing_or_error(

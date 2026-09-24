@@ -89,6 +89,40 @@ def _cell_has_tc_mar(cell) -> bool:
     return tc_pr is not None and tc_pr.find(qn("w:tcMar")) is not None
 
 
+def _table_has_borders(table) -> bool:
+    tbl_pr = table._tbl.tblPr
+    if tbl_pr is None:
+        return False
+    return tbl_pr.find(qn("w:tblBorders")) is not None
+
+
+def _find_summary_table(doc: Document):
+    for table in doc.tables:
+        if not table.rows:
+            continue
+        hdr = " ".join(_cell_text(cell) for cell in table.rows[0].cells).lower()
+        if "sr" in hdr and "result" in hdr and (
+            "parameter" in hdr or "name of test" in hdr
+        ):
+            return table
+    return None
+
+
+_DOUBLE_SECTION_NUM_RE = re.compile(r"\d+\.\s+\d+\.")
+
+
+def _assert_no_double_section_numbers(doc: Document) -> None:
+    for para in doc.paragraphs:
+        text = para.text or ""
+        if _DOUBLE_SECTION_NUM_RE.search(text):
+            pytest.fail(f"Double section number in paragraph: {text!r}")
+    for table in doc.tables:
+        if len(table.rows) == 1 and len(table.rows[0].cells) == 1:
+            text = _cell_text(table.rows[0].cells[0])
+            if _DOUBLE_SECTION_NUM_RE.search(text):
+                pytest.fail(f"Double section number in table cell: {text!r}")
+
+
 def _summary_table_index(doc: Document) -> int | None:
     for idx, table in enumerate(doc.tables):
         if not table.rows:
@@ -742,6 +776,56 @@ class TestNutritionWorksheetReadings:
         assert "91.96" in formula_text
         assert "Total Invert sugar" in formula_text
         assert "Total reducing sugar" in formula_text
+        invert_count = formula_text.lower().count("total invert sugar")
+        assert invert_count <= 2, f"sugar formulas duplicated ({invert_count}×)"
+
+    def test_nutrition_protocol_layout_borders_and_section_numbers(self):
+        sample = _sample(
+            tests_json=json.dumps(
+                ["appearance", "bn_moisture", "bn_total_ash", "bn_total_fat"]
+            ),
+            package_type="basic_nutrition",
+        )
+        results = [
+            TestResultRow(
+                test_key="appearance",
+                test_name="Appearance",
+                method="",
+                unit="",
+                inputs={"appearance_obs": "Brown granular powder"},
+                result_value="Brown granular powder",
+                result_numeric=None,
+            ),
+            *TestNutritionWorksheetReadings()._nutrition_moisture_results(),
+            TestResultRow(
+                test_key="bn_total_ash",
+                test_name="Total Ash",
+                method=TEST_CATALOG["bn_total_ash"].method,
+                unit="%",
+                inputs={"w1": 20.0, "w": 5.0, "w2": 20.09},
+                result_value="1.80",
+                result_numeric=1.80,
+            ),
+            TestResultRow(
+                test_key="bn_total_fat",
+                test_name="Total Fat",
+                method=TEST_CATALOG["bn_total_fat"].method,
+                unit="%",
+                inputs={"w": 10.0, "w1": 20.0, "w2": 20.25},
+                result_value="2.50",
+                result_numeric=2.50,
+            ),
+        ]
+        doc = Document(
+            io.BytesIO(fill_protocol_docx_bytes(sample, _header(), results))
+        )
+        _assert_no_double_section_numbers(doc)
+        summary = _find_summary_table(doc)
+        assert summary is not None
+        assert _table_has_borders(summary)
+        moisture = _worksheet_table_with_text(doc, "stainless steel dish")
+        assert moisture is not None
+        assert _table_has_borders(moisture)
 
     def test_nutrition_fill_preview_docx_written(self, tmp_path):
         sample = _sample(
@@ -2158,6 +2242,16 @@ class TestSauceProtocolLayout:
         assert moisture is not None
         third_hdr = _cell_text(moisture.rows[0].cells[2])
         assert third_hdr == "Readings"
+
+    def test_jaggery_summary_and_worksheet_borders(self):
+        doc = self._filled_sauce_doc()
+        _assert_no_double_section_numbers(doc)
+        summary = _find_summary_table(doc)
+        assert summary is not None
+        assert _table_has_borders(summary)
+        moisture = _worksheet_table_with_text(doc, "stainless steel dish")
+        assert moisture is not None
+        assert _table_has_borders(moisture)
 
     def test_sulphated_ash_worksheet_third_header_is_readings(self):
         doc = self._filled_sauce_doc()

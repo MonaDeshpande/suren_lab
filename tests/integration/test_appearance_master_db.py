@@ -6,7 +6,11 @@ import uuid
 
 import pytest
 
-from services.appearance_master import get_or_create_appearance, list_appearances
+from services.appearance_master import (
+    get_or_create_appearance,
+    list_appearances,
+    search_appearances,
+)
 
 
 @pytest.mark.integration

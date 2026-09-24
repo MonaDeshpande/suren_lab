@@ -44,8 +44,11 @@ copy .env.example .env
 # 2. Start PostgreSQL in Docker
 docker compose up -d
 
-# 3. Install deps, apply migrations + seed default admin, run
+# 3. Create all tables/columns (client site: double-click create_table.bat)
 pip install -r requirements.txt
+python scripts/table_creation.py
+
+# 4. Seed default admin (first install only), then run
 python scripts/seed_admin.py
 streamlit run app.py
 ```

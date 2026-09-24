@@ -783,6 +783,86 @@ def _set_paragraph_keep_with_next(paragraph) -> None:
         p_pr.append(OxmlElement("w:keepNext"))
 
 
+def _set_paragraph_page_break_before(paragraph: Paragraph) -> None:
+    """Force the following block to start on a new page (Word w:pageBreakBefore)."""
+    p_pr = paragraph._element.get_or_add_pPr()
+    if p_pr.find(qn("w:pageBreakBefore")) is None:
+        p_pr.append(OxmlElement("w:pageBreakBefore"))
+
+
+def _set_paragraph_keep_lines(paragraph: Paragraph) -> None:
+    """Avoid splitting a short formula paragraph across pages."""
+    p_pr = paragraph._element.get_or_add_pPr()
+    if p_pr.find(qn("w:keepLines")) is None:
+        p_pr.append(OxmlElement("w:keepLines"))
+
+
+def _paragraphs_in_table(table: Table) -> list[Paragraph]:
+    paras: list[Paragraph] = []
+    for row in table.rows:
+        for cell in row.cells:
+            for para in cell.paragraphs:
+                if (para.text or "").strip():
+                    paras.append(para)
+    return paras
+
+
+def _tail_formula_paragraphs_after_table(
+    doc: Document, table_el
+) -> list[Paragraph]:
+    """Body paragraphs after a worksheet until the next section title or table."""
+    paras: list[Paragraph] = []
+    next_el = table_el.getnext()
+    while next_el is not None:
+        if next_el.tag.endswith("tbl"):
+            break
+        if next_el.tag.endswith("p"):
+            para = Paragraph(next_el, doc)
+            text = (para.text or "").strip()
+            if not text or _paragraph_is_page_break_only(next_el):
+                next_el = next_el.getnext()
+                continue
+            if _is_observation_heading(text):
+                break
+            first = text.split("\n", 1)[0].strip()
+            if _is_observation_section_title_line(first):
+                break
+            if _is_body_signature_paragraph(text):
+                break
+            paras.append(para)
+        next_el = next_el.getnext()
+    return paras
+
+
+def _chain_keep_with_next(paragraphs: list[Paragraph]) -> None:
+    """Link paragraphs so the group moves to the next page together when needed."""
+    for para in paragraphs[:-1]:
+        if (para.text or "").strip():
+            _set_paragraph_keep_with_next(para)
+            _set_paragraph_keep_lines(para)
+
+
+def _remove_existing_disclaimer_blocks(doc: Document) -> None:
+    """Remove template disclaimer paragraphs so only one disclaimer is appended."""
+    disclaimer_started = False
+    for para in list(doc.paragraphs):
+        text = (para.text or "").strip()
+        lower = text.lower()
+        if lower.startswith("disclaimer"):
+            disclaimer_started = True
+            _delete_paragraph(para)
+            continue
+        if disclaimer_started:
+            if re.match(r"^\d+\.\s", text) or not text:
+                _delete_paragraph(para)
+                continue
+            disclaimer_started = False
+    for section in doc.sections:
+        for para in list(section.footer.paragraphs):
+            if (para.text or "").strip().lower().startswith("disclaimer"):
+                _set_paragraph_text(para, "")
+
+
 def _is_worksheet_table(table) -> bool:
     if not table.rows:
         return False
@@ -1297,10 +1377,16 @@ def _remove_orphan_page_break_paragraphs(doc: Document) -> None:
     """Drop empty paragraphs that only force a page break (common after table prune)."""
     body = doc.element.body
     for child in list(body):
-        if child.tag.endswith("p") and _paragraph_is_page_break_only(child):
-            parent = child.getparent()
-            if parent is not None:
-                parent.remove(child)
+        if not (child.tag.endswith("p") and _paragraph_is_page_break_only(child)):
+            continue
+        nxt = child.getnext()
+        if nxt is not None and nxt.tag.endswith("p"):
+            nxt_text = (Paragraph(nxt, doc).text or "").strip()
+            if _is_observation_heading(nxt_text):
+                continue
+        parent = child.getparent()
+        if parent is not None:
+            parent.remove(child)
 
 
 def _computed_result_value(
@@ -2701,7 +2787,89 @@ def _normalize_jaggery_summary_headers(doc: Document, sample: SampleRecord) -> N
 BARE_UNIT_PLACEHOLDERS = frozenset(
     {"g", "ml", "%", "ppm", "—", "-", "ntu", "μs/cm", "us/cm"}
 )
-SECTION_TITLE_NUM_RE = re.compile(r"^\d+\.\s*")
+SECTION_TITLE_NUM_RE = re.compile(r"^\d+\.?\s*")
+
+_OBSERVATION_SECTION_KEYWORDS = (
+    "appearance",
+    "moisture",
+    "total ash",
+    "total fat",
+    "protein",
+    "carbohydrate",
+    "energy",
+    "calories",
+    "crude fibre",
+    "crude fiber",
+    "fibre",
+    "fiber",
+    "sugar",
+    "sulphated",
+    "acid insoluble",
+    "extraneous",
+    "invert",
+    "reducing",
+    "sucrose",
+    "added color",
+    "color",
+)
+
+
+def _is_observation_section_title_line(first_line: str) -> bool:
+    """True for worksheet section headings (not calculation body paragraphs)."""
+    raw = (first_line or "").strip()
+    if not raw or _is_body_signature_paragraph(raw):
+        return False
+    lower = raw.lower()
+    if lower.startswith("disclaimer") or lower == "result table:":
+        return False
+    if "0.014" in raw or "moisture + ash" in lower or "x 4" in lower:
+        return False
+    if len(raw) > 80 and ("=" in raw or "×" in raw or " x " in lower):
+        return False
+    base = _strip_section_title_number(raw).strip().rstrip(":=").strip()
+    if not base:
+        return False
+    head = base.lower()
+    if raw.endswith(":") or (raw.endswith("=") and len(raw) <= 48):
+        if any(head.startswith(k) or k in head for k in _OBSERVATION_SECTION_KEYWORDS):
+            return True
+        return len(raw) <= 40
+    return any(head.startswith(k) for k in _OBSERVATION_SECTION_KEYWORDS)
+
+
+def _apply_table_borders(table) -> None:
+    """Full box borders on summary and worksheet tables."""
+    tbl = table._tbl
+    tbl_pr = tbl.tblPr
+    if tbl_pr is None:
+        tbl_pr = OxmlElement("w:tblPr")
+        tbl.insert(0, tbl_pr)
+    existing = tbl_pr.find(qn("w:tblBorders"))
+    if existing is not None:
+        tbl_pr.remove(existing)
+    borders = OxmlElement("w:tblBorders")
+    for edge in ("top", "left", "bottom", "right", "insideH", "insideV"):
+        element = OxmlElement(f"w:{edge}")
+        element.set(qn("w:val"), "single")
+        element.set(qn("w:sz"), "4")
+        element.set(qn("w:space"), "0")
+        element.set(qn("w:color"), "000000")
+        borders.append(element)
+    tbl_pr.append(borders)
+
+
+def _apply_protocol_table_borders(doc: Document) -> None:
+    """Border page-1 summary and observation worksheet tables (all protocol types)."""
+    summary = _find_summary_table(doc)
+    if summary is not None:
+        _apply_table_borders(summary)
+    for table in doc.tables:
+        if _is_repeat_protocol_header_table(table):
+            continue
+        if table is summary:
+            continue
+        if _is_worksheet_table(table) or _is_appearance_only_table(table):
+            _apply_table_borders(table)
 
 
 def _nutrition_page1_header_table_xml():
@@ -3095,7 +3263,7 @@ def _strip_section_title_number(text: str) -> str:
         if stripped == first_line:
             break
         first_line = stripped
-    return first_line
+    return first_line.lstrip(". ").strip()
 
 
 def _renumber_worksheet_section_titles(doc: Document, conducted: set[str]) -> None:
@@ -3114,13 +3282,16 @@ def _renumber_worksheet_section_titles(doc: Document, conducted: set[str]) -> No
                 continue
             if not seen_observation or text == "Result Table:":
                 continue
-            if _is_body_signature_paragraph(text):
-                continue
             first_line = text.split("\n", 1)[0].strip()
-            if not first_line.endswith(":"):
+            if not _is_observation_section_title_line(first_line):
                 continue
             section_idx += 1
             base = _strip_section_title_number(first_line)
+            if not base.endswith(":") and not base.endswith("="):
+                if any(k in base.lower() for k in ("carbohydrate", "energy", "calories")):
+                    base = f"{base} ="
+                else:
+                    base = f"{base}:"
             lines = text.split("\n")
             new_first = f"{section_idx}. {base}"
             new_text = "\n".join([new_first] + lines[1:]) if len(lines) > 1 else new_first
@@ -3384,47 +3555,121 @@ def _section_title_paragraph_for_table(doc: Document, table) -> Paragraph | None
         if prev.tag.endswith("p"):
             para = Paragraph(prev, doc)
             text = (para.text or "").strip()
-            if text and text != "Result Table:" and not _is_observation_heading(text):
-                if text.endswith(":") or "dry basis" in text.lower():
-                    return para
+            if not text or text == "Result Table:" or _is_observation_heading(text):
+                prev = prev.getprevious()
+                continue
+            if _is_body_signature_paragraph(text):
                 return None
+            first_line = text.split("\n", 1)[0].strip()
+            if _is_observation_section_title_line(first_line) or text.endswith(":"):
+                return para
+            if "dry basis" in text.lower():
+                return para
         prev = prev.getprevious()
     return None
 
 
+def _iter_observation_worksheet_tables(doc: Document) -> list[tuple[Paragraph | None, Table, bool]]:
+    """(title, table, is_appearance_only) in document order after OBSERVATION TABLE."""
+    blocks: list[tuple[Paragraph | None, Table, bool]] = []
+    seen_observation = False
+    for child in doc.element.body:
+        if child.tag.endswith("p"):
+            text = (Paragraph(child, doc).text or "").strip()
+            if _is_observation_heading(text):
+                seen_observation = True
+            continue
+        if not seen_observation or not child.tag.endswith("tbl"):
+            continue
+        table = Table(child, doc)
+        if _is_summary_table(table) or _is_repeat_protocol_header_table(table):
+            continue
+        if _is_sample_info_table(table):
+            continue
+        if _is_worksheet_table(table) or _is_appearance_only_table(table):
+            title = _section_title_paragraph_for_table(doc, table)
+            blocks.append(
+                (title, table, _is_appearance_only_table(table))
+            )
+    return blocks
+
+
+def _apply_worksheet_section_page_breaks(doc: Document) -> None:
+    """
+    Start each worksheet section (after the first worksheet) on a new page so
+    paired blocks (e.g. TOTAL ASH + Total Fat) do not split awkwardly.
+    """
+    first_worksheet = True
+    for title, table, is_appearance in _iter_observation_worksheet_tables(doc):
+        if is_appearance:
+            continue
+        if not first_worksheet:
+            if title is not None:
+                _set_paragraph_page_break_before(title)
+            else:
+                _insert_page_break_before(table._tbl)
+        first_worksheet = False
+
+
 def _apply_worksheet_page_layout(doc: Document) -> None:
     """
-    Keep each observation section (title + table) on one page.
+    Keep each observation section (title + table + tail formulas) intact.
 
-    cantSplit on every row; keepWithNext on section titles and all rows except
-    the last row in each worksheet / appearance table.
+    cantSplit on every row; keepWithNext chains title, all table rows, and
+    following formula paragraphs so blocks move to the next page together.
     """
-    worksheet_tbls = {t._tbl for t in doc.tables if _is_worksheet_table(t)}
-    appearance_tbls = {t._tbl for t in doc.tables if _is_appearance_only_table(t)}
-    block_tbls = worksheet_tbls | appearance_tbls
-    body_children = list(doc.element.body)
+    for title, table, _is_app in _iter_observation_worksheet_tables(doc):
+        _make_table_inline(table)
+        _apply_worksheet_cell_padding(table)
+        for row in table.rows:
+            _set_row_cant_split(row)
+            _apply_keep_with_next_to_row(row, skip_if_last=False)
 
+        chain: list[Paragraph] = []
+        if title is not None:
+            chain.append(title)
+        chain.extend(_paragraphs_in_table(table))
+        chain.extend(_tail_formula_paragraphs_after_table(doc, table._tbl))
+        _chain_keep_with_next(chain)
+
+    body_children = list(doc.element.body)
     for i, child in enumerate(body_children):
         if child.tag.split("}")[-1] != "tbl":
             continue
-        if child not in block_tbls:
-            continue
-
         table = Table(child, doc)
-        _apply_worksheet_cell_padding(table)
-        row_count = len(table.rows)
-        for ri, row in enumerate(table.rows):
-            _set_row_cant_split(row)
-            _apply_keep_with_next_to_row(row, skip_if_last=(ri >= row_count - 1))
-
-        title_para = _section_title_paragraph_for_table(doc, table)
-        if title_para is not None:
-            _set_paragraph_keep_with_next(title_para)
-        elif i > 0 and body_children[i - 1].tag.split("}")[-1] == "p":
+        if not (_is_worksheet_table(table) or _is_appearance_only_table(table)):
+            continue
+        if _section_title_paragraph_for_table(doc, table) is not None:
+            continue
+        if i > 0 and body_children[i - 1].tag.split("}")[-1] == "p":
             para = Paragraph(body_children[i - 1], doc)
             text = (para.text or "").strip()
             if text and _is_observation_heading(text):
                 _set_paragraph_keep_with_next(para)
+
+
+def _remove_orphan_breaks_before_end_blocks(doc: Document) -> None:
+    """Drop stray page-break-only paragraphs that would create empty pages."""
+    _remove_orphan_page_break_paragraphs(doc)
+    body = list(doc.element.body)
+    for idx, child in enumerate(body):
+        if not child.tag.endswith("p") or not _paragraph_is_page_break_only(child):
+            continue
+        next_el = child.getnext()
+        if next_el is None:
+            parent = child.getparent()
+            if parent is not None:
+                parent.remove(child)
+            continue
+        if next_el.tag.endswith("p"):
+            nxt = Paragraph(next_el, doc)
+            if not (nxt.text or "").strip():
+                continue
+            lower = (nxt.text or "").strip().lower()
+            if lower.startswith("disclaimer") or lower.startswith("analysed by"):
+                parent = child.getparent()
+                if parent is not None:
+                    parent.remove(child)
 
 
 def _fill_water_chloride_readings(table, res: TestResultRow) -> None:
@@ -3493,21 +3738,9 @@ def _fill_nutrition_sugar_formula_row(
             line = f"{line}\n{ans}".strip()
         if len(paras) > 9:
             _set_paragraph_text(paras[9], line)
-        elif len(paras) > 2:
-            _set_paragraph_text(paras[2], line)
 
     if len(row.cells) >= 3 and row.cells[0]._tc is not row.cells[2]._tc:
-        reading_parts: list[str] = []
-        for key in ("bn_added_sugar", "bn_total_sugar"):
-            if key not in by_key:
-                continue
-            res = by_key[key]
-            worked = worked_formula_lines(
-                key, res.inputs or {}, ctx, res.result_value or ""
-            )
-            reading_parts.extend(worked)
-        if reading_parts:
-            _set_reading_cell(row, 2, "\n\n".join(reading_parts))
+        _set_cell(row.cells[2], "")
 
 
 def _fill_nutrition_paragraph_formulas(
@@ -3827,12 +4060,19 @@ def _fill_worksheet_formulas(
                     continue
                 symbolic = lines[i] if i < len(lines) else display_formula
                 existing_desc = _cell_text(row.cells[0]).strip()
-                if not existing_desc:
+                if not is_nutrition:
                     _set_cell(row.cells[0], symbolic)
-                elif not is_nutrition:
-                    _set_cell(row.cells[0], symbolic)
-                elif len(row_indices) > 1 and i == len(row_indices) - 1:
-                    _set_cell(row.cells[0], symbolic)
+                else:
+                    overwrite = not existing_desc
+                    ex_lower = existing_desc.lower()
+                    if test_key == "bn_crude_fibre" and (
+                        "fat =" in ex_lower or "fat=" in ex_lower
+                    ):
+                        overwrite = True
+                    if len(row_indices) > 1 and i == len(row_indices) - 1:
+                        overwrite = True
+                    if overwrite:
+                        _set_cell(row.cells[0], symbolic)
                 _set_cell_no_wrap(row.cells[0])
 
                 worked_line = worked[i] if i < len(worked) else ""
@@ -3997,6 +4237,7 @@ def _append_water_micro_observation_page(
     _apply_run_font(title_run, *RESULT_TABLE_TITLE_FONT, bold=True)
 
     table = doc.add_table(rows=1 + len(WATER_MICRO_OBSERVATION_ROWS), cols=4)
+    _apply_table_borders(table)
     headers = ("Sr.No", "Name of test", "Procedure", "Result")
     for col_idx, label in enumerate(headers):
         _set_cell(table.rows[0].cells[col_idx], label)
@@ -4110,13 +4351,14 @@ def fill_protocol_docx_bytes(
         _normalize_food_worksheet_headers(doc, sample)
     _keep_page1_block_together(doc)
     _ensure_observation_section_starts_page_2(doc)
-    if is_food_house_style:
+    if is_food_house_style or is_water:
         _remove_body_signature_blocks(doc)
-    _renumber_worksheet_section_titles(doc, conducted)
     if is_nutrition:
         _fill_nutrition_paragraph_formulas(doc, by_key, _result_context(by_key))
+    _renumber_worksheet_section_titles(doc, conducted)
+    _apply_worksheet_section_page_breaks(doc)
     _apply_worksheet_page_layout(doc)
-    if is_food_house_style:
+    if is_food_house_style or is_water:
         _apply_protocol_end_signatures(doc, sample, header)
     if is_food_house_style:
         _normalize_food_protocol_table_widths(doc)
@@ -4129,8 +4371,11 @@ def fill_protocol_docx_bytes(
     _blank_director_approval(doc)
     if is_water and _water_sample_includes_micro(sample):
         _append_water_micro_observation_page(doc, sample, header, by_key)
+    _remove_existing_disclaimer_blocks(doc)
     append_protocol_disclaimer(doc, header)
     _remove_trailing_empty_paragraphs(doc)
+    _remove_orphan_breaks_before_end_blocks(doc)
+    _apply_protocol_table_borders(doc)
 
     from services.docx_layout import finalize_docx_document
 
